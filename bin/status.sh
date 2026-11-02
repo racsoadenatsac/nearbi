@@ -1,7 +1,7 @@
 #!/bin/bash
 # One-line git status for every repo in the fleet.
 ROOT="$HOME/projects/research-shop"
-for d in "$ROOT"/rs-*/; do
+for d in "$ROOT"/rs-*/ "$ROOT"/research-shop/; do
   n=$(basename "$d")
   b=$(git -C "$d" branch --show-current)
   dirty=$(git -C "$d" status --porcelain | wc -l | tr -d ' ')
