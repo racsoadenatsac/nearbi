@@ -3,22 +3,30 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "nearbi.ai Cloudflare Worker: public site, Sign in with NEAR, NEAR Intents subscriptions, gated reports",
+  "description": "nearbi.ai app on AWS Lambda: Sign in with NEAR, NEAR Intents subscriptions, gated S3 reports, registry tokens",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "dev": "wrangler dev --ip 0.0.0.0 --port 8787",
-    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "dev": "tsx src/dev.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "build:check": "wrangler deploy --dry-run --outdir dist"
+    "build": "esbuild src/lambda.ts --bundle --platform=node --target=node22 --format=esm --minify --sourcemap --outfile=dist/lambda/index.mjs --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\"",
+    "seed": "tsx src/seed.ts"
   },
   "dependencies": {
-    "hono": "^4.6.0"
+    "@aws-sdk/client-dynamodb": "^3.1161.0",
+    "@aws-sdk/client-s3": "^3.1161.0",
+    "@aws-sdk/lib-dynamodb": "^3.1161.0",
+    "@aws-sdk/s3-request-presigner": "^3.1161.0",
+    "hono": "^4.13.16"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261102.1",
-    "@types/node": "^22.0.0",
-    "typescript": "^5.6.0",
-    "vitest": "^3.2.0",
-    "wrangler": "^4.0.0"
+    "@hono/node-server": "^2.1.6",
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
   }
 }
