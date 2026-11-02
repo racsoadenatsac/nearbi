@@ -91,6 +91,15 @@ def test_fetch_fixed_bounds():
     assert raises(check_fetch, {"sources": []})
 
 
+def test_stage_only_query_needs_fixed_window():
+    q = "SELECT week, COUNT(*) FROM `{stage}.s1` WHERE week BETWEEN '2024-10-28' AND '2026-10-25' GROUP BY week"
+    assert check_readonly(q) == ("2024-10-28", "2026-10-25")
+    assert raises(check_readonly, "SELECT week FROM `{stage}.s1`")                       # unbounded
+    assert raises(check_readonly, "SELECT week FROM `{stage}.s1` WHERE week >= CURRENT_DATE()")
+    # a public-dataset table still needs its own block_date bound, even next to a stage table
+    assert raises(check_readonly, f"SELECT 1 FROM `{{stage}}.s1` JOIN {T} ON TRUE WHERE week BETWEEN '2026-10-01' AND '2026-10-07'")
+
+
 def test_canonical_json_is_stable():
     assert canonical_json(b'{"b": 1,  "a": [1, 2]}') == canonical_json(b'{"a":[1,2],"b":1}') == b'{"a":[1,2],"b":1}\n'
 
