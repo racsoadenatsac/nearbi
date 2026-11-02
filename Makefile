@@ -25,5 +25,8 @@ verify-cached: build  ## re-hash shipped results, no GCP needed
 charts: build
 	docker run --rm -v $(PWD)/charts:/work/charts $(IMAGE) charts
 
-notebook: build   ## Jupyter on http://localhost:8888
-	$(DOCKER_RUN) -p 8888:8888 --entrypoint jupyter $(IMAGE) lab --ip 0.0.0.0 --allow-root --no-browser --NotebookApp.token=''
+# PACK=<report dir> opens that report pack; default is this repo's demo pack.
+PACK ?= $(PWD)
+notebook: build   ## JupyterLab on http://localhost:8888 (localhost only, no token)
+	$(DOCKER_RUN) -p 127.0.0.1:8888:8888 -v $(PACK):/pack -e REPRO_ROOT=/pack --entrypoint jupyter $(IMAGE) \
+	  lab --ip 0.0.0.0 --allow-root --no-browser --ServerApp.token='' --ServerApp.password='' --notebook-dir=/pack
