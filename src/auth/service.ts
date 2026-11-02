@@ -72,11 +72,14 @@ export async function verifySignIn(input: Partial<VerifyInput>, deps: VerifyDeps
   if (row.expires_at <= deps.nowSec) return { ok: false, status: 401, error: "challenge expired" };
   if (row.message !== message) return { ok: false, status: 401, error: "message does not match challenge" };
 
-  const sigOk = await verifyNep413Signature(
-    { message: message!, nonce: nonceBytes, recipient: recipient!, callbackUrl: input.callbackUrl ?? null },
-    publicKey!,
-    signature!,
-  );
+  // Redirect wallets pass a callbackUrl; NEP-413 puts it in the signed payload, but not every wallet
+  // implementation does. The callback URL carries no authority (nonce, message and recipient do), so
+  // accept either form.
+  const base = { message: message!, nonce: nonceBytes, recipient: recipient! };
+  const cb = typeof input.callbackUrl === "string" && input.callbackUrl ? input.callbackUrl : null;
+  const sigOk =
+    (await verifyNep413Signature({ ...base, callbackUrl: cb }, publicKey!, signature!)) ||
+    (cb !== null && (await verifyNep413Signature({ ...base, callbackUrl: null }, publicKey!, signature!)));
   if (!sigOk) return { ok: false, status: 401, error: "bad signature" };
 
   const key = await deps.keyCheck(accountId!, publicKey!);
