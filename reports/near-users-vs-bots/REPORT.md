@@ -37,10 +37,13 @@ These are the next queries in the full deep-dive report.
 
 ## Charts
 
-| | |
-|---|---|
-| ![Daily activity](charts/q1_daily_activity.png) | ![Concentration](charts/q2_concentration.png) |
-| ![Signer buckets](charts/q3_signer_buckets.png) | ![Top signers](charts/q4_top_signers.png) |
+![Daily activity](charts/q1_daily_activity.png)
+
+![Concentration](charts/q2_concentration.png)
+
+![Signer buckets](charts/q3_signer_buckets.png)
+
+![Top signers](charts/q4_top_signers.png)
 
 ## Queries
 
