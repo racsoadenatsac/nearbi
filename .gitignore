@@ -13,8 +13,7 @@ node_modules/
 .ipynb_checkpoints/
 .DS_Store
 cache/
-# wrangler / node
-.wrangler/
-.dev.vars
+# node / lambda build
 dist/
+*.zip
 coverage/

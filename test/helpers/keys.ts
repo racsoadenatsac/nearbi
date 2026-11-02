@@ -1,7 +1,7 @@
 // Local ed25519 keypairs for tests (never touches a real wallet or network).
 
-import { base58Encode, base64Encode } from "../../src/lib/encoding";
-import { nep413Hash, type Nep413Payload } from "../../src/auth/nep413";
+import { base58Encode, base64Encode } from "../../src/core/encoding";
+import { nep413Hash, type Nep413Payload } from "../../src/core/nep413";
 
 export interface TestKey {
   publicKey: string; // "ed25519:<base58>"

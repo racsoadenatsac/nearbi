@@ -1,72 +1,30 @@
 // End-to-end through the Hono app: sign in with a local key, subscribe (stub quote), confirm, read gated content.
 /* eslint-disable @typescript-eslint/no-explicit-any */
-
 import { beforeEach, describe, expect, it } from "vitest";
-import { createApp } from "../src/app";
-import { base64Decode } from "../src/lib/encoding";
-import { hashToken, validateRegistryToken } from "../src/registry";
-import { stubQuoteDeposit } from "../src/billing/intents";
-import { createTestEnv } from "./helpers/env";
 import { generateTestKey } from "./helpers/keys";
-
-const T0 = Math.floor(Date.parse("2026-11-02T00:00:00Z") / 1000);
-const ORIGIN = "https://nearbi.ai";
-
-function setup() {
-  let clock = T0;
-  const ctx = createTestEnv();
-  const ownedKeys = new Map<string, string>(); // publicKey -> accountId, i.e. our fake chain state
-  const app = createApp({
-    now: () => clock,
-    quoteDeposit: stubQuoteDeposit,
-    keyCheck: () => async (accountId, publicKey) =>
-      ownedKeys.get(publicKey) === accountId ? { ok: true, permission: "FullAccess" } : { ok: false, reason: "UNKNOWN_ACCESS_KEY" },
-  });
-  const req = (path: string, init: RequestInit & { cookie?: string } = {}) => {
-    const headers = new Headers(init.headers);
-    if (init.cookie) headers.set("cookie", init.cookie);
-    return app.request(ORIGIN + path, { ...init, headers }, ctx.env);
-  };
-  const json = (path: string, body: unknown, init: RequestInit & { cookie?: string } = {}) =>
-    req(path, { method: "POST", ...init, headers: { "content-type": "application/json", ...(init.headers ?? {}) }, body: JSON.stringify(body) });
-
-  async function signIn(accountId = "alice.near") {
-    const key = await generateTestKey();
-    ownedKeys.set(key.publicKey, accountId);
-    const ch = await (await req("/auth/challenge")).json<any>();
-    const signature = await key.sign({ message: ch.message, nonce: base64Decode(ch.nonce), recipient: ch.recipient });
-    const res = await json("/auth/verify", { accountId, publicKey: key.publicKey, signature, nonce: ch.nonce, message: ch.message, recipient: "nearbi.ai" });
-    const setCookie = res.headers.get("set-cookie") ?? "";
-    return { res, key, cookie: setCookie.split(";")[0], setCookie };
-  }
-
-  async function subscribe(cookie: string, tx = "tx-" + Math.random()) {
-    const co = await (await json("/billing/checkout", {}, { cookie })).json<any>();
-    const conf = await json("/billing/confirm", { paymentId: co.paymentId, txHash: tx }, { headers: { authorization: "Bearer test-admin-token" } });
-    return { co, conf };
-  }
-
-  return { ctx, req, json, signIn, subscribe, advance: (s: number) => (clock += s), ownedKeys };
-}
+import { base64Decode } from "../src/core/encoding";
+import { hashToken } from "../src/core/registry-token";
+import { validateRegistryToken } from "../src/services/registry";
+import { setup, T0 } from "./helpers/app";
 
 describe("auth endpoints", () => {
   it("sign-in sets an HttpOnly, Secure, SameSite=Lax session cookie", async () => {
-    const { signIn, req } = setup();
+    const { signIn, req, repo } = setup();
     const { res, setCookie, cookie } = await signIn();
     expect(res.status).toBe(200);
-    expect(await res.json<any>()).toEqual({ ok: true, accountId: "alice.near" });
+    expect(await res.json()).toEqual({ ok: true, accountId: "alice.near" });
     expect(setCookie).toMatch(/^nearbi_session=[^;]+;/);
-    expect(setCookie).toContain("HttpOnly");
-    expect(setCookie).toContain("Secure");
-    expect(setCookie).toContain("SameSite=Lax");
-    const me = await (await req("/api/me", { cookie })).json<any>();
+    for (const attr of ["HttpOnly", "Secure", "SameSite=Lax"]) expect(setCookie).toContain(attr);
+    const me = await (await req("/api/me", { cookie })).json();
     expect(me).toMatchObject({ authenticated: true, accountId: "alice.near", subscription: { status: "none", active: false }, priceUsd: 49 });
+    expect(await repo.getAccount("alice.near")).toMatchObject({ lastLoginAt: T0 });
+    expect(repo.challenges.size).toBe(0); // nonce burned
   });
 
   it("refuses a key that is not on the account (RPC check fails)", async () => {
     const { req, json } = setup();
-    const key = await generateTestKey(); // never registered in ownedKeys
-    const ch = await (await req("/auth/challenge")).json<any>();
+    const key = await generateTestKey();
+    const ch = await (await req("/auth/challenge")).json();
     const signature = await key.sign({ message: ch.message, nonce: base64Decode(ch.nonce), recipient: ch.recipient });
     const res = await json("/auth/verify", { accountId: "alice.near", publicKey: key.publicKey, signature, nonce: ch.nonce, message: ch.message, recipient: "nearbi.ai" });
     expect(res.status).toBe(401);
@@ -75,33 +33,53 @@ describe("auth endpoints", () => {
 
   it("/api/me is anonymous without a cookie, and ignores forged cookies", async () => {
     const { req } = setup();
-    expect(await (await req("/api/me")).json<any>()).toMatchObject({ authenticated: false, accountId: null });
-    expect(await (await req("/api/me", { cookie: "nearbi_session=eyJzdWIiOiJib2IubmVhciJ9.AAAA" })).json<any>()).toMatchObject({ authenticated: false });
+    expect(await (await req("/api/me")).json()).toMatchObject({ authenticated: false, accountId: null });
+    expect(await (await req("/api/me", { cookie: "nearbi_session=eyJzdWIiOiJib2IubmVhciJ9.AAAA" })).json()).toMatchObject({ authenticated: false });
   });
 
-  it("rejects cross-origin POSTs", async () => {
+  it("CSRF: rejects cross-origin and opaque-origin POSTs; accepts the configured app origin behind CloudFront", async () => {
     const { json } = setup();
-    const res = await json("/auth/verify", {}, { headers: { origin: "https://evil.example" } });
-    expect(res.status).toBe(403);
+    expect((await json("/auth/verify", {}, { headers: { origin: "https://evil.example" } })).status).toBe(403);
+    expect((await json("/auth/verify", {}, { headers: { origin: "null" } })).status).toBe(403);
+    // Request host is the API Gateway domain; the browser origin is nearbi.ai.
+    const viaCf = await json("/auth/verify", {}, { base: "https://abc123.execute-api.us-east-1.amazonaws.com", headers: { origin: "https://nearbi.ai" } });
+    expect(viaCf.status).toBe(400); // passed CSRF, failed validation
+  });
+
+  it("origin lock: with ORIGIN_VERIFY_SECRET set, requests without the CloudFront header are refused", async () => {
+    const t = setup({ ORIGIN_VERIFY_SECRET: "cf-shared-secret" });
+    expect((await t.req("/api/me")).status).toBe(403);
+    expect((await t.req("/api/me", { headers: { "x-origin-verify": "wrong" } })).status).toBe(403);
+    expect((await t.req("/api/me", { headers: { "x-origin-verify": "cf-shared-secret" } })).status).toBe(200);
+  });
+
+  it("logout clears the cookie", async () => {
+    const t = setup();
+    const { cookie } = await t.signIn();
+    const res = await t.json("/auth/logout", {}, { cookie });
+    expect(res.headers.get("set-cookie")).toContain("Max-Age=0");
   });
 });
 
 describe("gating over HTTP", () => {
   let t: ReturnType<typeof setup>;
-  beforeEach(async () => {
-    t = setup();
-    t.ctx.CONTENT.store.set("reports/near-defi-flows/index.html", { body: "<h1>premium</h1>" });
-    t.ctx.CONTENT.store.set("reports/near-defi-flows/report.pdf", { body: "%PDF-1.7" });
+  beforeEach(() => {
+    t = setup({ STATIC_ORIGIN: "https://static.nearbi.ai" });
+    t.content.put("reports/near-defi-flows/index.html", "<h1>premium</h1>", "text/html; charset=utf-8");
+    t.content.put("reports/near-defi-flows/report.pdf", "%PDF-1.7");
+    t.content.put("reports/near-defi-flows/charts/a.png", "png");
   });
 
-  it("free sample is served from static assets, no sign-in needed", async () => {
+  it("free sample is public and points at the static site (never served from the private bucket)", async () => {
     const res = await t.req("/reports/near-users-vs-bots/NEAR-real-users-or-bots.pdf");
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-from")).toBe("assets");
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("https://static.nearbi.ai/reports/near-users-vs-bots/NEAR-real-users-or-bots.pdf");
+    const noStatic = setup();
+    expect((await noStatic.req("/reports/near-users-vs-bots/")).status).toBe(404);
   });
 
   it("anonymous visitors are redirected to /login for gated reports and /members", async () => {
-    for (const p of ["/reports/near-defi-flows/", "/members", "/members/container"]) {
+    for (const p of ["/reports/near-defi-flows/", "/reports/near-defi-flows/report.pdf", "/members", "/members/container"]) {
       const res = await t.req(p);
       expect(res.status).toBe(302);
       expect(res.headers.get("location")).toBe(`/login?next=${encodeURIComponent(p)}`);
@@ -128,41 +106,61 @@ describe("gating over HTTP", () => {
     expect(gated.headers.get("location")).toBe("/members?subscribe=1");
   });
 
-  it("subscribers get gated HTML and PDFs from R2 with private caching", async () => {
+  it("subscribers: HTML proxied with private caching, binaries via short-lived presigned redirect", async () => {
     const { cookie } = await t.signIn();
     const { conf } = await t.subscribe(cookie);
     expect(conf.status).toBe(200);
+
     const html = await t.req("/reports/near-defi-flows/", { cookie });
     expect(html.status).toBe(200);
     expect(await html.text()).toBe("<h1>premium</h1>");
     expect(html.headers.get("cache-control")).toBe("private, no-store");
+    expect(html.headers.get("content-type")).toContain("text/html");
+
     const pdf = await t.req("/reports/near-defi-flows/report.pdf", { cookie });
-    expect(pdf.headers.get("content-type")).toBe("application/pdf");
+    expect(pdf.status).toBe(302);
+    expect(pdf.headers.get("cache-control")).toBe("private, no-store");
+    const loc = new URL(pdf.headers.get("location")!);
+    expect(loc.origin + loc.pathname).toBe("https://content.test/reports/near-defi-flows/report.pdf");
+    expect(Number(loc.searchParams.get("expires"))).toBe(T0 + 300);
+    expect(loc.searchParams.get("response-content-type")).toBe("application/pdf");
+    expect(loc.searchParams.get("response-content-disposition")).toBe('inline; filename="report.pdf"');
+
+    const png = new URL((await t.req("/reports/near-defi-flows/charts/a.png", { cookie })).headers.get("location")!);
+    expect(png.searchParams.get("response-content-type")).toBe("image/png");
+
     expect((await t.req("/reports/near-defi-flows", { cookie })).headers.get("location")).toBe("/reports/near-defi-flows/");
     expect((await t.req("/reports/does-not-exist/", { cookie })).status).toBe(404);
+    expect((await t.req("/reports/near-defi-flows/missing.png", { cookie })).status).toBe(404);
     expect((await t.req("/members/container", { cookie })).status).toBe(200);
+  });
+
+  it("presign TTL is configurable", async () => {
+    const t2 = setup({ PRESIGN_TTL_SECONDS: "60" });
+    t2.content.put("reports/r/x.pdf", "%PDF");
+    const { cookie } = await t2.signIn();
+    await t2.subscribe(cookie);
+    const loc = new URL((await t2.req("/reports/r/x.pdf", { cookie })).headers.get("location")!);
+    expect(Number(loc.searchParams.get("expires"))).toBe(T0 + 60);
   });
 
   it("access ends when the period ends", async () => {
     const { cookie } = await t.signIn();
     await t.subscribe(cookie);
     t.advance(31 * 86400);
-    // session cookies last 7 days, so sign in again after a month
-    const again = await t.signIn();
+    const again = await t.signIn(); // sessions last 7 days
     expect((await t.req("/reports/near-defi-flows/", { cookie: again.cookie })).status).toBe(302);
-    const me = await (await t.req("/api/me", { cookie: again.cookie })).json<any>();
-    expect(me.subscription).toMatchObject({ status: "expired", active: false });
+    expect((await (await t.req("/api/me", { cookie: again.cookie })).json()).subscription).toMatchObject({ status: "expired", active: false });
   });
 });
 
 describe("billing over HTTP", () => {
-  it("checkout returns a STUB deposit address and the env price", async () => {
-    const t = setup();
-    t.ctx.env.MONTHLY_PRICE_USD = "99";
+  it("checkout returns a STUB deposit address and the configured price", async () => {
+    const t = setup({ MONTHLY_PRICE_USD: "99" });
     const { cookie } = await t.signIn();
     const res = await t.json("/billing/checkout", {}, { cookie });
     expect(res.status).toBe(201);
-    const co = await res.json<any>();
+    const co = await res.json();
     expect(co).toMatchObject({ amountUsd: 99, stub: true });
     expect(co.depositAddress).toContain("STUB");
   });
@@ -170,25 +168,23 @@ describe("billing over HTTP", () => {
   it("confirm requires the admin token", async () => {
     const t = setup();
     const { cookie } = await t.signIn();
-    const co = await (await t.json("/billing/checkout", {}, { cookie })).json<any>();
+    const co = await (await t.json("/billing/checkout", {}, { cookie })).json();
     for (const auth of [undefined, "Bearer wrong", "test-admin-token"]) {
       const res = await t.json("/billing/confirm", { paymentId: co.paymentId, txHash: "x" }, { headers: auth ? { authorization: auth } : {} });
       expect(res.status).toBe(403);
     }
-    // a subscriber session is not an admin either
-    const res = await t.json("/billing/confirm", { paymentId: co.paymentId, txHash: "x" }, { cookie });
-    expect(res.status).toBe(403);
+    expect((await t.json("/billing/confirm", { paymentId: co.paymentId, txHash: "x" }, { cookie })).status).toBe(403);
+    expect((await t.json("/billing/confirm", { paymentId: 1 }, { headers: { authorization: "Bearer test-admin-token" } })).status).toBe(400);
   });
 
   it("confirm extends by one month and is idempotent", async () => {
     const t = setup();
     const { cookie } = await t.signIn();
     const { co, conf } = await t.subscribe(cookie, "tx-a");
-    expect(await conf.json<any>()).toMatchObject({ ok: true, alreadyPaid: false, currentPeriodEnd: "2026-12-02T00:00:00.000Z" });
+    expect(await conf.json()).toMatchObject({ ok: true, alreadyPaid: false, currentPeriodEnd: "2026-12-02T00:00:00.000Z" });
     const again = await t.json("/billing/confirm", { paymentId: co.paymentId, txHash: "tx-a" }, { headers: { authorization: "Bearer test-admin-token" } });
-    expect(await again.json<any>()).toMatchObject({ alreadyPaid: true, currentPeriodEnd: "2026-12-02T00:00:00.000Z" });
-    const me = await (await t.req("/api/me", { cookie })).json<any>();
-    expect(me.subscription).toEqual({ status: "active", active: true, currentPeriodEnd: "2026-12-02T00:00:00.000Z" });
+    expect(await again.json()).toMatchObject({ alreadyPaid: true, currentPeriodEnd: "2026-12-02T00:00:00.000Z" });
+    expect((await (await t.req("/api/me", { cookie })).json()).subscription).toEqual({ status: "active", active: true, currentPeriodEnd: "2026-12-02T00:00:00.000Z" });
   });
 });
 
@@ -197,20 +193,32 @@ describe("registry tokens over HTTP", () => {
     const t = setup();
     const { cookie } = await t.signIn();
     await t.subscribe(cookie);
-    const r1 = await (await t.json("/registry/token", {}, { cookie })).json<any>();
+    const r1 = await (await t.json("/registry/token", {}, { cookie })).json();
     expect(r1.token).toMatch(/^nbr_[A-Za-z0-9_-]{43}$/);
     expect(r1.expiresAt).toBe("2026-12-02T00:00:00.000Z");
     expect(r1.instructions[0]).toBe(`echo '${r1.token}' | docker login registry.nearbi.ai -u alice.near --password-stdin`);
+    expect([...t.repo.tokens.keys()]).toEqual([await hashToken(r1.token)]);
+    expect(JSON.stringify([...t.repo.tokens.values()])).not.toContain(r1.token);
 
-    const rows = (await t.ctx.DB.prepare("SELECT * FROM registry_tokens").all<Record<string, unknown>>()).results;
-    expect(rows).toHaveLength(1);
-    expect(rows[0].token_hash).toBe(await hashToken(r1.token));
-    expect(JSON.stringify(rows)).not.toContain(r1.token);
+    expect(await validateRegistryToken(t.repo, r1.token, T0)).toBe("alice.near");
+    const r2 = await (await t.json("/registry/token", {}, { cookie })).json();
+    expect(await validateRegistryToken(t.repo, r1.token, T0)).toBeNull();
+    expect(await validateRegistryToken(t.repo, r2.token, T0)).toBe("alice.near");
+    expect(await validateRegistryToken(t.repo, r2.token, T0 + 31 * 86400)).toBeNull();
+  });
+});
 
-    expect(await validateRegistryToken(t.ctx.DB, r1.token, T0)).toBe("alice.near");
-    const r2 = await (await t.json("/registry/token", {}, { cookie })).json<any>();
-    expect(await validateRegistryToken(t.ctx.DB, r1.token, T0)).toBeNull(); // revoked
-    expect(await validateRegistryToken(t.ctx.DB, r2.token, T0)).toBe("alice.near");
-    expect(await validateRegistryToken(t.ctx.DB, r2.token, T0 + 31 * 86400)).toBeNull(); // expired
+describe("misc", () => {
+  it("unknown API paths answer JSON 404, pages answer HTML 404", async () => {
+    const t = setup();
+    expect(await (await t.req("/api/nope")).json()).toEqual({ error: "not found" });
+    const page = await t.req("/nope");
+    expect(page.status).toBe(404);
+    expect(await page.text()).toContain("Not found");
+  });
+  it("/login only accepts local next paths", async () => {
+    const t = setup();
+    expect(await (await t.req("/login?next=//evil.example")).text()).toContain('value="/members"');
+    expect(await (await t.req("/login?next=/reports/x/")).text()).toContain('value="/reports/x/"');
   });
 });

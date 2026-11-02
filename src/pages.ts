@@ -1,6 +1,7 @@
 // Server-rendered HTML for the dynamic pages. Reuses /assets/site.css from the static site.
 
-import type { SubscriptionState } from "./billing/subscription";
+import type { SubscriptionState } from "./core/subscription";
+import type { ReportRecord } from "./ports/repository";
 
 export const esc = (s: unknown) =>
   String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -43,20 +44,11 @@ export function loginPage(next: string): string {
   );
 }
 
-export interface ReportListItem {
-  slug: string;
-  title: string;
-  summary: string;
-  published_at: string;
-  is_free: number;
-  pdf_file: string | null;
-}
-
 export function membersPage(p: {
   accountId: string;
   sub: SubscriptionState;
   priceUsd: number;
-  reports: ReportListItem[];
+  reports: ReportRecord[];
 }): string {
   const { sub } = p;
   const statusLine = sub.active
@@ -67,10 +59,10 @@ export function membersPage(p: {
   const subscribeLabel = sub.active ? `Add another month ($${p.priceUsd})` : `Subscribe: $${p.priceUsd}/month`;
   const rows = p.reports
     .map((r) => {
-      const locked = !r.is_free && !sub.active;
-      const pdf = r.pdf_file ? ` · <a href="/reports/${esc(r.slug)}/${esc(r.pdf_file)}">PDF</a>` : "";
-      return `<li class="card"><h3>${locked ? "🔒 " : ""}<a href="/reports/${esc(r.slug)}/">${esc(r.title)}</a>${r.is_free ? ' <span class="pill">Free</span>' : ""}</h3>
-<p>${esc(r.summary)}</p><p class="muted">${esc(r.published_at)}${locked ? "" : pdf}</p></li>`;
+      const locked = !r.isFree && !sub.active;
+      const pdf = r.pdfFile ? ` · <a href="/reports/${esc(r.slug)}/${esc(r.pdfFile)}">PDF</a>` : "";
+      return `<li class="card"><h3>${locked ? "🔒 " : ""}<a href="/reports/${esc(r.slug)}/">${esc(r.title)}</a>${r.isFree ? ' <span class="pill">Free</span>' : ""}</h3>
+<p>${esc(r.summary)}</p><p class="muted">${esc(r.publishedAt)}${locked ? "" : pdf}</p></li>`;
     })
     .join("\n");
   return layout(
