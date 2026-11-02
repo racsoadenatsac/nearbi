@@ -72,7 +72,8 @@ def execute(bq, name, sql):
     print(f"[{name}] window {window[0]}..{window[1]}  dry-run {gb:.2f} GB  ~${usd:.3f}")
     if gb > MAX_GB:
         raise GuardError(f"{name}: {gb:.2f} GB exceeds cap {MAX_GB} GB (set MAX_GB_PER_QUERY to raise)")
-    df = bq.query(sql).to_dataframe()
+    # never serve from cache: a verify must really re-execute the query
+    df = bq.query(sql, job_config=bigquery.QueryJobConfig(use_query_cache=False)).to_dataframe()
     return df, {"window": list(window), "bytes_processed": dry.total_bytes_processed}
 
 
