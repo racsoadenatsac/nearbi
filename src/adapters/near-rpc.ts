@@ -1,19 +1,13 @@
 // Checks that a public key is an access key of a NEAR account via JSON-RPC `query/view_access_key`.
 
-export type KeyCheck =
-  | { ok: true; permission: "FullAccess" | "FunctionCall" }
-  | { ok: false; reason: string };
+import type { KeyCheck, KeyCheckFn } from "../core/signin";
+
+export type { KeyCheck };
 
 export interface KeyCheckOptions {
   /** NEP-413 recommends only trusting full-access keys for sign-in. Default true. */
   requireFullAccess?: boolean;
   fetchImpl?: typeof fetch;
-}
-
-const ACCOUNT_RE = /^(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/;
-
-export function isValidAccountId(id: string): boolean {
-  return typeof id === "string" && id.length >= 2 && id.length <= 64 && ACCOUNT_RE.test(id);
 }
 
 export async function checkAccessKey(
@@ -52,4 +46,9 @@ export async function checkAccessKey(
     return { ok: false, reason: "key is not a full-access key" };
   }
   return { ok: true, permission };
+}
+
+/** KeyCheckFn bound to an RPC endpoint (full-access keys only). */
+export function rpcKeyCheck(rpcUrl: string, fetchImpl?: typeof fetch): KeyCheckFn {
+  return (accountId, publicKey) => checkAccessKey(rpcUrl, accountId, publicKey, { fetchImpl });
 }
