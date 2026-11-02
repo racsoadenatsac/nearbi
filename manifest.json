@@ -1,0 +1,50 @@
+{
+  "stage": {
+    "s1_tx_accounts": {
+      "sql_sha256": "972b365f10230bb3d78ef07379122bf45ffb236de2b5b9748c84f95af3a9c338",
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 149538772221,
+      "bytes_billed": 149539520512,
+      "rows": 84898409,
+      "executed_at": "2026-11-02T22:33:23+00:00"
+    },
+    "s2_receipt_roles": {
+      "sql_sha256": "b54a0fd46bbbfae4d026a377adc2998f3c4bfc5aacd7e4a677515a03a9899219",
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 395911746589,
+      "bytes_billed": 395911888896,
+      "rows": 877315189,
+      "executed_at": "2026-11-02T22:33:58+00:00"
+    },
+    "s3_intents_token_flows": {
+      "sql_sha256": "8b84eb2990d645a7e7f7233864b3e8655dc998a662fe636ef634d8e10355e8b8",
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 168521376885,
+      "bytes_billed": 168521891840,
+      "rows": 33187,
+      "executed_at": "2026-11-02T22:34:03+00:00"
+    },
+    "s4_nep245_sample": {
+      "sql_sha256": "90b140e5399019d623b0cad84efd3003f828befdea415e2effdaab45c8450b9b",
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 88455378373,
+      "bytes_billed": 88455774208,
+      "rows": 934270,
+      "executed_at": "2026-11-02T22:34:10+00:00"
+    }
+  },
+  "generated_at": "2026-11-02T22:34:10+00:00",
+  "dataset": "bigquery-public-data.crypto_near_mainnet_us"
+}
