@@ -6,10 +6,13 @@ KEY     ?= $(HOME)/.config/gcloud/application_default_credentials.json
 PROJECT ?= $(BQ_PROJECT)
 DOCKER_RUN = docker run --rm -e BQ_PROJECT=$(PROJECT) -v $(KEY):/secrets/gcp.json:ro
 
-.PHONY: build check run verify verify-cached charts notebook
+.PHONY: build test check stage run fetch analyze verify verify-cached charts notebook
 
 build:            ## build the image
 	mkdir -p results && { test -s manifest.json || echo "{}" > manifest.json; } && docker build -t $(IMAGE) .
+
+test: build       ## guard + runner unit tests (offline)
+	docker run --rm -v $(PWD)/tests:/work/tests:ro --entrypoint sh $(IMAGE) -c "python tests/test_guard.py && python tests/test_runner.py"
 
 check: build      ## static guard check of every query (no GCP)
 	docker run --rm $(IMAGE) check
