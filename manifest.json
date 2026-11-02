@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-11-02T12:47:34+00:00",
+  "dataset": "bigquery-public-data.crypto_near_mainnet_us",
+  "queries": {
+    "daily_active_contracts": {
+      "sql_sha256": "43f91c9450ff39c0c6c71dc24b5f0c6eea9445d9d75b82ac14c5cf13aa53de64",
+      "result_sha256": "a5c12b95012d546120af1fe137a626fe7bbc07d4ddcc616427dbb6329ca8b3ef",
+      "rows": 7,
+      "window": [
+        "2026-10-01",
+        "2026-10-07"
+      ],
+      "bytes_processed": 1289830495
+    },
+    "daily_activity": {
+      "sql_sha256": "f8ce4f37374e78076d45961ada68540418d4195c3fec7af2bdecfb66553bfb9e",
+      "result_sha256": "1035a034020ec92acdeb8b5a8549d190f2bba3cbae6795611fe3b1c65ce4edd0",
+      "rows": 7,
+      "window": [
+        "2026-10-01",
+        "2026-10-07"
+      ],
+      "bytes_processed": 199366958
+    }
+  }
+}
