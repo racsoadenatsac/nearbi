@@ -16,7 +16,8 @@ Environment:
   BQ_PROJECT                      GCP project billed for the queries
   MAX_GB_PER_QUERY                dry-run cap in GB for queries/*.sql (default 25)
   MAX_GB_PER_STAGE                dry-run cap in GB for stage/*.sql (default 500)
-  BQ_STAGE_DATASET                dataset (in BQ_PROJECT, location US) for stage tables (default rs_stage)
+  BQ_STAGE_DATASET                dataset in BQ_PROJECT for stage tables (default rs_stage); created in the
+                                  public dataset's location (us-east1 for NEAR) unless BQ_STAGE_LOCATION is set
   MAX_USD_TOTAL                   budget for everything recorded in the cost ledger (default: no cap).
                                   A step whose dry-run total would push the ledger over it is aborted
                                   before anything executes.
@@ -166,6 +167,27 @@ def read_items(bq):
     return items
 
 
+SOURCE_DATASET = "bigquery-public-data.crypto_near_mainnet_us"
+
+
+def ensure_stage_dataset(bq):
+    """Create the stage dataset in the same location as the public dataset (CTAS must not cross regions)."""
+    from google.api_core.exceptions import NotFound
+    from google.cloud import bigquery
+
+    want = os.environ.get("BQ_STAGE_LOCATION") or bq.get_dataset(SOURCE_DATASET).location
+    try:
+        have = bq.get_dataset(stage_id()).location
+    except NotFound:
+        ds = bigquery.Dataset(stage_id())
+        ds.location = want
+        bq.create_dataset(ds)
+        print(f"[stage] created dataset {stage_id()} in {want}")
+        return
+    if have.lower() != want.lower():
+        raise GuardError(f"stage dataset {stage_id()} is in {have}, but the source data is in {want}; use another BQ_STAGE_DATASET")
+
+
 def cmd_stage():
     from google.cloud import bigquery
 
@@ -174,9 +196,7 @@ def cmd_stage():
     for name, tmpl in load_queries(STAGE):
         items.append((name, render(tmpl, stage_id()), check_stage(tmpl, name)))
     tmpls = dict(load_queries(STAGE))
-    ds = bigquery.Dataset(stage_id())
-    ds.location = "US"  # must match the public NEAR dataset
-    bq.create_dataset(ds, exists_ok=True)
+    ensure_stage_dataset(bq)
     planned = plan(bq, items, MAX_GB_STAGE, "stage")
     manifest = load_manifest()
     manifest.setdefault("stage", {})
