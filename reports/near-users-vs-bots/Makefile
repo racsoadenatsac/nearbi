@@ -1,6 +1,7 @@
 IMAGE   ?= rs-repro:demo
 KEY     ?= $(HOME)/.config/gcloud/application_default_credentials.json
-PROJECT ?= triple-router-448011-f7
+# Billing project for live queries: set BQ_PROJECT in your shell, or pass PROJECT=<id>
+PROJECT ?= $(BQ_PROJECT)
 PACK     = -v $(PWD):/pack -e REPRO_ROOT=/pack
 
 .PHONY: check verify-cached verify numbers charts notebook notebook-html
