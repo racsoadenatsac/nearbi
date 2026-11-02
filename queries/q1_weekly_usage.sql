@@ -1,8 +1,12 @@
 -- name: q1_weekly_usage
 -- question: Per ISO week, how many accounts used NEAR, split by account family, and how
 --           many of them look like real users rather than automation?
--- reads: {stage}.s1_tx_accounts (tx signers) and {stage}.s2_receipt_roles (relayed end
---        users + actions on intents.near). s2 is ~60 GB, so it is read ONCE, here.
+-- reads: {stage}.s1_tx_accounts (tx signers), {stage}.s2_receipt_roles (relayed end users
+--        + actions on intents.near) and {stage}.s5_relayed_gapfill (relayed end users for
+--        the weeks before the dataset's is_delegate_action flag is populated). s2 is ~60 GB,
+--        so it is read ONCE, here.
+-- relayed source: s5 (action_kind = DELEGATE_ACTION) for weeks <= 2025-02-24, s2 (flag)
+--        from 2025-03-03; flagged_relayed_week shows what the flag alone would give.
 -- definitions (per week, per account):
 --   signer        signed >= 1 transaction
 --   relayed       was the end user of >= 1 meta-transaction (DELEGATE_ACTION receiver)
@@ -13,6 +17,7 @@
 --   new_users     users_real whose first appearance in the 104-week window is this week
 --   retained      users_real that were also active (signer or relayed) the previous week
 -- family: account-name pattern (implicit 64-hex, EVM-style 0x, *.tg = HOT, *.sweat = Sweat,
+--         *.users.kaiching = KaiChing app sub-accounts (largest relayed suffix, probe p6),
 --         other *.near, other). Families partition accounts, so totals = sum over families.
 -- fp_*: order-independent content fingerprints of the stage rows read (detects drift).
 -- window: 2024-10-28 .. 2026-10-25 (104 ISO weeks)
@@ -26,11 +31,22 @@ WITH tx AS (
          FARM_FINGERPRINT(FORMAT('%t|%s|%s|%d|%d', week, role, account_id, n_actions, active_days)) AS fp
   FROM `{stage}.s2_receipt_roles`
   WHERE week BETWEEN '2024-10-28' AND '2026-10-25'
+), s5 AS (
+  SELECT week, account_id, n_actions, active_days,
+         FARM_FINGERPRINT(FORMAT('%t|%s|%d|%d', week, account_id, n_actions, active_days)) AS fp
+  FROM `{stage}.s5_relayed_gapfill`
+  WHERE week BETWEEN '2024-10-28' AND '2025-02-24'
 ), intents AS (
-  SELECT week, SUM(n_actions) AS intents_actions, BIT_XOR(fp) AS fp_intents
-  FROM s2 WHERE role = 'intents_action' GROUP BY week
+  SELECT week,
+         SUM(IF(role = 'intents_action', n_actions, 0)) AS intents_actions,
+         COUNTIF(role = 'relayed_user')                 AS flagged_relayed,
+         BIT_XOR(fp)                                    AS fp_s2
+  FROM s2 GROUP BY week
 ), rel AS (
-  SELECT week, account_id, n_actions, active_days, fp FROM s2 WHERE role = 'relayed_user'
+  SELECT week, account_id, n_actions, active_days, fp FROM s2
+  WHERE role = 'relayed_user' AND week >= '2025-03-03'
+  UNION ALL
+  SELECT week, account_id, n_actions, active_days, fp FROM s5
 ), acct AS (
   SELECT
     week,
@@ -55,6 +71,7 @@ WITH tx AS (
       WHEN STARTS_WITH(a.account_id, '0x')                 THEN 'evm_0x'
       WHEN ENDS_WITH(a.account_id, '.tg')                  THEN 'hot_tg'
       WHEN ENDS_WITH(a.account_id, '.sweat')               THEN 'sweat'
+      WHEN REGEXP_CONTAINS(a.account_id, r'\.users\.(preprod-)?kaiching(\.near)?$') THEN 'kaiching'
       WHEN ENDS_WITH(a.account_id, '.near')                THEN 'named_near'
       ELSE 'other'
     END AS family
@@ -78,8 +95,9 @@ SELECT
   COUNTIF(n_tx_to_intents > 0 AND NOT heavy)                  AS intents_tx_signers_real,
   SUM(n_tx_to_intents)                                        AS intents_tx,
   ANY_VALUE(i.intents_actions)                                AS intents_actions_week,
+  ANY_VALUE(i.flagged_relayed)                                AS flagged_relayed_week,
   BIT_XOR(fp_tx)                                              AS fp_tx,
   BIT_XOR(fp_rel)                                             AS fp_rel,
-  ANY_VALUE(i.fp_intents)                                     AS fp_intents_week
+  ANY_VALUE(i.fp_s2)                                          AS fp_s2_week
 FROM labeled l LEFT JOIN intents i USING (week)
 GROUP BY l.week, l.family
