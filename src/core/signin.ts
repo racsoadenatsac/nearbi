@@ -1,7 +1,8 @@
-// Sign-in flow: issue a challenge, then verify the NEP-413 signed response.
+// Sign in with NEAR: challenge creation and verification of the NEP-413 signed response.
+// Framework-agnostic: storage (one-time nonces) and the on-chain key check are injected.
 
-import { base64Decode, base64Encode, randomBytes } from "../lib/encoding";
-import { checkAccessKey, isValidAccountId, type KeyCheck } from "./near-rpc";
+import { isValidAccountId } from "./account";
+import { base64Decode, base64Encode, randomBytes } from "./encoding";
 import { verifyNep413Signature } from "./nep413";
 
 export const CHALLENGE_TTL_SECONDS = 5 * 60;
@@ -10,18 +11,25 @@ export interface Challenge {
   nonce: string; // base64, 32 bytes
   message: string;
   recipient: string;
+  expiresAt: number; // unix seconds
+}
+
+export interface StoredChallenge {
+  nonce: string;
+  message: string;
   expiresAt: number;
 }
 
-export async function createChallenge(db: D1Database, recipient: string, nowSec: number): Promise<Challenge> {
-  const nonce = base64Encode(randomBytes(32));
-  const message = `Sign in to NearBI (${recipient}). This request does not cost anything and does not send a transaction.`;
-  const expiresAt = nowSec + CHALLENGE_TTL_SECONDS;
-  await db.batch([
-    db.prepare("DELETE FROM auth_nonces WHERE expires_at <= ?").bind(nowSec),
-    db.prepare("INSERT INTO auth_nonces (nonce, message, expires_at) VALUES (?, ?, ?)").bind(nonce, message, expiresAt),
-  ]);
-  return { nonce, message, recipient, expiresAt };
+export type KeyCheck = { ok: true; permission: "FullAccess" | "FunctionCall" } | { ok: false; reason: string };
+export type KeyCheckFn = (accountId: string, publicKey: string) => Promise<KeyCheck>;
+
+export function newChallenge(recipient: string, nowSec: number): Challenge {
+  return {
+    nonce: base64Encode(randomBytes(32)),
+    message: `Sign in to NearBI (${recipient}). This request does not cost anything and does not send a transaction.`,
+    recipient,
+    expiresAt: nowSec + CHALLENGE_TTL_SECONDS,
+  };
 }
 
 export interface VerifyInput {
@@ -34,17 +42,14 @@ export interface VerifyInput {
   callbackUrl?: string | null;
 }
 
-export type VerifyResult = { ok: true; accountId: string; publicKey: string } | { ok: false; status: number; error: string };
+export type VerifyResult = { ok: true; accountId: string; publicKey: string } | { ok: false; status: 400 | 401; error: string };
 
 export interface VerifyDeps {
-  db: D1Database;
   expectedRecipient: string;
   nowSec: number;
-  keyCheck: (accountId: string, publicKey: string) => Promise<KeyCheck>;
-}
-
-export function rpcKeyCheck(rpcUrl: string, fetchImpl?: typeof fetch) {
-  return (accountId: string, publicKey: string) => checkAccessKey(rpcUrl, accountId, publicKey, { fetchImpl });
+  /** Atomically delete the nonce and return what was stored for it (null if unknown or already used). */
+  consumeChallenge: (nonce: string) => Promise<StoredChallenge | null>;
+  keyCheck: KeyCheckFn;
 }
 
 export async function verifySignIn(input: Partial<VerifyInput>, deps: VerifyDeps): Promise<VerifyResult> {
@@ -52,7 +57,7 @@ export async function verifySignIn(input: Partial<VerifyInput>, deps: VerifyDeps
   if (![accountId, publicKey, signature, nonce, message, recipient].every((v) => typeof v === "string" && v.length > 0)) {
     return { ok: false, status: 400, error: "missing fields" };
   }
-  if (!isValidAccountId(accountId!)) return { ok: false, status: 400, error: "invalid accountId" };
+  if (!isValidAccountId(accountId)) return { ok: false, status: 400, error: "invalid accountId" };
   if (recipient !== deps.expectedRecipient) return { ok: false, status: 400, error: "wrong recipient" };
 
   let nonceBytes: Uint8Array;
@@ -64,13 +69,10 @@ export async function verifySignIn(input: Partial<VerifyInput>, deps: VerifyDeps
   if (nonceBytes.length !== 32) return { ok: false, status: 400, error: "nonce must be 32 bytes" };
 
   // Burn the nonce first so a captured signature can never be replayed, even concurrently.
-  const row = await deps.db
-    .prepare("DELETE FROM auth_nonces WHERE nonce = ? RETURNING message, expires_at")
-    .bind(base64Encode(nonceBytes))
-    .first<{ message: string; expires_at: number }>();
-  if (!row) return { ok: false, status: 401, error: "unknown or used nonce" };
-  if (row.expires_at <= deps.nowSec) return { ok: false, status: 401, error: "challenge expired" };
-  if (row.message !== message) return { ok: false, status: 401, error: "message does not match challenge" };
+  const stored = await deps.consumeChallenge(base64Encode(nonceBytes));
+  if (!stored) return { ok: false, status: 401, error: "unknown or used nonce" };
+  if (stored.expiresAt <= deps.nowSec) return { ok: false, status: 401, error: "challenge expired" };
+  if (stored.message !== message) return { ok: false, status: 401, error: "message does not match challenge" };
 
   // Redirect wallets pass a callbackUrl; NEP-413 puts it in the signed payload, but not every wallet
   // implementation does. The callback URL carries no authority (nonce, message and recipient do), so
@@ -82,8 +84,8 @@ export async function verifySignIn(input: Partial<VerifyInput>, deps: VerifyDeps
     (cb !== null && (await verifyNep413Signature({ ...base, callbackUrl: null }, publicKey!, signature!)));
   if (!sigOk) return { ok: false, status: 401, error: "bad signature" };
 
-  const key = await deps.keyCheck(accountId!, publicKey!);
+  const key = await deps.keyCheck(accountId, publicKey!);
   if (!key.ok) return { ok: false, status: 401, error: `key not valid for account: ${key.reason}` };
 
-  return { ok: true, accountId: accountId!, publicKey: publicKey! };
+  return { ok: true, accountId, publicKey: publicKey! };
 }

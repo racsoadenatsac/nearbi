@@ -1,6 +1,6 @@
 // Stateless session cookie: base64url(JSON payload) + "." + base64url(HMAC-SHA256(payload)).
 
-import { base64Decode, base64UrlEncode, timingSafeEqual, utf8 } from "../lib/encoding";
+import { base64Decode, base64UrlEncode, timingSafeEqual, utf8 } from "./encoding";
 
 export const SESSION_COOKIE = "nearbi_session";
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days

@@ -5,9 +5,9 @@ import {
   parseEd25519PublicKey,
   serializeNep413,
   verifyNep413Signature,
-} from "../src/auth/nep413";
-import { base58Decode, base58Encode, base64Encode, hexEncode } from "../src/lib/encoding";
-import { generateTestKey } from "./helpers/keys";
+} from "../../src/core/nep413";
+import { base58Decode, base58Encode, base64Encode, hexEncode } from "../../src/core/encoding";
+import { generateTestKey } from "../helpers/keys";
 
 const nonce = new Uint8Array(32).map((_, i) => i); // 00 01 02 ... 1f
 

@@ -5,7 +5,7 @@
 //   tag     = 2**31 + 413 = 2147484061
 //   Payload = { message: string, nonce: [u8; 32], recipient: string, callbackUrl: Option<string> }
 
-import { base58Decode, base64Decode, concatBytes, sha256, utf8, type Bytes } from "../lib/encoding";
+import { base58Decode, base64Decode, concatBytes, sha256, utf8, type Bytes } from "./encoding";
 
 export const NEP413_TAG = 2 ** 31 + 413;
 

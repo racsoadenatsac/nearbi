@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decide, parseReportPath, requiredAccess } from "../src/gating";
+import { decide, parseReportPath, reportObjectKey, requiredAccess } from "../../src/core/gating";
 
 const FREE = "near-users-vs-bots";
 const active = { status: "active" as const, active: true, currentPeriodEnd: 2 };
@@ -49,7 +49,7 @@ describe("decide", () => {
 });
 
 describe("parseReportPath", () => {
-  it("maps to R2 object keys", () => {
+  it("maps to report files", () => {
     expect(parseReportPath("/reports/x-1/")).toEqual({ slug: "x-1", file: "index.html" });
     expect(parseReportPath("/reports/x-1")).toEqual({ slug: "x-1", file: "index.html" });
     expect(parseReportPath("/reports/x-1/charts/a.png")).toEqual({ slug: "x-1", file: "charts/a.png" });
@@ -59,5 +59,15 @@ describe("parseReportPath", () => {
     expect(parseReportPath("/reports/x/%2e%2e/y")).toBeNull();
     expect(parseReportPath("/reports/X_Y/")).toBeNull();
     expect(parseReportPath("/other")).toBeNull();
+  });
+});
+
+describe("parseReportPath edge cases", () => {
+  it("returns null on malformed percent-encoding instead of throwing", () => {
+    expect(parseReportPath("/reports/%E0%A4%A/")).toBeNull();
+    expect(parseReportPath("/reports/x/%E0%A4%A.png")).toBeNull();
+  });
+  it("reportObjectKey maps into the content bucket layout", () => {
+    expect(reportObjectKey("x-1", "charts/a.png")).toBe("reports/x-1/charts/a.png");
   });
 });
