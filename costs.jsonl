@@ -7,3 +7,12 @@
 {"at": "2026-11-02T22:33:57+00:00", "step": "stage", "name": "s2_receipt_roles", "bytes_billed": 395911888896, "usd": 2.4744}
 {"at": "2026-11-02T22:34:02+00:00", "step": "stage", "name": "s3_intents_token_flows", "bytes_billed": 168521891840, "usd": 1.0533}
 {"at": "2026-11-02T22:34:10+00:00", "step": "stage", "name": "s4_nep245_sample", "bytes_billed": 88455774208, "usd": 0.5528}
+{"at": "2026-11-02T22:36:16+00:00", "step": "run", "name": "q1_weekly_usage", "bytes_billed": 65195212800, "usd": 0.4075}
+{"at": "2026-11-02T22:36:17+00:00", "step": "run", "name": "q2_intents_flows", "bytes_billed": 10485760, "usd": 0.0001}
+{"at": "2026-11-02T22:36:26+00:00", "step": "run", "name": "q3_nep245_sample", "bytes_billed": 80740352, "usd": 0.0005}
+{"at": "2026-11-02T22:36:55+00:00", "step": "probe", "name": "p6_relayed_families", "bytes_billed": 462422016, "usd": 0.0029, "note": "1% TABLESAMPLE of stage s2: which account suffixes are the relayed users"}
+{"at": "2026-11-02T22:39:50+00:00", "step": "probe", "name": "p7_delegate_coverage", "bytes_billed": 1135607808, "usd": 0.0071, "note": "2 days receipt_actions: is is_delegate_action populated before 2025-02-24 (no)"}
+{"at": "2026-11-02T22:41:56+00:00", "step": "stage", "name": "s5_relayed_gapfill", "bytes_billed": 163827417088, "usd": 1.0239}
+{"at": "2026-11-02T22:42:58+00:00", "step": "run", "name": "q1_weekly_usage", "bytes_billed": 76897320960, "usd": 0.4806}
+{"at": "2026-11-02T22:42:59+00:00", "step": "run", "name": "q2_intents_flows", "bytes_billed": 10485760, "usd": 0.0001}
+{"at": "2026-11-02T22:43:06+00:00", "step": "run", "name": "q3_nep245_sample", "bytes_billed": 80740352, "usd": 0.0005}
