@@ -23,6 +23,11 @@ RELATIVE = re.compile(
     r"\b(CURRENT_DATE|CURRENT_TIMESTAMP|CURRENT_DATETIME|NOW|SYSDATE)\b", re.IGNORECASE
 )
 DATASET_REF = re.compile(r"crypto_near_mainnet_us\.(\w+)", re.IGNORECASE)
+# queries that read only the pack's own stage tables may bound any date column (e.g. week)
+ANY_FIXED_RANGE = re.compile(
+    r"\b\w+\s+BETWEEN\s+(?:DATE\s+)?'(\d{4}-\d{2}-\d{2})'\s+AND\s+(?:DATE\s+)?'(\d{4}-\d{2}-\d{2})'",
+    re.IGNORECASE,
+)
 
 
 WRITE_DDL = re.compile(
@@ -56,6 +61,10 @@ def check(sql: str) -> tuple[str, str]:
             f"{len(tables)} dataset table reference(s) but only {len(ranges)} fixed "
             "block_date BETWEEN '<date>' AND '<date>' filter(s); every table must be bounded"
         )
+    if not ranges and not tables and "{stage}" in body:
+        ranges = ANY_FIXED_RANGE.findall(body)
+        if not ranges:
+            raise GuardError("stage-only query needs a fixed <date column> BETWEEN '<date>' AND '<date>' window")
     if not ranges:
         raise GuardError("no fixed block_date range found")
     for start, end in ranges:
