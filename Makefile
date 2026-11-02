@@ -8,13 +8,12 @@ DOCKER_RUN = docker run --rm -e BQ_PROJECT=$(PROJECT) -v $(KEY):/secrets/gcp.jso
 .PHONY: build check run verify verify-cached charts notebook
 
 build:            ## build the image
-	mkdir -p results && docker build -t $(IMAGE) .
+	mkdir -p results && { test -s manifest.json || echo "{}" > manifest.json; } && docker build -t $(IMAGE) .
 
 check: build      ## static guard check of every query (no GCP)
 	docker run --rm $(IMAGE) check
 
 run: build        ## produce results + manifest (writes back to ./results, ./manifest.json)
-	touch manifest.json
 	$(DOCKER_RUN) -v $(PWD)/results:/work/results -v $(PWD)/manifest.json:/work/manifest.json $(IMAGE) run
 
 verify: build     ## re-run queries live, compare to manifest

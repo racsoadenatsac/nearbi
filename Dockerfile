@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 COPY repro/ /work/repro/
 COPY queries/ /work/queries/
 COPY notebooks/ /work/notebooks/
-COPY manifest.json* /work/
+COPY manifest.json /work/
 COPY results/ /work/results/
 
 ENTRYPOINT ["python", "/work/repro/run.py"]
