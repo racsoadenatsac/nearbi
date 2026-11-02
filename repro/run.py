@@ -136,7 +136,17 @@ def cmd_charts():
     import matplotlib.pyplot as plt
     import pandas as pd
 
+    import style
+
+    style.apply()
     CHARTS.mkdir(exist_ok=True)
+    custom = ROOT / "charts.py"
+    if custom.exists():
+        # A report pack can ship designed charts: charts.py reads results/ and writes charts/.
+        import runpy
+
+        runpy.run_path(str(custom), run_name="__main__", init_globals={"ROOT": ROOT})
+        return
     for csv in sorted(RESULTS.glob("*.csv")):
         df = pd.read_csv(csv)
         x = df.columns[0]
