@@ -1,0 +1,38 @@
+# nearbi.ai Worker. LOCAL ONLY until the operator fills in real IDs (see README "Deploy").
+name = "nearbi-app"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+
+# Public static site (landing page + the ONE free sample report).
+# Assets are matched first; anything without a matching file falls through to the Worker.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "none"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nearbi"
+database_id = "00000000-0000-0000-0000-000000000000" # TODO(operator): `wrangler d1 create nearbi`
+migrations_dir = "migrations"
+
+# Private reports (HTML, charts, PDFs). Never public; served only through the Worker gate.
+[[r2_buckets]]
+binding = "CONTENT"
+bucket_name = "nearbi-content" # TODO(operator): `wrangler r2 bucket create nearbi-content`
+
+# KV is optional and not used yet (nonces and sessions live in D1 / signed cookies).
+# [[kv_namespaces]]
+# binding = "KV"
+# id = "TODO"
+
+[vars]
+NEAR_RPC_URL = "https://rpc.mainnet.near.org"
+MONTHLY_PRICE_USD = "49"
+AUTH_RECIPIENT = "nearbi.ai"
+REGISTRY_HOST = "registry.nearbi.ai"
+FREE_REPORT_SLUG = "near-users-vs-bots"
+
+# Secrets (set with `wrangler secret put`, or .dev.vars locally; never commit):
+#   SESSION_SECRET  HMAC key for session cookies (>= 32 random bytes)
+#   ADMIN_TOKEN     bearer token for POST /billing/confirm

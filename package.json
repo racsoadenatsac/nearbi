@@ -1,0 +1,24 @@
+{
+  "name": "nearbi-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "nearbi.ai Cloudflare Worker: public site, Sign in with NEAR, NEAR Intents subscriptions, gated reports",
+  "scripts": {
+    "dev": "wrangler dev --ip 0.0.0.0 --port 8787",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build:check": "wrangler deploy --dry-run --outdir dist"
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261102.1",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.2.0",
+    "wrangler": "^4.0.0"
+  }
+}

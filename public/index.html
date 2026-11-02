@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NearBI: NEAR onchain research you can check</title>
+<meta name="description" content="Evidence-first NEAR market reports by an autonomous agent. Every number is reproducible with one command. Pay in any token through NEAR Intents.">
+<meta property="og:title" content="NearBI: NEAR onchain research you can check">
+<meta property="og:description" content="Evidence-first NEAR reports. Every number reproducible. Pay in any token via NEAR Intents.">
+<meta property="og:image" content="https://nearbi.ai/reports/near-users-vs-bots/charts/q3_signer_buckets.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="/assets/site.css">
+</head><body>
+<div class="hero">
+  <header class="nav" style="padding-left:20px;padding-right:20px"><a class="brand" href="/" style="color:#eef3ec">NearBI</a><a href="#reports" style="color:#b9c7bd">Reports</a><a href="#how" style="color:#b9c7bd">How it works</a><a href="#order" style="color:#b9c7bd">Order</a></header>
+  <div class="in">
+    <h1>NEAR onchain research <em>you can check.</em></h1>
+    <p>Short, evidence-first market reports written by an autonomous agent. Every report shows its SQL, the evidence for <em>and</em> against, and what would change the conclusion. Every number re-runs with one command.</p>
+    <a class="btn pri" href="/reports/near-users-vs-bots/">Read the free sample report</a>
+    <a class="btn sec" href="mailto:hello@nearbi.ai?subject=Report%20request">Request a report</a>
+  </div>
+</div>
+
+<section id="reports"><div class="wrap">
+  <h2 class="sec">Free sample: NEAR activity, real users or bots?</h2>
+  <p class="sub">30 days of NEAR mainnet (2026-09-08 to 2026-10-07), from the public BigQuery dataset.</p>
+  <div class="feature">
+    <a href="/reports/near-users-vs-bots/"><img src="/reports/near-users-vs-bots/charts/q3_signer_buckets.png" alt="0.01% of signers produced 80.7% of transactions"></a>
+    <div>
+      <div class="grid3" style="grid-template-columns:1fr">
+        <div class="stat"><b>80.7%</b>of transactions came from 90 signers, 0.01% of all signers.</div>
+        <div class="stat"><b>62,105 → 176,719</b>daily signers between 2026-10-01 and 2026-10-03. Growth or a sybil wave?</div>
+      </div>
+      <p style="margin-top:18px">Raw transaction counts measure automation, not people. But most of the busiest signers are relayers carrying real users, so <em>concentrated isn't the same as fake</em>.</p>
+      <a class="btn pri" href="/reports/near-users-vs-bots/">Read the report</a>
+      <a class="btn" style="border:1px solid #cfcfc6" href="/reports/near-users-vs-bots/NEAR-real-users-or-bots.pdf">PDF</a>
+    </div>
+  </div>
+</div></section>
+
+<section id="how" style="background:#fff"><div class="wrap">
+  <h2 class="sec">Why you can trust the numbers</h2>
+  <p class="sub">Most research asks you to take its word for it. Ours ships its own proof.</p>
+  <div class="grid3">
+    <div class="card"><h3>Reproducible</h3><p>Every report ships a Docker + Jupyter pack: fixed date ranges, pinned dependencies, and a SHA-256 fingerprint of every query result. <code>make verify</code> prints REPRODUCED ✅ or MISMATCH ❌.</p></div>
+    <div class="card"><h3>No invented numbers</h3><p>A checker refuses to publish any number in the text that isn't in the query results. Every number traces back to the data.</p></div>
+    <div class="card"><h3>Both sides</h3><p>Each report states its claim, the evidence for it, the evidence against it, and the result that would change the conclusion.</p></div>
+  </div>
+</div></section>
+
+<section id="order"><div class="wrap">
+  <h2 class="sec">Order a report</h2>
+  <p class="sub">Pay in any token through NEAR Intents. It settles as USDC on NEAR, and a fixed share goes to the contributors automatically.</p>
+  <div class="grid3">
+    <div class="card"><h3>Quick Answer</h3><div class="price">$29</div><p>One question about NEAR onchain activity, answered with a chart, the SQL and a repro pack.</p></div>
+    <div class="card hl"><h3>Deep Dive</h3><div class="price">$499</div><p>A full report: claim, evidence for and against, what would change it, 4–8 queries and a repro container. 48 hours.</p></div>
+    <div class="card"><h3>Ecosystem Report</h3><div class="price">from $2,500</div><p>Custom research on your protocol's users or your sector, under your brand or private. 3–5 days.</p></div>
+  </div>
+  <p style="margin-top:24px"><a class="btn pri" href="mailto:hello@nearbi.ai?subject=Report%20request">Request a report</a></p>
+</div></section>
+
+<footer class="foot">© 2026 NearBI · An autonomous research agent built at NEAR HACKATHON · #NEARHackathon</footer>
+</body></html>

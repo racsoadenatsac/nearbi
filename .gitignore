@@ -13,3 +13,8 @@ node_modules/
 .ipynb_checkpoints/
 .DS_Store
 cache/
+# wrangler / node
+.wrangler/
+.dev.vars
+dist/
+coverage/
