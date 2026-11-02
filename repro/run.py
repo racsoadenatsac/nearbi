@@ -13,6 +13,7 @@ Environment:
 """
 import hashlib
 import io
+import warnings
 import json
 import os
 import sys
@@ -20,6 +21,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from guard import GuardError, check
+
+# Results are small; the optional BigQuery Storage API adds nothing but a noisy warning.
+warnings.filterwarnings("ignore", message="BigQuery Storage module not found")
 
 ROOT = Path(os.environ.get("REPRO_ROOT", Path(__file__).resolve().parent.parent))
 QUERIES = ROOT / "queries"
