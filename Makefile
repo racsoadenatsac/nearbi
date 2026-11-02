@@ -2,7 +2,8 @@ IMAGE   ?= rs-repro:demo
 # Any Google credential JSON works: a service-account key, or the user login
 # created by `gcloud auth application-default login` (the default below).
 KEY     ?= $(HOME)/.config/gcloud/application_default_credentials.json
-PROJECT ?= triple-router-448011-f7
+# Billing project for live queries: set BQ_PROJECT in your shell, or pass PROJECT=<id>
+PROJECT ?= $(BQ_PROJECT)
 DOCKER_RUN = docker run --rm -e BQ_PROJECT=$(PROJECT) -v $(KEY):/secrets/gcp.json:ro
 
 .PHONY: build check run verify verify-cached charts notebook
