@@ -8,7 +8,8 @@ as window length or bucket thresholds).
 Skipped: fenced code blocks, inline `code`, ISO dates, the "## Reproduce" and
 "## Queries" sections, and the front matter itself.
 
-Usage: python check_numbers.py <report-pack-dir>
+Usage: python check_numbers.py <report-pack-dir> [REPORT.md]
+       (the optional second argument names the document, e.g. THESIS.md)
 Exit 0 = every number traced; 1 = untraced numbers listed.
 """
 import csv
@@ -69,8 +70,8 @@ def params(text: str):
     return {norm(p.strip()) for p in m.group(1).split(",")} if m else set()
 
 
-def main(pack: Path) -> int:
-    text = (pack / "REPORT.md").read_text()
+def main(pack: Path, doc: str = "REPORT.md") -> int:
+    text = (pack / doc).read_text()
     allowed = known_values(pack) | params(text)
     bad = []
     checked = 0
@@ -87,4 +88,4 @@ def main(pack: Path) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(Path(sys.argv[1])))
+    sys.exit(main(Path(sys.argv[1]), *(sys.argv[2:3])))
