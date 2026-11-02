@@ -77,6 +77,26 @@ def test_analyze_and_verify_cached_roundtrip():
             assert e.code == 1
 
 
+def test_stage_reuse_rules():
+    with tempfile.TemporaryDirectory() as d:
+        run = fresh_runner(Path(d))
+        from google.api_core.exceptions import NotFound
+
+        class BQ:
+            def __init__(self, exists): self.exists = exists
+            def get_table(self, ref):
+                if not self.exists: raise NotFound(ref)
+        q = "CREATE OR REPLACE TABLE `{stage}.s1` AS SELECT 1"
+        rec = {"sql_sha256": run.sha256(q.encode())}
+        assert run.stage_is_current(BQ(True), rec, q, "s1")              # unchanged + exists: reuse
+        assert not run.stage_is_current(BQ(False), rec, q, "s1")         # table gone: re-scan
+        assert not run.stage_is_current(BQ(True), rec, q + " ", "s1")    # query edited: re-scan
+        assert not run.stage_is_current(BQ(True), None, q, "s1")         # never ran: scan
+        os.environ["STAGE_FORCE"] = "1"
+        assert not run.stage_is_current(BQ(True), rec, q, "s1")          # forced
+        os.environ.pop("STAGE_FORCE")
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in list(globals().items()):

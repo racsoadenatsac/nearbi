@@ -23,6 +23,7 @@ Environment:
                                   before anything executes.
   COST_LEDGER                     cost ledger path (default $REPRO_ROOT/costs.jsonl)
   VERIFY_STAGE=1                  make `verify` also re-run the (expensive) stage queries
+  STAGE_FORCE=1                   re-scan stage tables even when their query text is unchanged
 """
 import hashlib
 import io
@@ -188,18 +189,38 @@ def ensure_stage_dataset(bq):
         raise GuardError(f"stage dataset {stage_id()} is in {have}, but the source data is in {want}; use another BQ_STAGE_DATASET")
 
 
+def stage_is_current(bq, rec, tmpl, name) -> bool:
+    """A stage table is reused when its query text is unchanged and the table still exists."""
+    if os.environ.get("STAGE_FORCE") == "1" or not rec or rec.get("sql_sha256") != sha256(tmpl.encode()):
+        return False
+    from google.api_core.exceptions import NotFound
+
+    try:
+        bq.get_table(f"{stage_id()}.{name}")
+        return True
+    except NotFound:
+        return False
+
+
 def cmd_stage():
     from google.cloud import bigquery
 
     bq = client()
-    items = []
-    for name, tmpl in load_queries(STAGE):
-        items.append((name, render(tmpl, stage_id()), check_stage(tmpl, name)))
     tmpls = dict(load_queries(STAGE))
-    ensure_stage_dataset(bq)
-    planned = plan(bq, items, MAX_GB_STAGE, "stage")
     manifest = load_manifest()
     manifest.setdefault("stage", {})
+    ensure_stage_dataset(bq)
+    items = []
+    for name, tmpl in tmpls.items():
+        window = check_stage(tmpl, name)
+        if stage_is_current(bq, manifest["stage"].get(name), tmpl, name):
+            print(f"[{name}] up to date (same query text, table exists): skipped; STAGE_FORCE=1 to re-scan")
+            continue
+        items.append((name, render(tmpl, stage_id()), window))
+    if not items:
+        print("[stage] nothing to do")
+        return
+    planned = plan(bq, items, MAX_GB_STAGE, "stage")
     for name, sql, window, nbytes in planned:
         job = execute(bq, name, sql, "stage")
         table = bq.get_table(f"{stage_id()}.{name}")
@@ -336,6 +357,7 @@ def cmd_verify(cached: bool):
             info = f"{rec['rows']} rows, {rec['bytes_billed'] / 1e9:.1f} GB, ran {rec['executed_at']}" if rec else "not in manifest"
             print(f"{mark} {name}: query text matches manifest ({info})")
         if not cached and os.environ.get("VERIFY_STAGE") == "1":
+            os.environ["STAGE_FORCE"] = "1"
             cmd_stage()
         else:
             print("   (stage tables are not re-scanned; their content is pinned by the fingerprint query, if any)")
