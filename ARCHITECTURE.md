@@ -1,6 +1,6 @@
 # Architecture v1: One-Agent Research Shop
 
-Status: DRAFT, awaiting the operator's OK. NEAR Hackathon, Tracks 04 (Business) and 02 (Thesis). Deadline: 14 Nov 2026 23:59 UTC.
+Status: APPROVED by the operator, 2026-11-02. Pricing, split and accounts are still open (section 5). NEAR Hackathon, Tracks 04 (Business) and 02 (Thesis). Deadline: 14 Nov 2026 23:59 UTC.
 
 ## 1. What it does
 
