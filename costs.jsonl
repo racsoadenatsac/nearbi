@@ -1,0 +1,9 @@
+{"at": "2026-11-02T22:23:46+00:00", "step": "probe", "name": "p1_delegate_semantics", "bytes_billed": 2186280960, "usd": 0.0137, "note": "1 day receipt_actions: how DELEGATE_ACTION rows are recorded"}
+{"at": "2026-11-02T22:23:48+00:00", "step": "probe", "name": "p2_intents_ft_shape", "bytes_billed": 96468992, "usd": 0.0006, "note": "1 day ft_events touching intents.near"}
+{"at": "2026-11-02T22:23:50+00:00", "step": "probe", "name": "p3_ft_standards", "bytes_billed": 41943040, "usd": 0.0003, "note": "1 day ft_events: which token standards appear (nep141 only)"}
+{"at": "2026-11-02T22:25:29+00:00", "step": "probe", "name": "p4_nep245_logs", "bytes_billed": 2085617664, "usd": 0.013, "note": "1 day execution_outcomes logs of intents.near: NEP-245 present?"}
+{"at": "2026-11-02T22:25:31+00:00", "step": "probe", "name": "p5_intents_token_list", "bytes_billed": 12689866752, "usd": 0.0793, "note": "24 sampled days: which token contracts move through intents.near"}
+{"at": "2026-11-02T22:33:22+00:00", "step": "stage", "name": "s1_tx_accounts", "bytes_billed": 149539520512, "usd": 0.9346}
+{"at": "2026-11-02T22:33:57+00:00", "step": "stage", "name": "s2_receipt_roles", "bytes_billed": 395911888896, "usd": 2.4744}
+{"at": "2026-11-02T22:34:02+00:00", "step": "stage", "name": "s3_intents_token_flows", "bytes_billed": 168521891840, "usd": 1.0533}
+{"at": "2026-11-02T22:34:10+00:00", "step": "stage", "name": "s4_nep245_sample", "bytes_billed": 88455774208, "usd": 0.5528}
