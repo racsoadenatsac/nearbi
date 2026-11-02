@@ -62,3 +62,24 @@ resource "aws_route53_record" "site_alias" {
     evaluate_target_health = false
   }
 }
+
+# Google Workspace mail for @nearbi.ai, copied from the Namecheap zone before the
+# nameserver switch so email keeps working.
+resource "aws_route53_record" "mx" {
+  zone_id = aws_route53_zone.main.zone_id
+  name    = "nearbi.ai"
+  type    = "MX"
+  ttl     = 3600
+  records = ["1 smtp.google.com."]
+}
+
+resource "aws_route53_record" "apex_txt" {
+  zone_id = aws_route53_zone.main.zone_id
+  name    = "nearbi.ai"
+  type    = "TXT"
+  ttl     = 3600
+  records = [
+    "v=spf1 include:_spf.google.com ~all",
+    "google-site-verification=x3VeclehTY0_-vRdrtbQUkYTZbK4oyho9trH-xnWso8",
+  ]
+}
