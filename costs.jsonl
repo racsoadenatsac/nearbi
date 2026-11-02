@@ -16,3 +16,6 @@
 {"at": "2026-11-02T22:42:58+00:00", "step": "run", "name": "q1_weekly_usage", "bytes_billed": 76897320960, "usd": 0.4806}
 {"at": "2026-11-02T22:42:59+00:00", "step": "run", "name": "q2_intents_flows", "bytes_billed": 10485760, "usd": 0.0001}
 {"at": "2026-11-02T22:43:06+00:00", "step": "run", "name": "q3_nep245_sample", "bytes_billed": 80740352, "usd": 0.0005}
+{"at": "2026-11-02T22:48:38+00:00", "step": "verify", "name": "q1_weekly_usage", "bytes_billed": 76897320960, "usd": 0.4806}
+{"at": "2026-11-02T22:48:39+00:00", "step": "verify", "name": "q2_intents_flows", "bytes_billed": 10485760, "usd": 0.0001}
+{"at": "2026-11-02T22:48:46+00:00", "step": "verify", "name": "q3_nep245_sample", "bytes_billed": 80740352, "usd": 0.0005}

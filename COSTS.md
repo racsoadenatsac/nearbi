@@ -22,14 +22,18 @@ BigQuery on-demand, billed to the operator's project at $6.25/TB. Budget: **$8**
 | 16 | 2026-11-02 22:42 | run | `q1_weekly_usage` | 76.90 | 0.4806 | 7.0446 |  |
 | 17 | 2026-11-02 22:42 | run | `q2_intents_flows` | 0.01 | 0.0001 | 7.0447 |  |
 | 18 | 2026-11-02 22:43 | run | `q3_nep245_sample` | 0.08 | 0.0005 | 7.0452 |  |
+| 19 | 2026-11-02 22:48 | verify | `q1_weekly_usage` | 76.90 | 0.4806 | 7.5258 |  |
+| 20 | 2026-11-02 22:48 | verify | `q2_intents_flows` | 0.01 | 0.0001 | 7.5259 |  |
+| 21 | 2026-11-02 22:48 | verify | `q3_nep245_sample` | 0.08 | 0.0005 | 7.5264 |  |
 
-**Total: 1,127.2 GB billed = $7.05 of $8 (88% of budget).**
+**Total: 1,204.2 GB billed = $7.53 of $8 (94% of budget).**
 
 | step | USD |
 |---|---:|
 | probe | 0.1169 |
 | stage | 6.0391 |
 | run | 0.8892 |
+| verify | 0.4812 |
 
 Steps: `probe` = one-off exploratory queries (SQL in `probes/`), `stage` = heavy raw scans run once into small tables, `run` = weekly aggregates read from the stage tables, `verify` = live re-run of the aggregates.
 Not billed: dry runs, table metadata reads, the Binance price fetch, analysis and charts.
