@@ -1,0 +1,8 @@
+{
+  "description": "NEAR/USDT weekly candles (Monday 00:00 UTC open = ISO week), 104 closed weeks 2024-10-28 .. 2026-10-25. Binance public klines API, no key. Fallback: CoinGecko public market_chart/range (daily NEAR/USD; weekly close = last daily price of each ISO week). The source actually used is recorded in manifest.json.",
+  "sources": [
+    {"label": "binance", "url": "https://api.binance.com/api/v3/klines?symbol=NEARUSDT&interval=1w&startTime=1730073600000&endTime=1792972799999&limit=1000"},
+    {"label": "binance-data", "url": "https://data-api.binance.vision/api/v3/klines?symbol=NEARUSDT&interval=1w&startTime=1730073600000&endTime=1792972799999&limit=1000"},
+    {"label": "coingecko", "url": "https://api.coingecko.com/api/v3/coins/near/market_chart/range?vs_currency=usd&from=1730073600&to=1792972800"}
+  ]
+}
