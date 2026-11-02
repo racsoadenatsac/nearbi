@@ -1,0 +1,2 @@
+action_kind,is_delegate_action,signer_is_pred,n,signers,preds,ex_signer,ex_pred,ex_recv
+DELEGATE_ACTION,True,True,240523,22,22,sweat-relayer.near,sweat-relayer.near,164072872e337841c1c56d2be8d6289935e50021a133299f9ace0b01ba5c060f

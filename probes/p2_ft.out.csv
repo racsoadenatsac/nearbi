@@ -1,0 +1,4 @@
+standard,cause,c_int,a_int,i_int,n,ex_c,ex_tok,ex_aff
+nep141,ft_transfer,False,True,False,28377,token.sweat,near,intents.near
+nep141,ft_transfer,False,False,True,28377,token.sweat,near,0044efdb7f4eee87a68900f3e175fd70abc5f8c3d7b9464cecca2bbdf302dad0
+nep141,ft_burn,False,True,,11433,eth-0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48.omft.near,near,intents.near
