@@ -22,7 +22,7 @@ variable "cert_validated" {
     ACM cert, and the apex/www A/AAAA alias records. While false, CloudFront uses *.cloudfront.net.
   EOT
   type        = bool
-  default     = false
+  default     = true # cert ISSUED 2026-11-02, domain live
 }
 
 variable "site_bucket_name" {
