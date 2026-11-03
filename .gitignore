@@ -3,13 +3,12 @@
 .env.*
 *.key
 *credentials*.json
-*service-account*.json
 secrets/
-# build/runtime
+# build output and caches (data/ledger.jsonl IS committed: the append-only snapshot)
+out/
+data/cache/
+.tools/
 __pycache__/
 *.pyc
 .venv/
-node_modules/
-.ipynb_checkpoints/
 .DS_Store
-cache/
