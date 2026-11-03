@@ -56,10 +56,14 @@ async function signWith(selector, walletId) {
   sessionStorage.setItem(PENDING_KEY, JSON.stringify({ challenge, callbackUrl }));
   setStatus("Waiting for your wallet…");
   const wallet = await selector.wallet(walletId);
+  // wallet-selector validates the nonce with Buffer.isBuffer(), so a plain Uint8Array is rejected
+  // ("Invalid nonce. It must be a Buffer with a length of 32 bytes"). Use the browser Buffer polyfill.
+  const { Buffer } = await import("https://esm.sh/node/buffer.mjs");
+  if (!globalThis.Buffer) globalThis.Buffer = Buffer;
   const signed = await wallet.signMessage({
     message: challenge.message,
     recipient: challenge.recipient,
-    nonce: b64ToBytes(challenge.nonce),
+    nonce: Buffer.from(b64ToBytes(challenge.nonce)),
     callbackUrl,
   });
   // Injected/popup wallets resolve here; redirect wallets navigate away and come back via resumeRedirect().
