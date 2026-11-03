@@ -9,15 +9,17 @@ RPC="${NEAR_TESTNET_RPC:-https://rpc.testnet.fastnear.com}"
 EXPLORER="https://testnet.nearblocks.io/txns"
 CREDS="$HOME/.near-credentials/$NETWORK"
 # public deployment record (no keys) -- committed
-DEPLOY_JSON="$ROOT/deploy/testnet.json"
+DEPLOY_JSON="${NEARBI_DEPLOY_JSON:-$ROOT/deploy/testnet.json}"
 
 AGENT="${NEARBI_AGENT:-nearbi-agent.testnet}"
-SPLITTER="splitter.$AGENT"
+# NEARBI_SPLITTER / NEARBI_FORWARDER: deploy side by side (e.g. splitter-v2.<agent>) without
+# touching the v1 contracts; pair with NEARBI_DEPLOY_JSON=deploy/testnet-v2.json.
+SPLITTER="${NEARBI_SPLITTER:-splitter.$AGENT}"
 TREASURY="treasury.$AGENT"
 CONTRIBUTORS="contributors.$AGENT"
 TOKEN="usdc-mock.$AGENT"
 # settlement forwarder (1Click delivers here) and the simulated 1Click sender
-FORWARDER="forwarder.$AGENT"
+FORWARDER="${NEARBI_FORWARDER:-forwarder.$AGENT}"
 ONECLICK_SIM="oneclick-sim.$AGENT"
 # where the agent's function-call keys live (outside the repo, chmod 600)
 FC_KEY_FILE="${NEARBI_FC_KEY_FILE:-$HOME/.near-credentials/nearbi-fc/$SPLITTER.fc.json}"
@@ -28,7 +30,7 @@ require_testnet() {
     case "$a" in *.testnet) ;; *) echo "refusing non-testnet account: $a" >&2; exit 1 ;; esac
   done
 }
-require_testnet "$AGENT"
+require_testnet "$AGENT" "$SPLITTER" "$FORWARDER"
 
 [ -x "$NEAR" ] || "$ROOT/bin/fetch-near-cli.sh"
 
