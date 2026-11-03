@@ -6,6 +6,8 @@
 //! Setup mirrors testnet: the agent's function-call key lives on the forwarder
 //! account itself (agent = forwarder account), limited to `[forward]`; the
 //! owner is a separate full-access account.
+mod common;
+
 use near_workspaces::network::Sandbox;
 use near_workspaces::result::ExecutionFinalResult;
 use near_workspaces::types::{AccessKey, Gas, KeyType, NearToken, SecretKey};
@@ -94,7 +96,7 @@ async fn deploy_splitter(owner: &Account, name: &str, token: &AccountId, treasur
 }
 
 async fn setup_with_delay(delay_sec: u64) -> anyhow::Result<Env> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = common::sandbox().await?;
     let root = worker.root_account()?;
     let owner = sub(&root, "owner", 200).await?;
     let token = deploy_token(&owner, "usdc").await?;

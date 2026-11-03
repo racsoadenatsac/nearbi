@@ -9,8 +9,8 @@ license = "MIT"
 repository = "https://github.com/racsoadenatsac/rs-payments"
 
 [workspace.dependencies]
-near-sdk = "=5.30.0"
-near-contract-standards = "=5.30.0"
+near-sdk = "=5.29.1"
+near-contract-standards = "=5.29.1"
 
 [profile.release]
 codegen-units = 1
