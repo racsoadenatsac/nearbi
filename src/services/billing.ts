@@ -181,6 +181,8 @@ export async function createCheckout(d: BillingDeps, i: CheckoutInput): Promise<
     intentsStatus: null,
     checkedAt: null,
     settlementTx: null,
+    settledAmountOut: null,
+    forwardedTx: null,
   };
   await d.repo.createPayment(pay);
   return view(pay, origin, await d.intents.findToken(q.destinationAsset), { dry });
@@ -201,47 +203,142 @@ export type StatusResult = { ok: true; view: PaymentView } | { ok: false; status
  * the subscription exactly once (confirmPayment is idempotent and the claim key is per deposit address).
  */
 export async function pollPaymentStatus(d: BillingDeps, paymentId: string, accountId: string, nowSec: number): Promise<StatusResult> {
-  let pay = await d.repo.getPayment(paymentId);
+  const pay = await d.repo.getPayment(paymentId);
   if (!pay || pay.accountId !== accountId) return { ok: false, status: 404, error: "payment not found" };
-  const origin = await d.intents.findToken(pay.token).catch(() => null);
-  const settlement = pay.destinationAsset ? await d.intents.findToken(pay.destinationAsset).catch(() => null) : null;
-  const asView = (p: PaymentRecord, extra: { stale?: boolean; label?: string } = {}) => view(p, origin, settlement, { dry: p.mode === "dry", ...extra });
+  const r = await refreshPayment(d, pay, nowSec);
+  const origin = await d.intents.findToken(r.pay.token).catch(() => null);
+  const settlement = r.pay.destinationAsset ? await d.intents.findToken(r.pay.destinationAsset).catch(() => null) : null;
+  return { ok: true, view: await view(r.pay, origin, settlement, { dry: r.pay.mode === "dry", stale: r.stale, label: r.label }) };
+}
 
-  if (pay.mode !== "live" || !pay.depositAddress) return { ok: true, view: await asView(pay) }; // dry preview / legacy stub
-  if (TERMINAL.includes(pay.status)) return { ok: true, view: await asView(pay) };
-  if (pay.checkedAt !== null && nowSec - pay.checkedAt < MIN_CHECK_INTERVAL) return { ok: true, view: await asView(pay) };
+export interface RefreshResult {
+  pay: PaymentRecord;
+  /** 1Click was asked on this call (false: dry/stub, terminal or throttled). */
+  checked: boolean;
+  stale?: boolean;
+  label?: string;
+}
+
+/**
+ * One status check of a live payment against 1Click, shared by the checkout page's poller and the
+ * scheduled sweep. Never trusts the caller: the 1Click payload must match the stored quote, and SUCCESS
+ * goes through confirmPayment's once-only claim.
+ */
+export async function refreshPayment(d: BillingDeps, pay: PaymentRecord, nowSec: number): Promise<RefreshResult> {
+  if (pay.mode !== "live" || !pay.depositAddress) return { pay, checked: false }; // dry preview / legacy stub
+  if (TERMINAL.includes(pay.status)) return { pay, checked: false };
+  if (pay.checkedAt !== null && nowSec - pay.checkedAt < MIN_CHECK_INTERVAL) return { pay, checked: false };
 
   let st: OneClickStatusResponse | null = null;
   try {
     st = await d.intents.status(pay.depositAddress, pay.depositMemo);
   } catch (e) {
     if (!(e instanceof OneClickHttpError && e.status === 404)) {
-      console.warn(`1click status ${paymentId}: ${(e as Error).message}`);
-      return { ok: true, view: await asView(pay, { stale: true }) };
+      console.warn(`1click status ${pay.id}: ${(e as Error).message}`);
+      return { pay, checked: true, stale: true };
     }
     // 404: 1Click doesn't know the address (yet). Treat like PENDING_DEPOSIT.
   }
   const raw = st?.status ?? "PENDING_DEPOSIT";
 
   if (st && !matchesOurQuote(st, pay, raw)) {
-    console.error(`1click status ${paymentId}: response does not match the stored quote; not confirming`);
+    console.error(`1click status ${pay.id}: response does not match the stored quote; not confirming`);
     await d.repo.updatePaymentStatus(pay.id, [pay.status], { status: pay.status as Exclude<PaymentStatus, "paid">, intentsStatus: `MISMATCH:${raw}`, checkedAt: nowSec });
-    return { ok: true, view: await asView({ ...pay, intentsStatus: `MISMATCH:${raw}` }, { label: "Payment state could not be verified; support has been notified" }) };
+    return { pay: { ...pay, intentsStatus: `MISMATCH:${raw}` }, checked: true, label: "Payment state could not be verified; support has been notified" };
   }
 
   const mapped = mapOneClickStatus(raw);
   if (mapped?.status === "paid") {
     const settlementTx = st?.swapDetails.destinationChainTxHashes[0]?.hash ?? st?.swapDetails.nearTxHashes.at(-1) ?? null;
-    await d.repo.updatePaymentStatus(pay.id, PAYABLE_STATUSES, { status: pay.status as Exclude<PaymentStatus, "paid">, intentsStatus: raw, checkedAt: nowSec, settlementTx });
+    const out = st?.swapDetails.amountOut;
+    const settledAmountOut = out && /^\d+$/.test(out) ? out : null;
+    await d.repo.updatePaymentStatus(pay.id, PAYABLE_STATUSES, {
+      status: pay.status as Exclude<PaymentStatus, "paid">,
+      intentsStatus: raw,
+      checkedAt: nowSec,
+      settlementTx,
+      settledAmountOut,
+    });
+    // Plain ft_transfer delivery lands in the settlement account (the forwarder contract); queue it for
+    // the forwarding agent BEFORE extending the subscription, so a paid payment is never left unqueued.
+    if (d.config.delivery === "transfer" && pay.recipient && pay.destinationAsset) {
+      await d.repo.enqueueForward({
+        paymentId: pay.id,
+        amount: settledAmountOut,
+        recipient: pay.recipient,
+        destinationAsset: pay.destinationAsset,
+        depositAddress: pay.depositAddress,
+        settlementTx,
+        enqueuedAt: nowSec,
+      });
+    }
     const r = await confirmPayment(d.repo, pay.id, `1click:${pay.depositAddress}`, nowSec);
-    if (!r.ok) console.error(`1click SUCCESS for ${paymentId} but confirm failed: ${r.error}`);
+    if (!r.ok) console.error(`1click SUCCESS for ${pay.id} but confirm failed: ${r.error}`);
   } else {
     let next: Exclude<PaymentStatus, "paid"> = mapped ? (mapped.status as Exclude<PaymentStatus, "paid">) : (pay.status as Exclude<PaymentStatus, "paid">);
     if (next === "pending" && pay.deadline !== null && nowSec > pay.deadline + EXPIRY_GRACE) next = "expired";
     await d.repo.updatePaymentStatus(pay.id, PAYABLE_STATUSES, { status: next, intentsStatus: raw, checkedAt: nowSec });
   }
-  pay = (await d.repo.getPayment(paymentId))!;
-  return { ok: true, view: await asView(pay) };
+  return { pay: (await d.repo.getPayment(pay.id))!, checked: true };
+}
+
+// ------------------------------------------------------------------------------- scheduled sweep
+
+/** Expired payments stay watched this long past their deadline, so a late SUCCESS still confirms. */
+export const LATE_SUCCESS_WINDOW = 24 * 3600;
+
+export interface SweepResult {
+  open: number;
+  checked: number;
+  closed: number;
+  paid: number;
+  errors: number;
+  /** Stopped early because the time budget ran out; the rest is picked up next run. */
+  truncated: boolean;
+}
+
+/**
+ * Background confirmation (EventBridge Scheduler -> Lambda, every minute): check every open live payment
+ * against 1Click so payments confirm even if nobody keeps the checkout page open. Idempotent and safe to
+ * run concurrently with the page's poller (same refreshPayment, same once-only confirm).
+ */
+export async function sweepOpenPayments(
+  d: BillingDeps,
+  nowSec: number,
+  opts: { limit?: number; budgetMs?: number; clock?: () => number } = {},
+): Promise<SweepResult> {
+  const clock = opts.clock ?? Date.now;
+  const started = clock();
+  const budget = opts.budgetMs ?? 7000;
+  const refs = await d.repo.listOpenPayments(opts.limit ?? 100);
+  const res: SweepResult = { open: refs.length, checked: 0, closed: 0, paid: 0, errors: 0, truncated: false };
+  for (const ref of refs) {
+    if (clock() - started > budget) {
+      res.truncated = true;
+      break;
+    }
+    try {
+      const pay = await d.repo.getPayment(ref.paymentId);
+      if (!pay || pay.mode !== "live" || !pay.depositAddress) {
+        await d.repo.closeOpenPayment(ref.paymentId);
+        res.closed++;
+        continue;
+      }
+      const before = pay.status;
+      const r = await refreshPayment(d, pay, nowSec);
+      if (r.checked && !r.stale) res.checked++;
+      if (r.pay.status === "paid" && before !== "paid") res.paid++;
+      const lateWindowOver = r.pay.status === "expired" && r.pay.deadline !== null && nowSec > r.pay.deadline + LATE_SUCCESS_WINDOW;
+      if (TERMINAL.includes(r.pay.status) || lateWindowOver) {
+        await d.repo.closeOpenPayment(ref.paymentId);
+        res.closed++;
+      }
+    } catch (e) {
+      res.errors++;
+      console.error(`sweep ${ref.paymentId}: ${(e as Error).message}`);
+    }
+  }
+  return res;
 }
 
 /** The status 1Click returns embeds the original quote; make sure it is the one we issued and stored. */
