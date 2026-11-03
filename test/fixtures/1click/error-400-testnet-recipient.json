@@ -1,0 +1,9 @@
+{
+  "status": 400,
+  "body": {
+    "message": "Internal server error",
+    "correlationId": "b427fe12-9754-488e-9a1b-4165337768c5",
+    "timestamp": "2026-11-03T02:54:12.860Z",
+    "path": "/v0/quote"
+  }
+}
