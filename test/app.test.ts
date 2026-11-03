@@ -78,6 +78,17 @@ describe("gating over HTTP", () => {
     expect((await noStatic.req("/reports/near-users-vs-bots/")).status).toBe(404);
   });
 
+  it("the free thesis is public too and points at the static site", async () => {
+    for (const p of ["/reports/near-thesis/", "/reports/near-thesis/dashboard/", "/reports/near-thesis/NEAR-thesis-intents-vs-real-usage.pdf"]) {
+      const res = await t.req(p);
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe(`https://static.nearbi.ai${p}`);
+    }
+    const res = await t.req("/reports/near-thesis");
+    expect(res.status).toBe(301);
+    expect(res.headers.get("location")).toBe("/reports/near-thesis/");
+  });
+
   it("anonymous visitors are redirected to /login for gated reports and /members", async () => {
     for (const p of ["/reports/near-defi-flows/", "/reports/near-defi-flows/report.pdf", "/members", "/members/container"]) {
       const res = await t.req(p);

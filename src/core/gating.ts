@@ -28,14 +28,18 @@ export function parseReportPath(pathname: string): { slug: string; file: string 
   return { slug, file: parts.length ? parts.join("/") : "index.html" };
 }
 
-export function requiredAccess(pathname: string, freeSlug: string): Access {
+/** Free (public) report slugs: served from the static site, never gated. */
+export const DEFAULT_FREE_REPORT_SLUGS = ["near-users-vs-bots", "near-thesis"] as const;
+
+export function requiredAccess(pathname: string, freeSlugs: string | readonly string[]): Access {
+  const free: readonly string[] = typeof freeSlugs === "string" ? [freeSlugs] : freeSlugs;
   if (pathname === "/members" || pathname === "/members/") return "session";
   if (pathname.startsWith("/members/")) return "subscriber";
   if (pathname === "/registry/token") return "subscriber";
   if (pathname === "/billing/checkout" || pathname === "/auth/logout") return "session";
   if (pathname === "/reports" || pathname.startsWith("/reports/")) {
     const r = parseReportPath(pathname);
-    if (r && r.slug === freeSlug) return "public";
+    if (r && free.includes(r.slug)) return "public";
     return "subscriber"; // unknown/invalid report paths are still gated: never leak what exists
   }
   return "public";
