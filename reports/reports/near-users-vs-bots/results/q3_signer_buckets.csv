@@ -1,0 +1,6 @@
+bucket,signers,tx,pct_signers,pct_tx
+1_light (<2/day),795727,2252049,93.03,8.9
+2_regular (2-10/day),51743,850772,6.05,3.4
+3_heavy (10-100/day),7510,747523,0.88,2.9
+4_automated (100-1000/day),266,1051297,0.03,4.1
+5_industrial (1000+/day),90,20446122,0.01,80.7

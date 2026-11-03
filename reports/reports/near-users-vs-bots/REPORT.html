@@ -1,0 +1,85 @@
+<!doctype html><html><head><meta charset='utf-8'><style>
+@page { size: A4; margin: 16mm 15mm 18mm; }
+body { font: 10.5pt/1.5 -apple-system, 'Helvetica Neue', Arial, sans-serif; color:#1b1b1b; }
+h1 { font-size: 22pt; margin: 0 0 4pt; } h2 { font-size: 13.5pt; margin: 16pt 0 6pt; border-bottom: 1.5px solid #00b37a; padding-bottom: 2pt; }
+em:first-child { color:#555; }
+code { font: 9pt Menlo, monospace; background:#f2f2ee; padding: 0 2px; border-radius: 3px; }
+pre { background:#f2f2ee; padding: 8px 10px; border-radius: 5px; } pre code { background:none; }
+table { border-collapse: collapse; width: 100%; font-size: 9.5pt; } td, th { border: 1px solid #ddd; padding: 4px 6px; vertical-align: top; }
+img { width: 100%; } li { margin-bottom: 4pt; }
+.brand { color:#00b37a; font-weight:700; letter-spacing:.06em; font-size:9pt; }
+.hash td { font: 8pt Menlo, monospace; word-break: break-all; }
+h2, table, img { break-inside: avoid; } h2 { break-after: avoid; }
+</style></head><body><div class='brand'>RESEARCH SHOP · BUILT AT NEAR HACKATHON</div><h1>NEAR activity: real users or bots?</h1>
+<p><em>Research Shop sample report · Window 2026-09-08 to 2026-10-07 (30 days) · Every number below comes from the query results in this pack and can be re-run with <code>make verify</code>.</em></p>
+<h2>Claim</h2>
+<p><strong>NEAR's raw transaction count measures automation, not people.</strong> A tiny set of signers produces the large majority of transactions. Most of them are relayers and infrastructure accounts that sign on behalf of many end users, so this is evidence of concentration, not proof of fake activity. <strong>Distinct signers is the better measure of users, and it moved sharply in early October.</strong></p>
+<h2>Evidence for</h2>
+<ol>
+<li><strong>Over the 30 days, 90 signers (0.01% of all signers) produced 80.7% of all transactions</strong>: 20,446,122 transactions, each from a signer averaging 1,000+ transactions per active day. <em>(q3)</em></li>
+<li><strong>Light users are the majority of signers but a small share of volume.</strong> 795,727 signers (93.03%) averaged fewer than 2 transactions per active day and produced 8.9% of transactions. <em>(q3)</em></li>
+<li><strong>Concentration is persistent day after day.</strong> The 10 busiest signers produced between 45.3% and 69% of each day's transactions. The 100 busiest produced between 65.7% and 91.5%. <em>(q2)</em></li>
+<li><strong>The single busiest signer, <code>sweat-relayer.near</code>, sent 7,429,693 transactions,</strong> an average of 247,656 per day, active all 30 days. Other heavy hitters include <code>intents.near</code> (1,390,976), <code>omni-relayer.bridge.near</code>, <code>meteor-relayer.near</code> and <code>relay.aurora</code>. <em>(q4)</em></li>
+<li><strong>Several top-15 signers have generated-looking names</strong> (adjective-noun-digits, e.g. <code>closemeat6237.near</code> with 1,036,408 transactions, plus <code>leftdress3225.near</code>, <code>malejaguar616.near</code> and <code>tinykoala595.near</code>). Each was active all 30 days at 10,136 or more transactions per day. <em>(q4)</em> That pattern fits automated operation, but this report doesn't establish what these accounts are.</li>
+</ol>
+<h2>Evidence against</h2>
+<ol>
+<li><strong>Relayers carry real users.</strong> NEAR supports meta-transactions: a relayer signs and pays gas for a user's action. <code>sweat-relayer.near</code>, <code>meteor-relayer.near</code>, <code>relay.aurora</code> and <code>omni-relayer.bridge.near</code> are relayer-style accounts, so a large part of the "automated" 80.7% may be real people whose activity is counted under one signer. <strong>Signer-level analysis undercounts users behind relayers.</strong> It doesn't prove the activity is fake.</li>
+<li><strong>Volume growth on the busiest day was broad-based, not bot-driven.</strong> The window's peak, 1,217,209 transactions on 2026-09-27, came with the top-10 share <em>falling</em> to 46.1% (top 100: 77.8%). <em>(q1, q2)</em></li>
+<li>
+<p><strong>Distinct signers surged in early October.</strong> They went from 62,105 on 2026-10-01 to 176,719 on 2026-10-03, and stayed high (177,196 on 2026-10-04, 175,774 on 2026-10-07), while transactions per signer fell from 18.5 to 3.9. <em>(q1)</em> That's a lot of new, lightly active signers. It could be real user growth, or a campaign, airdrop or sybil wave. This data can't tell them apart.</p>
+<p><strong>Update (2026-11-02).</strong> The follow-up <a href="https://nearbi.ai/reports/near-thesis/">NEAR thesis</a> attributes this surge to one app: the new signers were sub-accounts of KaiChing (<code>*.users.kaiching</code>) signing directly, and they stopped soon after. That points to one app's campaign rather than broad organic growth. The figures in this report are unchanged.</p>
+</li>
+</ol>
+<h2>What would change the conclusion</h2>
+<ul>
+<li><strong>Attributing relayer traffic to end users.</strong> If decoding the relayed actions (receipt predecessor/receiver) shows hundreds of thousands of distinct end users behind relayers, then NEAR's real user base is much larger than its signer count, and the claim softens from "automation" to "routed through infrastructure".</li>
+<li><strong>Retention of the October signers.</strong> If a large share of the signers who appeared 2026-10-02 to 2026-10-07 stay active for 30 days, that's real growth. If most vanish, it was a campaign or sybil wave. <em>Update (2026-11-02): the follow-up <a href="https://nearbi.ai/reports/near-thesis/">NEAR thesis</a> attributes the surge to KaiChing sub-accounts, which stopped signing soon after.</em></li>
+<li><strong>Funding graph of the generated-name accounts.</strong> If they share funders, they're one operator, which would support the bot reading.</li>
+</ul>
+<p>These are the next queries in the full deep-dive report.</p>
+<h2>Charts</h2>
+<p><img alt="Daily activity" src="charts/q1_daily_activity.png" /></p>
+<p><img alt="Concentration" src="charts/q2_concentration.png" /></p>
+<p><img alt="Signer buckets" src="charts/q3_signer_buckets.png" /></p>
+<p><img alt="Top signers" src="charts/q4_top_signers.png" /></p>
+<h2>Queries</h2>
+<table>
+<thead>
+<tr>
+<th>id</th>
+<th>question</th>
+<th>file</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>q1</td>
+<td>Daily transactions, distinct signers, transactions per signer</td>
+<td><code>queries/q1_daily_activity.sql</code></td>
+</tr>
+<tr>
+<td>q2</td>
+<td>Share of daily transactions from the top 10 / top 100 signers</td>
+<td><code>queries/q2_concentration.sql</code></td>
+</tr>
+<tr>
+<td>q3</td>
+<td>Signers and transactions by average daily activity bucket</td>
+<td><code>queries/q3_signer_buckets.sql</code></td>
+</tr>
+<tr>
+<td>q4</td>
+<td>15 busiest signers</td>
+<td><code>queries/q4_top_signers.sql</code></td>
+</tr>
+</tbody>
+</table>
+<p>Each query is bounded to a fixed <code>block_date</code> range and passed the safeguards (no relative dates, cost estimate before running). The SHA-256 hash of every result is in <code>manifest.json</code>.</p>
+<h2>Reproduce</h2>
+<pre><code class="language-bash"># no Google account needed: re-hash the shipped results
+make verify-cached
+# re-run every query on BigQuery (your project pays, about 3 GB in total)
+gcloud auth application-default login
+make verify PROJECT=&lt;your-gcp-project&gt;
+</code></pre><h2>Appendix: result fingerprints (SHA-256)</h2><p>Generated 2026-11-02T13:04:28+00:00 from <code>bigquery-public-data.crypto_near_mainnet_us</code>. <code>make verify</code> re-runs each query and must reproduce these exactly.</p><table class='hash'><tr><th>query</th><th>rows</th><th>result sha256</th></tr><tr><td>q1_daily_activity</td><td>30</td><td>0c049f8f929b60160c457391317c81d574d82305f170932338c050853254fe57</td></tr><tr><td>q2_concentration</td><td>30</td><td>e7efbd908266179b0a7608bfc60e147882a853330cc05c5090d4eeebac0397a6</td></tr><tr><td>q3_signer_buckets</td><td>5</td><td>2133327d741d455519e1058ba68b194f64a83446232e2e6ec9ca1cb2ab541e53</td></tr><tr><td>q4_top_signers</td><td>15</td><td>2233ef9483e1f6670ea41c2afd4c598a2fb1e02a3021951122f19849d889cd06</td></tr></table></body></html>
