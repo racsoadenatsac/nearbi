@@ -49,6 +49,7 @@ export function membersPage(p: {
   sub: SubscriptionState;
   priceUsd: number;
   reports: ReportRecord[];
+  paymentsLive?: boolean;
 }): string {
   const { sub } = p;
   const statusLine = sub.active
@@ -71,14 +72,47 @@ export function membersPage(p: {
 <div class="panel">
   <p>Signed in as <b>${esc(p.accountId)}</b></p>
   <p>Subscription: ${statusLine}</p>
-  <button class="btn pri" id="subscribe">${esc(subscribeLabel)}</button>
+  <a class="btn pri" id="subscribe" href="/members/checkout">${esc(subscribeLabel)}</a>
   ${sub.active ? `<a class="btn" href="/members/container">Container access</a>` : ""}
-  <div id="checkout" class="muted"></div>
-  <p class="muted small">Pay in any token through NEAR Intents; it settles as USDC on NEAR. Access starts when the payment is confirmed.</p>
+  <p class="muted small">Pay in any token through NEAR Intents; it settles as USDC on NEAR. Access starts when the payment is confirmed.${
+    p.paymentsLive ? "" : " <b>Payments are in preview and not enabled yet.</b>"
+  }</p>
 </div>
 <h2 class="sec">Reports</h2>
 <ul class="reports">${rows || "<li>No reports yet.</li>"}</ul>`,
     { accountId: p.accountId, scripts: `<script type="module" src="/js/members.js"></script>` },
+  );
+}
+
+export function checkoutPage(p: { accountId: string; sub: SubscriptionState; priceUsd: number; mode: "dry" | "live" }): string {
+  const banner =
+    p.mode === "dry"
+      ? `<div class="stub-warning" id="preview-banner" role="alert"><b>Preview: payments not enabled yet.</b> Quotes below are real NEAR Intents
+  prices (DRY quotes), but no deposit address is issued, so there is nothing to pay. Do not send funds anywhere.</div>`
+      : "";
+  return layout(
+    "Subscribe",
+    `<h1>Subscribe: $${esc(p.priceUsd)}/month</h1>
+${banner}
+<div class="panel" id="checkout-form" data-mode="${esc(p.mode)}">
+  <p>Pay with any token NEAR Intents supports. We quote exactly <b>$${esc(p.priceUsd)}</b> settled as USDC on NEAR; you send the
+  quoted amount of the token you pick, and NEAR Intents swaps it.${
+    p.sub.active ? ` Your subscription runs until ${fmtDate(p.sub.currentPeriodEnd)}; a payment adds one month.` : ""
+  }</p>
+  <label for="token-filter">Pay with</label>
+  <input id="token-filter" type="search" placeholder="Filter: USDC, ETH, base, near…" autocomplete="off">
+  <select id="token" size="8" aria-label="Token"><option disabled>Loading tokens…</option></select>
+  <details class="small"><summary>Refund address (optional)</summary>
+    <p class="muted">If the swap can't complete, NEAR Intents refunds you. By default refunds go to the NEAR Intents balance of
+    <b>${esc(p.accountId)}</b> (withdraw it at near-intents.org). To be refunded on the token's own chain instead, enter an address there.</p>
+    <input id="refund-to" type="text" placeholder="Origin-chain refund address" autocomplete="off" spellcheck="false">
+  </details>
+  <p><button class="btn pri" id="quote" disabled>Get quote</button></p>
+  <p id="status" class="muted" role="status"></p>
+</div>
+<div class="panel" id="quote-out" hidden></div>
+<p class="muted small"><a href="/members">Back to members</a></p>`,
+    { accountId: p.accountId, scripts: `<script type="module" src="/js/checkout.js"></script>` },
   );
 }
 

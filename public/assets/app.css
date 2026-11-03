@@ -11,3 +11,10 @@
 .stub-warning { border:2px solid #c0392b; background:#fdecea; color:#7b1f16; padding:12px; border-radius:8px }
 button.btn { font:inherit; cursor:pointer; border:0 }
 button.btn[disabled] { opacity:.6; cursor:wait }
+/* checkout */
+#token-filter, #refund-to { display:block; width:100%; box-sizing:border-box; font:inherit; padding:8px 10px; margin:6px 0; border:1px solid #cfcfc6; border-radius:8px }
+#token { display:block; width:100%; font:inherit; margin:0 0 12px; border:1px solid #cfcfc6; border-radius:8px }
+.quote-grid { display:grid; grid-template-columns:auto 1fr; gap:6px 16px; align-items:baseline }
+.quote-grid dt { color:var(--muted) } .quote-grid dd { margin:0; word-break:break-all }
+.qr { width:200px; height:200px; margin:12px 0 } .qr svg { width:100%; height:100%; display:block }
+.countdown { font-variant-numeric:tabular-nums; font-weight:600 }
