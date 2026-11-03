@@ -118,7 +118,6 @@ ${order}</div>`;
 function briefFields(product: Product): string {
   if (!isOneOff(product.id)) return "";
   return `<fieldset class="brief" id="brief">
-  <legend>Your brief</legend>
   <label for="brief-question">Your question <span class="muted small">(required)</span></label>
   <textarea id="brief-question" required maxlength="${BRIEF_LIMITS.question}" rows="5" placeholder="${
     product.id === "deep_dive"
