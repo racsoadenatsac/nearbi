@@ -62,6 +62,18 @@ variable "monthly_price_usd" {
   default = 49
 }
 
+variable "quick_answer_price_usd" {
+  description = "One-off Quick Answer price (USD, settled as USDC). Server-side only."
+  type        = number
+  default     = 29
+}
+
+variable "deep_dive_price_usd" {
+  description = "One-off Deep Dive price (USD, settled as USDC). Server-side only."
+  type        = number
+  default     = 499
+}
+
 variable "near_rpc_url" {
   type    = string
   default = "https://rpc.mainnet.near.org"
