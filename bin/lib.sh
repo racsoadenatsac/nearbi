@@ -16,8 +16,12 @@ SPLITTER="splitter.$AGENT"
 TREASURY="treasury.$AGENT"
 CONTRIBUTORS="contributors.$AGENT"
 TOKEN="usdc-mock.$AGENT"
-# where the agent's function-call key lives (outside the repo, chmod 600)
+# settlement forwarder (1Click delivers here) and the simulated 1Click sender
+FORWARDER="forwarder.$AGENT"
+ONECLICK_SIM="oneclick-sim.$AGENT"
+# where the agent's function-call keys live (outside the repo, chmod 600)
 FC_KEY_FILE="${NEARBI_FC_KEY_FILE:-$HOME/.near-credentials/nearbi-fc/$SPLITTER.fc.json}"
+FWD_FC_KEY_FILE="${NEARBI_FWD_FC_KEY_FILE:-$HOME/.near-credentials/nearbi-fc/$FORWARDER.fc.json}"
 
 require_testnet() {
   for a in "$@"; do

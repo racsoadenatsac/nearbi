@@ -147,6 +147,7 @@ for line in """$(printf '%s\n' "${TXS[@]+"${TXS[@]}"}")""".splitlines():
         kind, acct, h = (line.split() + ["", "", ""])[:3]
         txs.append({"step": kind, "account": acct, "tx": h, "explorer": f"$EXPLORER/{h}" if h else None})
 rec = {
+  **old,  # keep sections written by other scripts (e.g. "forwarder")
   "network": "$NETWORK",
   "agent": "$AGENT",
   "splitter": "$SPLITTER",
