@@ -84,7 +84,7 @@ export function createApp(deps: AppDeps) {
     c.set("sub", s ? subscriptionState(await repo.getSubscription(s.sub), t) : null);
 
     const path = new URL(c.req.url).pathname;
-    const d = decide(requiredAccess(path, config.freeReportSlug), c.get("accountId"), c.get("sub"));
+    const d = decide(requiredAccess(path, config.freeReportSlugs), c.get("accountId"), c.get("sub"));
     if (d.allow) return next();
     if (isApi(path)) {
       return d.reason === "login" ? c.json({ error: "sign in required" }, 401) : c.json({ error: "active subscription required" }, 402);
@@ -205,7 +205,7 @@ export function createApp(deps: AppDeps) {
     const r = parseReportPath(url.pathname);
     if (!r) return notFound(c);
     if (!url.pathname.endsWith("/") && r.file === "index.html") return c.redirect(`/reports/${r.slug}/`, 301);
-    if (r.slug === config.freeReportSlug) {
+    if (config.freeReportSlugs.includes(r.slug)) {
       // Normally served by CloudFront from the static bucket and never routed here.
       return config.staticOrigin ? c.redirect(config.staticOrigin + url.pathname, 302) : notFound(c);
     }

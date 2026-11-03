@@ -2,12 +2,15 @@
 // Secrets (SESSION_SECRET, ADMIN_TOKEN) are injected by the deploy from SSM Parameter Store / Secrets
 // Manager; they are never committed.
 
+import { DEFAULT_FREE_REPORT_SLUGS } from "./core/gating";
+
 export interface Config {
   nearRpcUrl: string;
   monthlyPriceUsd: number;
   authRecipient: string;
   registryHost: string;
-  freeReportSlug: string;
+  /** Public report slugs (static site). */
+  freeReportSlugs: string[];
   /** Browser-facing origins (e.g. https://nearbi.ai). Used for the CSRF origin check behind CloudFront. */
   appOrigins: string[];
   /** Where the public static site lives; the free sample is redirected there if it ever reaches the app. */
@@ -42,7 +45,10 @@ export function loadConfig(env: Env, opts: { requireAws?: boolean } = {}): Confi
     monthlyPriceUsd: num(env.MONTHLY_PRICE_USD, 49),
     authRecipient: env.AUTH_RECIPIENT || "nearbi.ai",
     registryHost: env.REGISTRY_HOST || "registry.nearbi.ai",
-    freeReportSlug: env.FREE_REPORT_SLUG || "near-users-vs-bots",
+    freeReportSlugs: (env.FREE_REPORT_SLUGS || env.FREE_REPORT_SLUG || DEFAULT_FREE_REPORT_SLUGS.join(","))
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
     appOrigins: (env.APP_ORIGIN || "https://nearbi.ai").split(",").map((s) => s.trim().replace(/\/+$/, "")).filter(Boolean),
     staticOrigin: env.STATIC_ORIGIN ? env.STATIC_ORIGIN.replace(/\/+$/, "") : null,
     originVerifySecret: env.ORIGIN_VERIFY_SECRET || null,

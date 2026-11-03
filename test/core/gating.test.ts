@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { decide, parseReportPath, reportObjectKey, requiredAccess } from "../../src/core/gating";
+import { DEFAULT_FREE_REPORT_SLUGS, decide, parseReportPath, reportObjectKey, requiredAccess } from "../../src/core/gating";
 
 const FREE = "near-users-vs-bots";
+const THESIS = "near-thesis";
 const active = { status: "active" as const, active: true, currentPeriodEnd: 2 };
 const expired = { status: "expired" as const, active: false, currentPeriodEnd: 1 };
 const none = { status: "none" as const, active: false, currentPeriodEnd: null };
@@ -31,6 +32,27 @@ describe("requiredAccess", () => {
     [`/reports/${FREE.toUpperCase()}/`, "subscriber"],
   ])("%s -> %s", (path, access) => {
     expect(requiredAccess(path, FREE)).toBe(access);
+  });
+});
+
+describe("requiredAccess with several free slugs", () => {
+  const FREE_LIST = [FREE, THESIS];
+  it.each([
+    [`/reports/${FREE}/`, "public"],
+    [`/reports/${THESIS}/`, "public"],
+    [`/reports/${THESIS}`, "public"],
+    [`/reports/${THESIS}/dashboard/`, "public"],
+    [`/reports/${THESIS}/NEAR-thesis-intents-vs-real-usage.pdf`, "public"],
+    [`/reports/${THESIS}-premium/`, "subscriber"],
+    ["/reports/near-defi-flows/", "subscriber"],
+    ["/reports", "subscriber"],
+    ["/members", "session"],
+  ])("%s -> %s", (path, access) => {
+    expect(requiredAccess(path, FREE_LIST)).toBe(access);
+  });
+
+  it("defaults include the sample and the thesis", () => {
+    expect(DEFAULT_FREE_REPORT_SLUGS).toEqual([FREE, THESIS]);
   });
 });
 

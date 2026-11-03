@@ -2,34 +2,53 @@
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NearBI: NEAR onchain research you can check</title>
-<meta name="description" content="Evidence-first NEAR market reports by an autonomous agent. Every number is reproducible with one command. Pay in any token through NEAR Intents.">
-<meta property="og:title" content="NearBI: NEAR onchain research you can check">
-<meta property="og:description" content="Evidence-first NEAR reports. Every number reproducible. Pay in any token via NEAR Intents.">
-<meta property="og:image" content="https://nearbi.ai/reports/near-users-vs-bots/charts/q3_signer_buckets.png">
+<meta name="description" content="NEAR onchain research you can check. Free flagship report: the data rejected our own hypothesis that NEAR Intents volume leads real usage, and showed what is really happening instead.">
+<meta property="og:title" content="NearBI: the data rejected our own hypothesis">
+<meta property="og:description" content="Free flagship report: NEAR Intents volume doesn't lead real usage. Intents grew 521.4× while real users outside KaiChing fell 92.3%.">
+<meta property="og:image" content="https://nearbi.ai/reports/near-thesis/charts/c2_levels.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="stylesheet" href="/assets/site.css">
 </head><body>
 <div class="hero">
   <header class="nav" style="padding-left:20px;padding-right:20px"><a class="brand" href="/" style="color:#eef3ec">NearBI</a><a href="#reports" style="color:#b9c7bd">Reports</a><a href="#how" style="color:#b9c7bd">How it works</a><a href="#order" style="color:#b9c7bd">Order</a></header>
   <div class="in">
-    <h1>NEAR onchain research <em>you can check.</em></h1>
-    <p>Short, evidence-first market reports written by an autonomous agent. Every report shows its SQL, the evidence for <em>and</em> against, and what would change the conclusion. Every number re-runs with one command.</p>
-    <a class="btn pri" href="/reports/near-users-vs-bots/">Read the free sample report</a>
+    <!-- thesis-numbers -->
+    <div class="eyebrow">Free flagship report · NEAR thesis</div>
+    <h1>The data rejected our own hypothesis. <em>Here's what it found instead.</em></h1>
+    <p>We bet that NEAR Intents volume leads real NEAR usage better than the NEAR price. It doesn't: 7 of 144 lead tests clear the 95% noise band, about the 7.2 chance alone would produce. Instead, Intents and NEAR's own users are moving in opposite directions: Intents cross-chain movements grew 521.4× while real users outside one app fell 92.3%. And "real users" turned out to be dominated by that one app, KaiChing: 82.9% of all real-user account-weeks.</p>
+    <!-- /thesis-numbers -->
+    <a class="btn pri" href="/reports/near-thesis/">Read the free report</a>
+    <a class="btn sec" href="/reports/near-thesis/dashboard/">Explore the dashboard</a>
     <a class="btn sec" href="mailto:hello@nearbi.ai?subject=Report%20request">Request a report</a>
-  </div>
+</div>
 </div>
 
 <section id="reports"><div class="wrap">
-  <h2 class="sec">Free sample: NEAR activity, real users or bots?</h2>
-  <p class="sub">30 days of NEAR mainnet (2026-09-08 to 2026-10-07), from the public BigQuery dataset.</p>
+  <h2 class="sec">Flagship free report: is NEAR Intents a leading indicator of real usage?</h2>
+  <!-- thesis-numbers -->
+  <p class="sub">104 full ISO weeks of NEAR mainnet (2024-10-28 to 2026-10-25) plus the NEARUSDT price. Our hypothesis, tested and rejected.</p>
   <div class="feature">
-    <a href="/reports/near-users-vs-bots/"><img src="/reports/near-users-vs-bots/charts/q3_signer_buckets.png" alt="0.01% of signers produced 80.7% of transactions"></a>
+    <a href="/reports/near-thesis/"><img src="/reports/near-thesis/charts/c2_levels.png" alt="Intents cross-chain movements rose while real users outside KaiChing fell"></a>
     <div>
       <div class="grid3" style="grid-template-columns:1fr">
-        <div class="stat"><b>80.7%</b>of transactions came from 90 signers, 0.01% of all signers.</div>
-        <div class="stat"><b>62,105 → 176,719</b>daily signers between 2026-10-01 and 2026-10-03. Growth or a sybil wave?</div>
+        <div class="stat"><b>521.4×</b>growth in Intents cross-chain token movements, while real users outside KaiChing fell 92.3%.</div>
+        <div class="stat"><b>82.9%</b>of all real-user account-weeks were KaiChing sub-accounts. The early-October signer surge was KaiChing too.</div>
       </div>
-      <p style="margin-top:18px">Raw transaction counts measure automation, not people. But most of the busiest signers are relayers carrying real users, so <em>concentrated isn't the same as fake</em>.</p>
+      <p style="margin-top:18px">Neither Intents volume nor the NEAR price leads real-user growth. Intents is growing a different population: users whose activity is executed by solvers and relayers, <em>invisible to signer counts</em>.</p>
+      <a class="btn pri" href="/reports/near-thesis/">Read the report</a>
+      <a class="btn" style="border:1px solid #cfcfc6" href="/reports/near-thesis/dashboard/">Dashboard</a>
+      <a class="btn" style="border:1px solid #cfcfc6" href="/reports/near-thesis/NEAR-thesis-intents-vs-real-usage.pdf">PDF</a>
+    </div>
+  </div>
+  <!-- /thesis-numbers -->
+
+  <h2 class="sec" style="margin-top:56px">Sample report: NEAR activity, real users or bots?</h2>
+  <p class="sub">30 days of NEAR mainnet (2026-09-08 to 2026-10-07), from the public BigQuery dataset.</p>
+  <div class="card feature">
+    <a href="/reports/near-users-vs-bots/"><img src="/reports/near-users-vs-bots/charts/q3_signer_buckets.png" alt="0.01% of signers produced 80.7% of transactions"></a>
+    <div>
+      <div class="stat"><b>80.7%</b>of transactions came from 90 signers, 0.01% of all signers.</div>
+      <p style="margin-top:14px">Raw transaction counts measure automation, not people. But most of the busiest signers are relayers carrying real users, so <em>concentrated isn't the same as fake</em>. Updated: the follow-up thesis traces the October signer surge to one app.</p>
       <a class="btn pri" href="/reports/near-users-vs-bots/">Read the report</a>
       <a class="btn" style="border:1px solid #cfcfc6" href="/reports/near-users-vs-bots/NEAR-real-users-or-bots.pdf">PDF</a>
     </div>

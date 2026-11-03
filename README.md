@@ -93,7 +93,7 @@ Subscribe, then confirm the stub payment:
 | `MONTHLY_PRICE_USD` | no | `49` | |
 | `AUTH_RECIPIENT` | no | `nearbi.ai` | NEP-413 recipient |
 | `REGISTRY_HOST` | no | `registry.nearbi.ai` | |
-| `FREE_REPORT_SLUG` | no | `near-users-vs-bots` | the only public report |
+| `FREE_REPORT_SLUGS` | no | `near-users-vs-bots,near-thesis` | comma-separated public reports (static site); legacy `FREE_REPORT_SLUG` still read |
 
 Lambda reads config once at cold start and fails fast if required variables are missing. Secrets are
 injected as environment variables by the deploy (simplest). Reading them from SSM at cold start is not
@@ -110,7 +110,7 @@ Cache behaviors, in precedence order:
 
 | Path pattern | Origin | Methods | Cache | Notes |
 |---|---|---|---|---|
-| `/reports/near-users-vs-bots/*` | static | GET, HEAD | CachingOptimized | the free sample stays public and cacheable |
+| `/reports/near-users-vs-bots/*`, `/reports/near-thesis/*` (+ exact paths) | static | GET, HEAD | CachingOptimized | free reports stay public and cacheable |
 | `/reports/*` | app | GET, HEAD | CachingDisabled | gated |
 | `/auth/*`, `/api/*`, `/billing/*`, `/registry/*` | app | all | CachingDisabled | |
 | `/login`, `/members`, `/members/*` | app | GET, HEAD | CachingDisabled | |
@@ -149,7 +149,7 @@ Without ListBucket, S3 answers 403 instead of 404 for missing keys and the app r
 URL also stops working when the role's session credentials expire, which can happen before the TTL on a
 long-lived execution environment; with 300 s this is rare, and the browser just requests the page again.
 
-The free sample `near-users-vs-bots` is never read from the private bucket. It lives in `public/` and is
+The free reports (`near-users-vs-bots`, `near-thesis`) are never read from the private bucket. It lives in `public/` and is
 served by the static origin.
 
 ## DynamoDB table design
