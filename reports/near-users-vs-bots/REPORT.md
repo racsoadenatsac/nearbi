@@ -27,10 +27,12 @@ params: [10, 100, 15, 30, 2, 1000]
 2. **Volume growth on the busiest day was broad-based, not bot-driven.** The window's peak, 1,217,209 transactions on 2026-09-27, came with the top-10 share *falling* to 46.1% (top 100: 77.8%). *(q1, q2)*
 3. **Distinct signers surged in early October.** They went from 62,105 on 2026-10-01 to 176,719 on 2026-10-03, and stayed high (177,196 on 2026-10-04, 175,774 on 2026-10-07), while transactions per signer fell from 18.5 to 3.9. *(q1)* That's a lot of new, lightly active signers. It could be real user growth, or a campaign, airdrop or sybil wave. This data can't tell them apart.
 
+    **Update (2026-11-02).** The follow-up [NEAR thesis](https://nearbi.ai/reports/near-thesis/) attributes this surge to one app: the new signers were sub-accounts of KaiChing (`*.users.kaiching`) signing directly, and they stopped soon after. That points to one app's campaign rather than broad organic growth. The figures in this report are unchanged.
+
 ## What would change the conclusion
 
 - **Attributing relayer traffic to end users.** If decoding the relayed actions (receipt predecessor/receiver) shows hundreds of thousands of distinct end users behind relayers, then NEAR's real user base is much larger than its signer count, and the claim softens from "automation" to "routed through infrastructure".
-- **Retention of the October signers.** If a large share of the signers who appeared 2026-10-02 to 2026-10-07 stay active for 30 days, that's real growth. If most vanish, it was a campaign or sybil wave.
+- **Retention of the October signers.** If a large share of the signers who appeared 2026-10-02 to 2026-10-07 stay active for 30 days, that's real growth. If most vanish, it was a campaign or sybil wave. *Update (2026-11-02): the follow-up [NEAR thesis](https://nearbi.ai/reports/near-thesis/) attributes the surge to KaiChing sub-accounts, which stopped signing soon after.*
 - **Funding graph of the generated-name accounts.** If they share funders, they're one operator, which would support the bot reading.
 
 These are the next queries in the full deep-dive report.
