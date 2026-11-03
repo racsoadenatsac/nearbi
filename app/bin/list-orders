@@ -1,0 +1,57 @@
+#!/bin/bash
+# List paid one-off orders (Quick Answer / Deep Dive) awaiting delivery: status "paid" or "in_progress",
+# oldest first, with the customer's brief. Reads DynamoDB directly (ORDERQ index -> ACCT#<id>/ORDER#<id>).
+#
+# Usage: AWS_PROFILE=nearbi bin/list-orders [--json] [--all-statuses]
+#   --json          one JSON array (orderId, accountId, product, amountUsd, status, brief, deliveryUrl, createdAt)
+# Env: NEARBI_TABLE (default nearbi), AWS_REGION (default us-east-1).
+# Needs dynamodb:Query + dynamodb:GetItem on the table (operator credentials). Read-only.
+# Alternative without AWS credentials: curl -H "authorization: Bearer $ADMIN_TOKEN" https://nearbi.ai/billing/admin/orders
+set -euo pipefail
+table="${NEARBI_TABLE:-nearbi}"
+export AWS_REGION="${AWS_REGION:-us-east-1}"
+json=0
+for a in "$@"; do
+  case "$a" in
+    --json) json=1 ;;
+    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    *) echo "unknown argument: $a" >&2; exit 2 ;;
+  esac
+done
+
+# DynamoDB JSON -> plain JSON
+unmarshal='def un: if type == "object" then
+    if has("S") then .S elif has("N") then (.N|tonumber) elif has("BOOL") then .BOOL elif has("NULL") then null
+    elif has("M") then (.M | map_values(un)) elif has("L") then (.L | map(un)) else map_values(un) end
+  else . end;'
+
+refs=$(aws dynamodb query --table-name "$table" --consistent-read \
+  --key-condition-expression "PK = :pk" --expression-attribute-values '{":pk":{"S":"ORDERQ"}}' \
+  --output json | jq -c "$unmarshal [.Items[] | un | {paymentId, accountId}]")
+
+orders="[]"
+while IFS= read -r ref; do
+  [ -z "$ref" ] && continue
+  key=$(jq -c '{PK:{S:("ACCT#"+.accountId)},SK:{S:("ORDER#"+.paymentId)}}' <<<"$ref")
+  item=$(aws dynamodb get-item --table-name "$table" --consistent-read --key "$key" --output json | jq -c "$unmarshal .Item // empty | un")
+  [ -n "$item" ] && orders=$(jq -c --argjson o "$item" '. + [$o]' <<<"$orders")
+done < <(jq -c '.[]' <<<"$refs")
+
+orders=$(jq -c '[.[] | select(.status != "delivered") | {
+    orderId: .paymentId, accountId, product, amountUsd, status, deliveryUrl, brief,
+    createdAt: (.createdAt | todate), updatedAt: (.updatedAt | todate)
+  }] | sort_by(.createdAt)' <<<"$orders")
+
+if [ "$json" = 1 ]; then jq . <<<"$orders"; exit 0; fi
+
+n=$(jq length <<<"$orders")
+if [ "$n" = 0 ]; then echo "No orders awaiting delivery."; exit 0; fi
+echo "$n order(s) awaiting delivery (oldest first). Due: Quick Answer 24 h, Deep Dive 48 h after payment."
+jq -r '.[] | "
+\(.orderId)  \(.product)  $\(.amountUsd)  \(.status)  paid \(.createdAt)  due \(
+    (.createdAt | fromdate) + (if .product == "deep_dive" then 172800 else 86400 end) | todate)
+  account:  \(.accountId)
+  contact:  \(.brief.contact // "-")
+  question: \(.brief.question | gsub("\n"; "\n            "))\(if .brief.scope then "\n  scope:    \(.brief.scope | gsub("\n"; "\n            "))" else "" end)"' <<<"$orders"
+echo
+echo "Update: bin/update-order <orderId> in_progress | bin/update-order <orderId> delivered <https-url-or-/path>"

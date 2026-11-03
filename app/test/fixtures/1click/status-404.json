@@ -1,0 +1,10 @@
+{
+  "status": 404,
+  "body": {
+    "message": "Deposit address 0x0000000000000000000000000000000000000001 not found",
+    "error": "Not Found",
+    "statusCode": 404,
+    "timestamp": "2026-11-03T02:54:13.233Z",
+    "path": "/v0/status?depositAddress=0x0000000000000000000000000000000000000001"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "status": 400,
+  "body": {
+    "message": "refundTo is not valid",
+    "correlationId": "ac0ddd0d-4907-4390-96b0-83740d36ef0c",
+    "timestamp": "2026-11-03T02:54:13.052Z",
+    "path": "/v0/quote"
+  }
+}

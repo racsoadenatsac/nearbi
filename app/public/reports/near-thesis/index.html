@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEAR thesis: does Intents volume lead real usage? · NearBI</title>
+<meta name="description" content="The data rejected our own hypothesis: neither NEAR Intents volume nor the NEAR price leads real-user growth. Intents grew 521.4× while real users outside KaiChing fell 92.3%.">
+<meta property="og:title" content="NEAR thesis: does Intents volume lead real usage?">
+<meta property="og:description" content="The data rejected our own hypothesis: neither NEAR Intents volume nor the NEAR price leads real-user growth. Intents grew 521.4× while real users outside KaiChing fell 92.3%.">
+<meta property="og:image" content="https://nearbi.ai/reports/near-thesis/charts/c2_levels.png">
+<meta property="og:url" content="https://nearbi.ai/reports/near-thesis/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="/assets/site.css">
+</head><body>
+<header class="nav"><a class="brand" href="/">NearBI</a><a href="/#reports">Reports</a><a href="dashboard/">Dashboard</a><a href="/ledger/">Ledger</a><a href="/members">Members</a><a href="/login">Sign in</a><a href="mailto:hello@nearbi.ai?subject=Report%20request">Request a report</a></header>
+<main class="page">
+<style>
+  .rs-report { --ink:#1b1d1f; --muted:#6b7075; --acc:#00b37a; --soft:#eef7f3; max-width:880px; margin:0 auto; color:var(--ink);
+               font-family: Inter, -apple-system, "Helvetica Neue", Arial, sans-serif; line-height:1.6; font-size:17px; }
+  .rs-report .kicker { color:var(--acc); font-weight:700; letter-spacing:.08em; font-size:12px; text-transform:uppercase; }
+  .rs-report h1 { font-size:40px; line-height:1.12; margin:.2em 0 .3em; color:var(--ink); }
+  .rs-report h2 { font-size:22px; margin:2.2em 0 .6em; padding-bottom:.25em; border-bottom:2px solid var(--acc); color:var(--ink); }
+  .rs-report .meta { color:var(--muted); font-size:14px; }
+  .rs-report .claim { background:var(--soft); border-left:4px solid var(--acc); padding:18px 22px; border-radius:6px; margin:1.4em 0; }
+  .rs-report .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin:1.4em 0; }
+  .rs-report .stat { border:1px solid #e3e6e3; border-radius:10px; padding:16px; }
+  .rs-report .stat b { display:block; font-size:30px; color:var(--acc); line-height:1.1; margin-bottom:4px; }
+  .rs-report figure { margin:1.6em 0; } .rs-report figure img { width:100%; height:auto; border-radius:8px; border:1px solid #eee; }
+  .rs-report li { margin-bottom:.6em; } .rs-report code { font-family:Menlo,monospace; font-size:.88em; background:#f2f2ee; padding:1px 4px; border-radius:3px; }
+  .rs-report pre { background:#111; color:#e8e8e8; padding:16px; border-radius:8px; overflow:auto; font-size:13px; }
+  .rs-report .cta { display:inline-block; background:var(--ink); color:#fff !important; padding:12px 20px; border-radius:8px; text-decoration:none; font-weight:600; margin:6px 8px 6px 0; }
+  .rs-report .cta.alt { background:var(--acc); }
+  .rs-report .note { color:var(--muted); font-size:13px; }
+  .rs-report .claim h2.inbox { border:0; margin:0 0 .3em; padding:0; font-size:20px; }
+  .rs-report .claim p:last-child { margin-bottom:0 }
+  .rs-report figcaption { color:var(--muted); font-size:13px; margin-top:6px; }
+  .rs-report .check { background:#fff; border:2px solid var(--acc); border-radius:10px; padding:18px 22px; }
+  .rs-report .check pre { margin:.8em 0; }
+  .rs-report .cta.ghost { background:#fff; color:var(--ink) !important; border:1px solid #cfcfc6; }
+  .rs-report .badge { display:inline-block; background:var(--ink); color:#fff; font-size:12px; font-weight:700; letter-spacing:.06em; padding:3px 9px; border-radius:99px; text-transform:uppercase; vertical-align:middle; }
+</style>
+<article class="rs-report">
+  <div class="kicker"><span class="badge">Free</span> &nbsp;NearBI · Deep Dive free report ($499 tier sample) · Built at NEAR HACKATHON</div>
+  <h1>Is NEAR Intents volume a better leading indicator of real usage than the NEAR price?</h1>
+  <div class="meta"><p><em>NearBI thesis · NEAR Hackathon · 104 full ISO weeks, Monday 2024-10-28 to Sunday 2026-10-25 · on-chain data plus one public price series · every number below traces to <code>results/*.csv</code> and re-runs with <code>make verify</code>.</em></p></div>
+
+  <div class="stats">
+    <div class="stat"><b>7 of 144</b>lead tests clear the 95% noise band, about the 7.2 chance alone would produce</div>
+    <div class="stat"><b>521.4×</b>growth in Intents cross-chain token movements, first quarter to last quarter</div>
+    <div class="stat"><b>82.9%</b>of all real-user account-weeks were KaiChing sub-accounts</div>
+  </div>
+
+  <div class="claim"><h2 class="inbox">Claim</h2><p><strong>The data does not support the hypothesis.</strong> We tested whether weekly cross-chain volume through NEAR Intents predicts weekly growth in real NEAR users better than the NEAR price does. <strong>Neither one leads real usage.</strong> Across 144 lead tests (1 to 8 weeks ahead), 7 clear the 95% noise band, about the 7.2 that chance alone would produce. Out of sample, adding either indicator to a simple autoregression changes forecast error by less than 3% in 16 of 18 cases.</p>
+<p>What the data does show is more useful for an investor. <strong>Intents and NEAR's own user base are moving in opposite directions.</strong> Intents cross-chain token movements went from about 489 a week (first quarter of the window) to 255,117 a week (last quarter), 521.4× higher. Over the same quarters, real users outside one dominant app fell from 3,687,639 to 385,275 a week. In levels the two series correlate at -0.77 (103 weeks). Intents is growing a different population: users whose activity is executed by solvers and relayers, most of whom never sign a NEAR transaction. Signer-based "network usage" can't see them, so it can't be led by them.</p></div>
+  <figure><img src="charts/c2_levels.png" alt="Intents cross-chain movements rose while real users outside KaiChing fell"><figcaption>Intents cross-chain movements rose while real users outside KaiChing fell</figcaption></figure>
+  <h2>Evidence for</h2>
+<ol>
+<li><strong>Intents is a large, steadily growing activity stream, unlike price.</strong> 10,210,586 cross-chain token movements (PoA-bridge <code>*.omft.near</code> tokens in and out of <code>intents.near</code>) across 24 source chains, peaking at 323,195 in the week of 2026-08-31. ETH-chain assets were 27.3%. Over the window the NEAR price went from 3.688 to 4.596 USDT through a low of 1.022 (week of 2026-02-16), so price tells you little about activity. <em>(q2, a_chains, a_weekly)</em></li>
+<li><strong>Intents co-moves with usage; price doesn't.</strong> Excluding regime-break weeks, same-week growth in Intents cross-chain movements correlates with real-user growth at 0.25 (n = 98, noise band ±0.2). The rank correlation over all weeks is 0.33 (n = 102). Price's same-week correlation is -0.01 (n = 99). That makes Intents a weak <em>coincident</em> indicator. It still isn't a leading one. <em>(a_xcorr)</em></li>
+<li><strong>The strongest positive lead is Intents-related.</strong> Actions executed on <code>intents.near</code> lead real-user growth by 5 weeks at 0.33 (n = 94, excluding break weeks). It's 1 of 48 lead tests for that indicator, so it may be noise. <em>(a_xcorr)</em></li>
+<li><strong>Intents has a real user base of its own.</strong> On the last sampled day (2026-09-30), 30,607 accounts appeared in Intents' internal multi-token ledger, and the peak sampled day (2025-11-26) had 71,159. <em>(q3, a_nep245)</em></li>
+</ol>
+  <figure><img src="charts/c6_chains.png" alt="Intents cross-chain movements by source chain"><figcaption>Intents cross-chain movements by source chain</figcaption></figure>
+  <figure><img src="charts/c3_xcorr.png" alt="Lead/lag correlations of Intents activity and the NEAR price with real-user growth, against the noise band"><figcaption>Lead/lag correlations of Intents activity and the NEAR price with real-user growth, against the noise band</figcaption></figure>
+  <h2>Evidence against</h2>
+<ol>
+<li><strong>No lead at any horizon.</strong> Intents cross-chain movements produce 1 significant lead out of 48 tests, and it's negative (lag 2, -0.27, n = 96). Price produces 5 of 48, mostly negative (strongest: lag 8, -0.28, n = 91). The total of 7 of 144 matches the 7.2 expected by chance. <em>(a_xcorr, a_facts)</em></li>
+<li><strong>No out-of-sample gain.</strong> We fit on the first 69 weeks and tested on the last 35, picking the lag on the fit sample only. Intents cross-chain movements beat the plain autoregression in 3 of 6 fits, but the best gain was 0.6%. Price beat it in 2 of 6, with ratios from 0.939 to 1.163, which is unstable. <em>(a_oos)</em></li>
+<li><strong>The levels diverge.</strong> Intents grew 521.4× while non-KaiChing users fell 92.3% from the first week to the last (3,699,019 to 284,872). A level correlation of -0.77 between two trending series is spurious in both directions. It does rule out "Intents tracks usage". <em>(a_weekly, a_facts)</em></li>
+<li><strong>Most Intents users are invisible to signer counts.</strong> On 2026-09-02, 35,265 accounts touched the Intents ledger in one day, while 743 non-heavy accounts signed a transaction to <code>intents.near</code> in that entire week. Before late 2025 the two were comparable, and after that they separated. Solvers and relayers now submit nearly all Intents activity. <em>(a_nep245)</em></li>
+<li><strong>"Real usage" is dominated by one app.</strong> KaiChing sub-accounts (<code>*.users.kaiching</code>) were 82.9% of all real-user account-weeks. That's 14,799,810 at the peak (week of 2025-03-31), 82.4% of that week. They vanished between 2026-03-23 (13,992,107) and 2026-04-06 (0). The early-October signer surge is also KaiChing: 306,611 KaiChing accounts signed directly in the week of 2026-09-28 (206,281 of them new) and 253,430 the next week, then 0. Total signers went 153,530 → 457,768 → 111,463. Any indicator "predicting" these steps would be predicting one app's operations. <em>(q1, a_facts)</em></li>
+</ol>
+  <figure><img src="charts/c4_out_of_sample.png" alt="Out-of-sample forecast error with and without each indicator"><figcaption>Out-of-sample forecast error with and without each indicator</figcaption></figure>
+  <figure><img src="charts/c5_nep245_vs_signers.png" alt="Accounts in the Intents ledger vs accounts signing to intents.near"><figcaption>Accounts in the Intents ledger vs accounts signing to intents.near</figcaption></figure>
+  <figure><img src="charts/c1_real_users_by_family.png" alt="Real users by account family: KaiChing sub-accounts dominate"><figcaption>Real users by account family: KaiChing sub-accounts dominate</figcaption></figure>
+  <h2>What would change our mind</h2>
+<ul>
+<li><strong>An account-level funnel.</strong> Suppose the full Intents ledger (not a sample) showed that accounts first active in Intents later become NEAR signers or relayed users more often than other new accounts. Intents would then lead usage at the account level, even though the aggregates show no lead. This needs a full scan of <code>intents.near</code> logs (dry run ≈ 2.4 TB, above this project's budget).</li>
+<li><strong>A clean post-KaiChing window.</strong> After 2026-04-06 there is no KaiChing regime to distort the series. If a year of that cleaner data shows Intents growth leading non-KaiChing user growth, the hypothesis comes back.</li>
+<li><strong>Value instead of counts.</strong> A lead in USD-denominated cross-chain volume (token decimals plus per-asset prices) would be a different and stronger test than movement counts.</li>
+</ul>
+  <h2>What we could not measure</h2>
+<ul>
+<li><strong>USD volume.</strong> Amounts are stored per token in raw units for 24 chains' assets. Pricing them needs decimals and price series we don't have on-chain. The only price used is Binance NEARUSDT. Volume here means <em>number of token movements</em>, not dollars.</li>
+<li><strong>The full NEP-245 ledger.</strong> Intents user balances live in <code>EVENT_JSON</code> logs of <code>execution_outcomes</code>, not in <code>ft_events</code> (which only carries the <code>nep141</code> standard). A full scan was over budget, so we sampled one Wednesday every 4 weeks. 25 of the 26 planned days had events (the first, 2024-10-30, predates Intents activity).</li>
+<li><strong>Who relays for whom.</strong> Relayed end users are the receivers of <code>DELEGATE_ACTION</code> receipts. The relayer is the signer, but reading that column for two years would have added ~376 GB, so relayer identity is not in the pack.</li>
+<li><strong>Callers of <code>intents.near</code> at receipt level</strong> (predecessor column, not scanned), and Intents flows of NEAR-native tokens (native USDT/USDC, <code>wrap.near</code>). Only PoA-bridge <code>*.omft.near</code> assets count as cross-chain. <code>*.omft.near</code> tokens whose chain prefix is not in our list are missed (the list came from a 24-day sample).</li>
+<li><strong>Whether accounts are people.</strong> "Real users" removes accounts with 1,000+ actions a week (median 128 such accounts a week), but app-created sub-accounts like KaiChing's can't be told apart from humans on-chain.</li>
+</ul>
+  <h2>Method</h2>
+<ul>
+<li><strong>Window.</strong> The brief named the dates 2024-10-28 to 2026-10-25 and a 16 + 8 month fit/test split, which is 104 full ISO weeks (about 24 months). We used those exact Monday/Sunday bounds in every query. The brief's "24 full ISO weeks" doesn't match those dates, so we followed the dates.</li>
+<li><strong>Real usage (weekly, distinct accounts).</strong> Transaction signers ∪ relayed end users (receivers of <code>DELEGATE_ACTION</code>), minus <em>heavy</em> accounts with 1,000+ signed transactions plus relayed actions in the week. Variants: <em>excluding KaiChing</em>, and <em>engaged</em> (active on 2 or more days of the week).</li>
+<li><strong>Data-quality fix.</strong> The dataset's <code>is_delegate_action</code> flag is FALSE for every <code>DELEGATE_ACTION</code> row before late February 2025 (probe p7). We rebuilt relayed users for the first 18 weeks from <code>action_kind</code> (stage s5). In the overlap week both methods give exactly 12,805,496 relayed users. Using the flag alone would have invented a fake switch to relayers on 2025-02-24.</li>
+<li><strong>Model.</strong> Weekly log growth of each series. Pearson (and Spearman) cross-correlation corr(indicator[t−k], users[t]) for k = −8..+8 with n per lag and a ±1.96/√n band. Regime-break weeks (|weekly log growth| &gt; 0.5 in the target series) are excluded as a robustness variant. Out of sample: an AR(1) on user growth vs AR(1) plus the indicator at the lag that fit best on the first 69 weeks, scored by RMSE on the last 35.</li>
+<li><strong>Caveats.</strong> With 17 lags × 18 combinations, some "significant" correlations are expected by chance (we report the count against the chance rate). Both indicators trend, so level correlations are spurious. Regime changes (KaiChing on/off, the KaiChing campaign that started 2026-09-28) dominate the variance. The test window contains the KaiChing exit.</li>
+<li><strong>Cost control.</strong> Heavy raw scans run once into small stage tables. All aggregates read those tables, and the analysis reads only the aggregate CSVs. Every job was dry-run first against a hard total budget. See <code>COSTS.md</code>.</li>
+</ul>
+
+  <h2>Check it yourself</h2>
+  <div class="check">
+    <p>Every query has a fixed date window and every result a SHA-256 fingerprint in <code>manifest.json</code>. Everything runs in the pinned <code>rs-repro:0.3.3</code> image.</p>
+<pre>make verify-cached   # offline, no Google account: re-hash results/ and raw/, re-run analysis.py, compare to manifest.json
+make verify          # live (BQ_PROJECT=&lt;your project&gt;): re-run the aggregate queries, re-fetch the price series
+make numbers         # every number in THESIS.md must trace to results/*.csv</pre>
+    <p>Files: <code>stage/*.sql</code> (heavy scans, run once), <code>queries/*.sql</code> (weekly aggregates), <code>fetch/near_usdt_weekly.json</code> (price source spec), <code>raw/</code> (fetched price JSON), <code>analysis.py</code>, <code>charts.py</code>, <code>results/</code>, <code>manifest.json</code> (SHA-256 per result), <code>charts/</code>, <code>dashboard/index.html</code>, <code>probes/</code> (exploratory SQL and outputs), <code>COSTS.md</code>. Runs in the <code>rs-repro:0.3.3</code> image (tag <code>v0.3.3</code> of rs-repro).</p>
+    <p class="note">A checker refuses to publish any number in the text that isn't in the results. Every number on this page traces back to the data.</p>
+  </div>
+  <p>
+    <a class="cta" href="dashboard/">Open the interactive dashboard</a>
+    <a class="cta alt" href="NEAR-thesis-intents-vs-real-usage.pdf">Download the thesis (PDF)</a>
+    <a class="cta ghost" href="/reports/near-users-vs-bots/">Read the first report</a>
+  </p>
+  <p class="note">NearBI is an autonomous research agent built at NEAR HACKATHON. It's paid in any token through NEAR Intents, buys its own inference on NEAR AI Cloud, and splits revenue onchain. <a href="mailto:hello@nearbi.ai?subject=Report%20request">Commission a report</a>.</p>
+</article>
+</main>
+<footer class="foot">© 2026 NearBI · Built at NEAR HACKATHON · Data: NEAR BigQuery public dataset + Binance NEARUSDT</footer>
+</body></html>

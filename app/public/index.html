@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NearBI: NEAR onchain research you can check</title>
+<meta name="description" content="NEAR onchain research you can check. Free Deep Dive report: the data rejected our own hypothesis that NEAR Intents volume leads real usage, and showed what is really happening instead.">
+<meta property="og:title" content="NearBI: the data rejected our own hypothesis">
+<meta property="og:description" content="Free Deep Dive report: NEAR Intents volume doesn't lead real usage. Intents grew 521.4× while real users outside KaiChing fell 92.3%.">
+<meta property="og:image" content="https://nearbi.ai/reports/near-thesis/charts/c2_levels.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="/assets/site.css">
+</head><body>
+<div class="hero">
+  <header class="nav" style="padding-left:20px;padding-right:20px"><a class="brand" href="/" style="color:#eef3ec">NearBI</a><a href="#reports" style="color:#b9c7bd">Reports</a><a href="#how" style="color:#b9c7bd">How it works</a><a href="#subscribe" style="color:#b9c7bd">Subscribe</a><a href="#order" style="color:#b9c7bd">Order</a><a href="/ledger/" style="color:#b9c7bd">Ledger</a><a href="/members" style="color:#b9c7bd">Members</a><a href="/login" style="color:#04140d;background:#00b37a;padding:6px 12px;border-radius:6px;font-weight:700">Sign in</a></header>
+  <div class="in">
+    <!-- thesis-numbers -->
+    <div class="eyebrow">Deep Dive free report · NEAR thesis · a sample of our $499 tier</div>
+    <h1>The data rejected our own hypothesis. <em>Here's what it found instead.</em></h1>
+    <p>We bet that NEAR Intents volume leads real NEAR usage better than the NEAR price. It doesn't: 7 of 144 lead tests clear the 95% noise band, about the 7.2 chance alone would produce. Instead, Intents and NEAR's own users are moving in opposite directions: Intents cross-chain movements grew 521.4× while real users outside one app fell 92.3%. And "real users" turned out to be dominated by that one app, KaiChing: 82.9% of all real-user account-weeks.</p>
+    <!-- /thesis-numbers -->
+    <a class="btn pri" href="/reports/near-thesis/">Read the free report</a>
+    <a class="btn sec" href="/reports/near-thesis/dashboard/">Explore the dashboard</a>
+    <a class="btn sec" href="#order">Order a report</a>
+</div>
+</div>
+
+<section id="reports"><div class="wrap">
+  <h2 class="sec">Deep Dive free report: is NEAR Intents a leading indicator of real usage?</h2>
+  <p class="sub"><b>This is what a $499 Deep Dive looks like:</b> a full thesis with claim, evidence for and against, what would change our mind, a model, a dashboard and a reproducible container. <a href="#order">Order one</a>.</p>
+  <!-- thesis-numbers -->
+  <p class="sub">104 full ISO weeks of NEAR mainnet (2024-10-28 to 2026-10-25) plus the NEARUSDT price. Our hypothesis, tested and rejected.</p>
+  <div class="feature">
+    <a href="/reports/near-thesis/"><img src="/reports/near-thesis/charts/c2_levels.png" alt="Intents cross-chain movements rose while real users outside KaiChing fell"></a>
+    <div>
+      <div class="grid3" style="grid-template-columns:1fr">
+        <div class="stat"><b>521.4×</b>growth in Intents cross-chain token movements, while real users outside KaiChing fell 92.3%.</div>
+        <div class="stat"><b>82.9%</b>of all real-user account-weeks were KaiChing sub-accounts. The early-October signer surge was KaiChing too.</div>
+      </div>
+      <p style="margin-top:18px">Neither Intents volume nor the NEAR price leads real-user growth. Intents is growing a different population: users whose activity is executed by solvers and relayers, <em>invisible to signer counts</em>.</p>
+      <a class="btn pri" href="/reports/near-thesis/">Read the report</a>
+      <a class="btn" style="border:1px solid #cfcfc6" href="/reports/near-thesis/dashboard/">Dashboard</a>
+      <a class="btn" style="border:1px solid #cfcfc6" href="/reports/near-thesis/NEAR-thesis-intents-vs-real-usage.pdf">PDF</a>
+    </div>
+  </div>
+  <!-- /thesis-numbers -->
+</div></section>
+
+<section id="how" style="background:#fff"><div class="wrap">
+  <h2 class="sec">Why you can trust the numbers</h2>
+  <p class="sub">Most research asks you to take its word for it. Ours ships its own proof.</p>
+  <div class="grid3">
+    <div class="card"><h3>Reproducible</h3><p>Every report ships a Docker + Jupyter pack: fixed date ranges, pinned dependencies, and a SHA-256 fingerprint of every query result. <code>make verify</code> prints REPRODUCED or MISMATCH.</p></div>
+    <div class="card"><h3>No invented numbers</h3><p>A checker refuses to publish any number in the text that isn't in the query results. Every number traces back to the data.</p></div>
+    <div class="card"><h3>Both sides</h3><p>Each report states its claim, the evidence for it, the evidence against it, and the result that would change the conclusion.</p></div>
+  </div>
+</div></section>
+
+<section id="subscribe" class="sub-band"><div class="wrap">
+  <div class="eyebrow">Membership</div>
+  <h2 class="sec">Subscription: $49/month</h2>
+  <p class="sub">For people who follow NEAR closely: funds, analysts, builders and ecosystem teams.</p>
+  <div class="grid3">
+    <div class="card"><h3>Every premium report</h3><p>All subscriber-only reports we publish while you're subscribed: a new NEAR onchain report every week, plus the full archive, each with its claim, evidence for and against, and what would change it.</p></div>
+    <div class="card"><h3>Check every number</h3><p>PDF, SQL, raw results and SHA-256 fingerprints for every report. A private reproducibility container per report, pulled with your own access token, is rolling out to subscribers.</p></div>
+    <div class="card hl"><h3>One Quick Answer a month</h3><p>Ask us one NEAR onchain question each month, answered with a chart, the SQL and a repro pack (a $29 value), included.</p></div>
+  </div>
+  <p class="sub" style="margin-top:18px"><b>No auto-renewal, no card.</b> Sign in with your NEAR wallet and pay one month at a time in any token through NEAR Intents. It settles as USDC on NEAR into an onchain revenue splitter you can audit on the <a href="/ledger/">public ledger</a>. If you don't renew, access simply ends.</p>
+  <p><a class="btn pri" href="/members/checkout">Subscribe: $49/month</a></p>
+</div></section>
+
+<section id="order"><div class="wrap">
+  <h2 class="sec">Order a report</h2>
+  <p class="sub">Sign in with your NEAR wallet, write your question and pay in any token through NEAR Intents. It settles as USDC on NEAR, and a fixed share goes to the contributors automatically. Your order and its delivery link appear on your members page.</p>
+  <div class="grid3">
+    <div class="card"><h3>Quick Answer</h3><div class="price">$29</div><p>One question about NEAR onchain activity, answered with a chart, the SQL and a repro pack. Delivered within 24 hours of payment.</p><p style="margin-top:16px"><a class="btn pri" href="/members/checkout?product=quick_answer">Order: $29</a></p><p><a href="/reports/near-users-vs-bots/">See a free sample →</a></p></div>
+    <div class="card hl"><h3>Deep Dive</h3><div class="price">$499</div><p>A full report: claim, evidence for and against, what would change it, 4–8 queries and a repro container. Delivered within 48 hours of payment.</p><p style="margin-top:16px"><a class="btn pri" href="/members/checkout?product=deep_dive">Order: $499</a></p><p><a href="/reports/near-thesis/">See a free sample →</a></p></div>
+    <div class="card"><h3>Ecosystem Report</h3><div class="price">from $2,500</div><p>Custom research on your protocol's users or your sector, under your brand or private. 3–5 days. Scoped and quoted by email.</p><p style="margin-top:16px"><a class="btn pri" href="mailto:hello@nearbi.ai?subject=Ecosystem%20report%20quote">Request a quote</a></p></div>
+  </div>
+</div></section>
+
+<footer class="foot">© 2026 NearBI · An autonomous research agent built at NEAR HACKATHON · #NEARHackathon</footer>
+</body></html>
