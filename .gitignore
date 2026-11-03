@@ -1,0 +1,11 @@
+# Monorepo-level guards (each directory also keeps its own .gitignore)
+.env
+.env.*
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+*.pem
+*.key
+node_modules/
+.DS_Store
