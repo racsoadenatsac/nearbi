@@ -51,7 +51,8 @@ describe("DynamoRepository key design", () => {
     await r.applyPayment({ paymentId: "p", accountId: "a.near", txHash: "t", nowSec: 1, newPeriodEnd: 9, expected: { exists: true, currentPeriodEnd: 7 } });
     const items = f.sent[0].input.TransactItems;
     expect(f.sent[0].name).toBe("TransactWriteCommand");
-    expect(items[0].Update).toMatchObject({ Key: { PK: "PAY#p" }, ConditionExpression: "#st = :pending" });
+    expect(items[0].Update).toMatchObject({ Key: { PK: "PAY#p" }, ConditionExpression: "#st IN (:open0, :open1, :open2, :open3, :open4)" });
+    expect(items[0].Update.ExpressionAttributeValues).toMatchObject({ ":open0": "preview", ":open1": "pending", ":open4": "expired" });
     expect(items[1].Put).toMatchObject({ Item: { PK: "TX#t", SK: "TX" }, ConditionExpression: "attribute_not_exists(PK)" });
     expect(items[2].Update).toMatchObject({ Key: { PK: "ACCT#a.near", SK: "SUB" }, ConditionExpression: "currentPeriodEnd = :expectedEnd" });
     expect(items[2].Update.ExpressionAttributeValues[":expectedEnd"]).toBe(7);

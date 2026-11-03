@@ -1,14 +1,17 @@
 // In-memory Repository for tests and local dev. Single-threaded JS makes each method atomic.
-import type {
-  AccountRecord,
-  ApplyPaymentInput,
-  ApplyPaymentResult,
-  PaymentRecord,
-  RegistryTokenRecord,
-  ReportRecord,
-  Repository,
-  StoredChallenge,
-  SubscriptionRecord,
+import {
+  PAYABLE_STATUSES,
+  type AccountRecord,
+  type ApplyPaymentInput,
+  type ApplyPaymentResult,
+  type PaymentRecord,
+  type PaymentStatus,
+  type PaymentStatusPatch,
+  type RegistryTokenRecord,
+  type ReportRecord,
+  type Repository,
+  type StoredChallenge,
+  type SubscriptionRecord,
 } from "../ports/repository";
 
 const clone = <T>(v: T): T => structuredClone(v);
@@ -58,7 +61,7 @@ export class MemoryRepository implements Repository {
   }
   async applyPayment(i: ApplyPaymentInput): Promise<ApplyPaymentResult> {
     const pay = this.payments.get(i.paymentId);
-    if (!pay || pay.status !== "pending") return { ok: false, reason: "not_pending" };
+    if (!pay || !PAYABLE_STATUSES.includes(pay.status)) return { ok: false, reason: "not_pending" };
     if (this.txHashes.has(i.txHash)) return { ok: false, reason: "tx_used" };
     const sub = this.subscriptions.get(i.accountId);
     const matches = i.expected.exists ? !!sub && sub.currentPeriodEnd === i.expected.currentPeriodEnd : !sub;
@@ -73,6 +76,20 @@ export class MemoryRepository implements Repository {
       updatedAt: i.nowSec,
     });
     return { ok: true };
+  }
+
+  async updatePaymentStatus(id: string, from: readonly PaymentStatus[], patch: PaymentStatusPatch) {
+    if ((patch.status as string) === "paid") throw new Error("use applyPayment to mark a payment paid");
+    const pay = this.payments.get(id);
+    if (!pay || !from.includes(pay.status)) return false;
+    this.payments.set(id, {
+      ...pay,
+      status: patch.status,
+      intentsStatus: patch.intentsStatus,
+      checkedAt: patch.checkedAt,
+      ...(patch.settlementTx !== undefined ? { settlementTx: patch.settlementTx } : {}),
+    });
+    return true;
   }
 
   async replaceRegistryToken(rec: RegistryTokenRecord) {

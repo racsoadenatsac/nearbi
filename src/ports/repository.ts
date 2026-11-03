@@ -20,17 +20,43 @@ export interface AccountRecord {
  */
 export type PaymentStatus = "preview" | "pending" | "processing" | "incomplete" | "paid" | "refunded" | "failed" | "expired";
 
+/** Statuses applyPayment may move to "paid". refunded/failed are final: the money went back or nowhere. */
+export const PAYABLE_STATUSES: readonly PaymentStatus[] = ["preview", "pending", "processing", "incomplete", "expired"];
+
+export type PaymentMode = "dry" | "live" | "stub";
+
 export interface PaymentRecord {
-  id: string; // uuid
+  id: string; // uuid; also the order_id passed to the splitter
   accountId: string;
   amountUsd: number;
-  token: string; // 1Click asset id the user pays with
-  depositAddress: string;
+  token: string; // 1Click asset id the user pays with (originAsset)
+  depositAddress: string | null; // null for dry quotes
   status: PaymentStatus;
-  txHash: string | null;
+  txHash: string | null; // uniqueness claim used when marking paid ("1click:<depositAddress>" or the admin's tx hash)
   createdAt: number;
   paidAt: number | null;
-  quoteJson: string; // raw quote, for audit
+  quoteJson: string; // raw 1Click quote response (incl. signature), for audit and disputes
+  // 1Click fields. Payments created before the integration (stub era) read back with these null.
+  mode: PaymentMode | null;
+  quoteId: string | null; // 1Click correlationId
+  depositMemo: string | null;
+  destinationAsset: string | null;
+  recipient: string | null;
+  amountIn: string | null; // base units of `token` to send
+  amountInFormatted: string | null;
+  minAmountIn: string | null;
+  amountOut: string | null; // base units of destinationAsset the recipient receives
+  deadline: number | null; // unix seconds
+  intentsStatus: string | null; // last raw 1Click status
+  checkedAt: number | null; // last 1Click status check
+  settlementTx: string | null; // destination tx hash reported by 1Click on SUCCESS
+}
+
+export interface PaymentStatusPatch {
+  status: Exclude<PaymentStatus, "paid">;
+  intentsStatus: string | null;
+  checkedAt: number;
+  settlementTx?: string | null;
 }
 
 export interface ReportRecord {
@@ -69,10 +95,15 @@ export interface Repository {
   createPayment(p: PaymentRecord): Promise<void>;
   getPayment(id: string): Promise<PaymentRecord | null>;
   /**
-   * Atomically: payment pending -> paid, claim txHash (globally unique), set the subscription to active
+   * Atomically: payment in PAYABLE_STATUSES -> paid, claim txHash (globally unique), set the subscription to active
    * with newPeriodEnd, but only if the subscription still matches `expected`. All or nothing.
    */
   applyPayment(input: ApplyPaymentInput): Promise<ApplyPaymentResult>;
+  /**
+   * Conditional status update from the 1Click poller: applies only if the payment's current status is in
+   * `from`. Never sets "paid" (only applyPayment does). Returns false if the condition failed.
+   */
+  updatePaymentStatus(id: string, from: readonly PaymentStatus[], patch: PaymentStatusPatch): Promise<boolean>;
 
   // registry
   /** Store a new token and revoke the account's previous one (one live token per account). */
