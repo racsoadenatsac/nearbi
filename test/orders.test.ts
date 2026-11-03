@@ -273,6 +273,26 @@ describe("delivered order opens its report", () => {
     expect((await t.req("/registry/token", { method: "POST", cookie: alice.cookie })).status).toBe(402); // still no subscription
   });
 
+  it("a non-subscriber buyer of a catalogued gated report opens its HTML, PDF and charts via the delivery path", async () => {
+    const t = setup(LIVE);
+    const slug = "near-oct-cohort-retention";
+    t.content.put(`reports/${slug}/index.html`, "<h1>Cohort</h1>", "text/html; charset=utf-8");
+    t.content.put(`reports/${slug}/REPORT.pdf`, "%PDF", "application/pdf");
+    t.content.put(`reports/${slug}/charts/c2_retention_by_day.png`, "png", "image/png");
+    const buyer = await t.signIn();
+    const other = await t.signIn("bob.near");
+    const { co } = await paidOrder(t, buyer.cookie);
+    await t.json(`/billing/admin/orders/${co.paymentId}`, { status: "delivered", deliveryUrl: `/reports/${slug}/` }, { headers: ADMIN });
+    expect((await t.req(`/reports/${slug}/`, { cookie: buyer.cookie })).status).toBe(200);
+    for (const f of ["REPORT.pdf", "charts/c2_retention_by_day.png"]) {
+      const r = await t.req(`/reports/${slug}/${f}`, { cookie: buyer.cookie });
+      expect(r.status).toBe(302);
+      expect(r.headers.get("location")).not.toMatch(/^\/(login|members)/); // presigned content, not the gate
+      expect((await t.req(`/reports/${slug}/${f}`, { cookie: other.cookie })).headers.get("location")).toBe("/members?subscribe=1");
+    }
+    expect((await t.req(`/reports/${slug}/`)).headers.get("location")).toBe(`/login?next=${encodeURIComponent(`/reports/${slug}/`)}`);
+  });
+
   it("deliveredReportSlug only trusts our own origins and report paths", async () => {
     const { deliveredReportSlug } = await import("../src/core/products");
     const o = ["https://nearbi.ai"];
