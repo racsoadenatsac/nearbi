@@ -3,7 +3,7 @@ import { MemoryRepository } from "../../src/adapters/memory-repository";
 import { loadIntentsConfig } from "../../src/config";
 import { IntentsAdapter, OneClickClient, USDC_ON_NEAR } from "../../src/intents";
 import type { Repository } from "../../src/ports/repository";
-import { CheckoutError, confirmPayment, createCheckout, LATE_SUCCESS_WINDOW, pollPaymentStatus, sweepOpenPayments, type BillingDeps } from "../../src/services/billing";
+import { CheckoutError, confirmPayment, createCheckout, LATE_SUCCESS_WINDOW, pollPaymentStatus, SWEEP_SLOW_RECHECK, sweepOpenPayments, type BillingDeps } from "../../src/services/billing";
 import { fakeOneClick, statusBody } from "../helpers/oneclick";
 
 const ts = (iso: string) => Math.floor(Date.parse(iso) / 1000);
@@ -370,7 +370,7 @@ describe("background sweep (EventBridge Scheduler -> sweepOpenPayments)", () => 
     const x = deps();
     for (let i = 0; i < 3; i++) await createCheckout(x.d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC });
     let t = 0;
-    const r = await sweepOpenPayments(x.d, now + 60, { budgetMs: 15, clock: () => (t += 10) });
+    const r = await sweepOpenPayments(x.d, now + 60, { budgetMs: 15, clock: () => (t += 10), concurrency: 1 });
     expect(r).toMatchObject({ open: 3, truncated: true });
     expect(r.checked).toBeLessThan(3);
 
@@ -379,5 +379,35 @@ describe("background sweep (EventBridge Scheduler -> sweepOpenPayments)", () => 
     x.repo.getPayment = async (id: string) => (++calls === 1 ? Promise.reject(new Error("boom")) : orig(id));
     const r2 = await sweepOpenPayments(x.d, now + 120);
     expect(r2).toMatchObject({ open: 3, errors: 1, checked: 2 });
+  });
+
+  it("randomized order: a truncated run doesn't always pick the same payments", async () => {
+    const x = deps();
+    for (let i = 0; i < 6; i++) await createCheckout(x.d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC });
+    const seen = new Set<string>();
+    const orig = x.repo.getPayment.bind(x.repo);
+    x.repo.getPayment = async (id: string) => (seen.add(id), orig(id));
+    let seed = 1;
+    const random = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let k = 0; k < 20; k++) {
+      let t = 0;
+      await sweepOpenPayments(x.d, now + 60 + k * 10, { budgetMs: 15, clock: () => (t += 10), concurrency: 1, random });
+    }
+    expect(seen.size).toBe(6);
+  });
+
+  it("backs off old pending payments (1Click keeps addresses open ~72 h) but keeps young ones at every run", async () => {
+    const x = deps();
+    const old = await createCheckout(x.d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC });
+    const young = await createCheckout(x.d, { accountId: "alice.near", amountUsd: 49, nowSec: now + 7200, originAsset: BASE_USDC });
+    const t0 = now + 7260;
+    expect(await sweepOpenPayments(x.d, t0)).toMatchObject({ checked: 2, deferred: 0 });
+    expect(await sweepOpenPayments(x.d, t0 + 60)).toMatchObject({ checked: 1, deferred: 1 }); // old one deferred
+    expect((await x.repo.getPayment(young.paymentId))?.checkedAt).toBe(t0 + 60);
+    expect((await x.repo.getPayment(old.paymentId))?.checkedAt).toBe(t0);
+    expect(await sweepOpenPayments(x.d, t0 + SWEEP_SLOW_RECHECK + 1)).toMatchObject({ checked: 2, deferred: 0 });
+    // a deposit on the old one is still picked up within SWEEP_SLOW_RECHECK
+    setStatus(x.f, old.depositAddress!, "SUCCESS");
+    expect(await sweepOpenPayments(x.d, t0 + 2 * SWEEP_SLOW_RECHECK + 2)).toMatchObject({ paid: 1 });
   });
 });
