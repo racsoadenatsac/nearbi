@@ -1,0 +1,25 @@
+#!/bin/bash
+# Move a one-off order along and set its delivery link (shown to the customer under "Your orders" on /members).
+#
+# Usage: AWS_PROFILE=nearbi bin/update-order <orderId> <paid|in_progress|delivered> [deliveryUrl]
+#   bin/update-order 3f0c…-uuid in_progress
+#   bin/update-order 3f0c…-uuid delivered https://nearbi.ai/reports/qa-3f0c/
+#   ("delivered" needs a link: an https URL or a path on nearbi.ai such as /reports/<slug>/)
+# Calls POST https://nearbi.ai/billing/admin/orders/<orderId> with the ADMIN_TOKEN. The token is read from
+# $NEARBI_ADMIN_TOKEN, or from SSM /nearbi/app/ADMIN_TOKEN (needs ssm:GetParameter + kms decrypt). Never printed.
+# Env: NEARBI_URL (default https://nearbi.ai), AWS_REGION (default us-east-1).
+set -euo pipefail
+[ $# -ge 2 ] && [ $# -le 3 ] || { sed -n '2,11p' "$0"; exit 2; }
+id="$1" status="$2" url="${3:-}"
+[[ "$id" =~ ^[0-9a-f-]{36}$ ]] || { echo "orderId must be the payment uuid" >&2; exit 2; }
+case "$status" in paid|in_progress|delivered) ;; *) echo "status must be paid, in_progress or delivered" >&2; exit 2 ;; esac
+base="${NEARBI_URL:-https://nearbi.ai}"
+token="${NEARBI_ADMIN_TOKEN:-}"
+if [ -z "$token" ]; then
+  token=$(aws ssm get-parameter --region "${AWS_REGION:-us-east-1}" --name /nearbi/app/ADMIN_TOKEN --with-decryption --query Parameter.Value --output text)
+fi
+body=$(jq -nc --arg s "$status" --arg u "$url" '{status: $s} + (if $u == "" then {} else {deliveryUrl: $u} end)')
+# Token goes through a header file on stdin-like fd, not argv, so it doesn't show up in ps.
+curl -sS --fail-with-body -X POST "$base/billing/admin/orders/$id" \
+  -H @<(printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$token") \
+  --data "$body" | jq .
