@@ -76,8 +76,6 @@ No NAT, EC2, RDS, load balancers or provisioned concurrency.
   ACM cert, S3 storage bucket `nearbi-registry`, token auth delegated to the app (`GET /registry/auth`,
   not implemented in the app yet; see the app README). This alone costs ≈ $25–35/month (Fargate + LB),
   so it needs a budget decision.
-- **Real NEAR Intents**: replace the 1Click stub, add an EventBridge Scheduler + Lambda to poll
-  `/v0/status` and confirm payments (replaces manual `POST /billing/confirm`).
 - **CI/CD**: pipeline (e.g. GitHub Actions with OIDC to an AWS deploy role) for build, plan/apply,
   site sync and verify.
 
@@ -90,15 +88,40 @@ No NAT, EC2, RDS, load balancers or provisioned concurrency.
 - App bundle: nearbi-app `v0.2.0`. Catalog seeded (`REPORT#near-users-vs-bots`, `REPORT#near-thesis`). Content bucket empty
   (no gated reports published yet).
 
-## Payments (NEAR Intents 1Click)
+## Payments (NEAR Intents 1Click) — LIVE on mainnet since 2026-11-03
 
-The Lambda gets `INTENTS_MODE` (`var.intents_mode`, default `dry`), `SETTLEMENT_ASSET`
-(`var.settlement_asset`, default native USDC on NEAR `nep141:17208628…6133a1`) and, only when
-`var.settlement_recipient` is non-empty, `SETTLEMENT_RECIPIENT`. In dry mode leave the recipient empty: the
-app quotes against an inert placeholder (1Click rejects testnet accounts, so `splitter.nearbi-agent.testnet`
-can't be used). `intents_mode = "live"` fails validation here, and the app refuses to start, unless the
-recipient is a mainnet NEAR account. `ONECLICK_JWT` (optional partner key, only lowers fees) is not wired
-yet; add it to `local.secrets` when there is one. Go-live checklist: nearbi-app README "Payments".
+The Lambda gets `INTENTS_MODE` (`var.intents_mode`, default **`live`**), `SETTLEMENT_RECIPIENT`
+(`var.settlement_recipient`, default **`forwarder.nearbi.near`**), `SETTLEMENT_ASSET` (`var.settlement_asset`,
+native USDC on NEAR `nep141:17208628…6133a1`) and `SETTLEMENT_DELIVERY` (`var.settlement_delivery`, default
+`transfer`: plain `ft_transfer`, refundable). `intents_mode = "live"` fails validation here, and the app
+refuses to start, unless the recipient is a mainnet NEAR account. To go back to preview: `-var intents_mode=dry`
+(open live payments are still swept). `ONECLICK_JWT` (optional partner key, only lowers fees) is not wired
+yet; add it to `local.secrets` when there is one. Details: nearbi-app README "Payments".
+
+### Background payment sweep (`tofu/scheduler.tf`)
+
+EventBridge Scheduler `nearbi-payment-sweep` (`var.payment_sweep_schedule`, default `rate(1 minute)`, UTC,
+no flexible window, no retries, max event age 60 s) invokes `nearbi-app` directly with the input
+`{"nearbiTask":"sweep-payments"}`. Its role `nearbi-app-payment-sweep-scheduler` can only
+`lambda:InvokeFunction` on that function and can only be assumed by `scheduler.amazonaws.com` from this
+account (`aws:SourceAccount`). No new Lambda permissions were needed: the sweep uses `Query`/`GetItem`/
+`UpdateItem`/`PutItem`/`DeleteItem` on the same table. Disable with `-var payment_sweep_enabled=false`
+(the checkout page still polls). Evidence that it runs, one line per minute:
+
+```bash
+aws logs filter-log-events --log-group-name /aws/lambda/nearbi-app --filter-pattern '"sweep-payments"' \
+  --start-time $(( ($(date +%s) - 600) * 1000 )) --query 'events[].message' --output text
+```
+
+Cost: 43 200 invocations/month of a ~100 ms, 512 MB Lambda plus one DynamoDB Query each: well inside the
+free tier, < $0.10/month otherwise.
+
+### Forwarding (not in AWS)
+
+1Click delivers USDC to `forwarder.nearbi.near`; moving it into `splitter.nearbi.near` needs the forwarder's
+function-call key, which stays in the operator Mac's Keychain. `rs-agent bin/forwarder-runner` runs there
+with the operator's SSO profile (reads the `FWDQ` queue items and `PAY#` items, writes `forwardedTx` and
+deletes the queue item). No IAM user or access key exists for it.
 
 ## Free reports (static, public)
 

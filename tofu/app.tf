@@ -99,18 +99,19 @@ resource "aws_lambda_function" "app" {
 
   environment {
     variables = merge(local.secrets, {
-      TABLE_NAME        = aws_dynamodb_table.main.name
-      CONTENT_BUCKET    = aws_s3_bucket.content.bucket
-      CONTENT_PREFIX    = var.content_prefix
-      APP_ORIGIN        = join(",", local.public_origins)
-      STATIC_ORIGIN     = local.public_origins[0]
-      MONTHLY_PRICE_USD = tostring(var.monthly_price_usd)
-      NEAR_RPC_URL      = var.near_rpc_url
-      AUTH_RECIPIENT    = var.domain
-      REGISTRY_HOST     = "registry.${var.domain}"
-      FREE_REPORT_SLUGS = join(",", local.free_report_slugs)
-      INTENTS_MODE      = var.intents_mode
-      SETTLEMENT_ASSET  = var.settlement_asset
+      TABLE_NAME          = aws_dynamodb_table.main.name
+      CONTENT_BUCKET      = aws_s3_bucket.content.bucket
+      CONTENT_PREFIX      = var.content_prefix
+      APP_ORIGIN          = join(",", local.public_origins)
+      STATIC_ORIGIN       = local.public_origins[0]
+      MONTHLY_PRICE_USD   = tostring(var.monthly_price_usd)
+      NEAR_RPC_URL        = var.near_rpc_url
+      AUTH_RECIPIENT      = var.domain
+      REGISTRY_HOST       = "registry.${var.domain}"
+      FREE_REPORT_SLUGS   = join(",", local.free_report_slugs)
+      INTENTS_MODE        = var.intents_mode
+      SETTLEMENT_ASSET    = var.settlement_asset
+      SETTLEMENT_DELIVERY = var.settlement_delivery
       }, var.settlement_recipient == "" ? {} : {
       SETTLEMENT_RECIPIENT = var.settlement_recipient
     })

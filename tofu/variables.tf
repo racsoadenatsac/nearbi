@@ -88,10 +88,10 @@ variable "intents_mode" {
   description = <<-EOT
     INTENTS_MODE for the app. "dry": real 1Click DRY quotes, no deposit address, nothing payable, preview
     banner. "live": real deposit addresses; the app refuses to start unless settlement_recipient is a
-    mainnet NEAR account. See ../nearbi-app README "Payments".
+    mainnet NEAR account. See ../nearbi-app README "Payments". LIVE since 2026-11-03 (operator-approved).
   EOT
   type        = string
-  default     = "dry"
+  default     = "live"
   validation {
     condition     = contains(["dry", "live"], var.intents_mode)
     error_message = "intents_mode must be \"dry\" or \"live\"."
@@ -106,15 +106,41 @@ variable "settlement_asset" {
 
 variable "settlement_recipient" {
   description = <<-EOT
-    SETTLEMENT_RECIPIENT: mainnet NEAR account that receives revenue. Leave empty in dry mode: dry quotes
-    then use an inert placeholder (the testnet splitter, splitter.nearbi-agent.testnet, is rejected by
-    1Click and is not usable here). Required for intents_mode = "live" (operator decision, not set yet).
+    SETTLEMENT_RECIPIENT: mainnet NEAR account that receives revenue. Live: forwarder.nearbi.near, the
+    rs-payments forwarder contract (no full-access keys; its only outgoing token call is ft_transfer_call
+    into splitter.nearbi.near). Empty is allowed in dry mode only (dry quotes then use an inert placeholder).
   EOT
   type        = string
-  default     = ""
+  default     = "forwarder.nearbi.near"
   validation {
     condition     = var.intents_mode == "dry" || can(regex("^([a-z0-9_-]+\\.)*near$|^[0-9a-f]{64}$", var.settlement_recipient))
     error_message = "intents_mode = \"live\" needs settlement_recipient set to a mainnet NEAR account (*.near or 64-hex implicit)."
   }
 }
 
+
+variable "settlement_delivery" {
+  description = <<-EOT
+    SETTLEMENT_DELIVERY: "transfer" (plain ft_transfer to settlement_recipient, refundable; the forwarding
+    agent then forwards into the splitter) or "ft_transfer_call" (experimental, no refund on failure; the app
+    also requires SETTLEMENT_ACCEPT_NO_REFUND=yes, which this module does not set).
+  EOT
+  type        = string
+  default     = "transfer"
+  validation {
+    condition     = contains(["transfer", "ft_transfer_call"], var.settlement_delivery)
+    error_message = "settlement_delivery must be \"transfer\" or \"ft_transfer_call\"."
+  }
+}
+
+variable "payment_sweep_schedule" {
+  description = "EventBridge Scheduler expression for the background payment sweep (1Click status of open live payments)."
+  type        = string
+  default     = "rate(1 minute)"
+}
+
+variable "payment_sweep_enabled" {
+  description = "ENABLED or DISABLED. Disabling only stops background confirmation; the checkout page still polls."
+  type        = bool
+  default     = true
+}
