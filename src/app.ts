@@ -6,7 +6,6 @@
 
 import { Hono, type Context } from "hono";
 import { getCookie } from "hono/cookie";
-import { quoteDeposit as defaultQuote, type QuoteDepositFn } from "./adapters/intents";
 import { rpcKeyCheck } from "./adapters/near-rpc";
 import type { Config } from "./config";
 import { sha256, timingSafeEqual, utf8 } from "./core/encoding";
@@ -14,10 +13,11 @@ import { decide, parseReportPath, reportObjectKey, requiredAccess } from "./core
 import { clearSessionCookie, SESSION_COOKIE, SESSION_TTL_SECONDS, sessionCookie, signSession, verifySession } from "./core/session";
 import { newChallenge, verifySignIn, type KeyCheckFn } from "./core/signin";
 import { subscriptionState, type SubscriptionState } from "./core/subscription";
-import { containerPage, loginPage, membersPage, messagePage } from "./pages";
+import { IntentsAdapter, OneClickClient } from "./intents";
+import { checkoutPage, containerPage, loginPage, membersPage, messagePage } from "./pages";
 import type { ContentStore } from "./ports/content";
 import type { Repository } from "./ports/repository";
-import { confirmPayment, createCheckout } from "./services/billing";
+import { CheckoutError, confirmPayment, createCheckout, listPaymentTokens, pollPaymentStatus, type BillingDeps } from "./services/billing";
 import { issueRegistryToken } from "./services/registry";
 
 export interface AppDeps {
@@ -25,7 +25,8 @@ export interface AppDeps {
   repo: Repository;
   content: ContentStore;
   now?: () => number; // unix seconds
-  quoteDeposit?: QuoteDepositFn;
+  /** NEAR Intents 1Click adapter; built from config.intents when omitted. */
+  intents?: IntentsAdapter;
   keyCheck?: KeyCheckFn;
 }
 
@@ -50,7 +51,8 @@ const CONTENT_TYPES: Record<string, string> = {
 export function createApp(deps: AppDeps) {
   const { config, repo, content } = deps;
   const now = deps.now ?? (() => Math.floor(Date.now() / 1000));
-  const quote = deps.quoteDeposit ?? defaultQuote;
+  const intents = deps.intents ?? createIntentsAdapter(config);
+  const billing: BillingDeps = { repo, intents, config: config.intents };
   const keyCheck = deps.keyCheck ?? rpcKeyCheck(config.nearRpcUrl);
 
   const app = new Hono<{ Variables: Vars }>();
@@ -137,23 +139,57 @@ export function createApp(deps: AppDeps) {
   });
 
   // ---------------------------------------------------------------- billing
+  // Tokens the user can pay with: the live 1Click list (cached per execution environment).
+  app.get("/billing/tokens", async (c) => {
+    try {
+      const tokens = await listPaymentTokens(intents);
+      const settlement = await intents.findToken(config.intents.settlementAsset);
+      return c.json(
+        {
+          mode: config.intents.mode,
+          priceUsd: config.monthlyPriceUsd,
+          settlement: settlement ? { assetId: settlement.assetId, symbol: settlement.symbol, blockchain: settlement.blockchain } : null,
+          tokens,
+        },
+        200,
+        { "cache-control": "private, max-age=300" },
+      );
+    } catch (e) {
+      console.warn(`1click tokens: ${(e as Error).message}`);
+      return c.json({ error: "token list unavailable, try again" }, 503);
+    }
+  });
+
   app.post("/billing/checkout", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as { originAsset?: string; refundTo?: string };
-    const co = await createCheckout(
-      repo,
-      {
+    const body = (await c.req.json().catch(() => ({}))) as { originAsset?: unknown; refundTo?: unknown };
+    if (typeof body.originAsset !== "string" || !body.originAsset) return c.json({ error: "originAsset required (pick a token)" }, 400);
+    if (body.refundTo !== undefined && body.refundTo !== "" && typeof body.refundTo !== "string") return c.json({ error: "refundTo must be a string" }, 400);
+    try {
+      const co = await createCheckout(billing, {
         accountId: c.get("accountId")!,
         amountUsd: config.monthlyPriceUsd,
         nowSec: now(),
-        originAsset: typeof body.originAsset === "string" ? body.originAsset : undefined,
-        refundTo: typeof body.refundTo === "string" ? body.refundTo : undefined,
-      },
-      quote,
-    );
-    return c.json(co, 201, { "cache-control": "no-store" });
+        originAsset: body.originAsset,
+        refundTo: typeof body.refundTo === "string" && body.refundTo.trim() ? body.refundTo : undefined,
+      });
+      return c.json(co, 201, { "cache-control": "no-store" });
+    } catch (e) {
+      if (e instanceof CheckoutError) return c.json({ error: e.message }, e.status);
+      throw e;
+    }
   });
 
-  // Internal: mark a payment paid. To be replaced by 1Click status polling (see adapters/intents.ts).
+  // Poller for the checkout page. Live payments: asks 1Click and extends the subscription on SUCCESS.
+  app.get("/billing/status/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!/^[0-9a-f-]{36}$/.test(id)) return c.json({ error: "payment not found" }, 404);
+    const r = await pollPaymentStatus(billing, id, c.get("accountId")!, now());
+    if (!r.ok) return c.json({ error: r.error }, r.status);
+    return c.json(r.view, 200, { "cache-control": "no-store" });
+  });
+
+  // Admin override: mark a payment paid by hand (e.g. a deposit 1Click reported late, or a comp).
+  // The normal path is GET /billing/status/:id seeing 1Click SUCCESS.
   app.post("/billing/confirm", async (c) => {
     if (!(await constantTimeBearer(c.req.header("authorization"), config.adminToken))) return c.json({ error: "forbidden" }, 403);
     const body = (await c.req.json().catch(() => ({}))) as { paymentId?: unknown; txHash?: unknown };
@@ -185,7 +221,21 @@ export function createApp(deps: AppDeps) {
 
   app.get("/members", async (c) =>
     c.html(
-      membersPage({ accountId: c.get("accountId")!, sub: c.get("sub")!, priceUsd: config.monthlyPriceUsd, reports: await repo.listReports() }),
+      membersPage({
+        accountId: c.get("accountId")!,
+        sub: c.get("sub")!,
+        priceUsd: config.monthlyPriceUsd,
+        reports: await repo.listReports(),
+        paymentsLive: config.intents.mode === "live",
+      }),
+      200,
+      { "cache-control": "no-store" },
+    ),
+  );
+
+  app.get("/members/checkout", (c) =>
+    c.html(
+      checkoutPage({ accountId: c.get("accountId")!, sub: c.get("sub")!, priceUsd: config.monthlyPriceUsd, mode: config.intents.mode }),
       200,
       { "cache-control": "no-store" },
     ),
@@ -239,6 +289,11 @@ export function createApp(deps: AppDeps) {
   });
 
   return app;
+}
+
+export function createIntentsAdapter(config: Config): IntentsAdapter {
+  const client = new OneClickClient({ baseUrl: config.intents.baseUrl, jwt: config.intents.jwt });
+  return new IntentsAdapter(client, { settlementAsset: config.intents.settlementAsset, slippageBps: config.intents.slippageBps });
 }
 
 function notFound(c: C) {

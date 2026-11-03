@@ -34,9 +34,12 @@ export const DEFAULT_FREE_REPORT_SLUGS = ["near-users-vs-bots", "near-thesis"] a
 export function requiredAccess(pathname: string, freeSlugs: string | readonly string[]): Access {
   const free: readonly string[] = typeof freeSlugs === "string" ? [freeSlugs] : freeSlugs;
   if (pathname === "/members" || pathname === "/members/") return "session";
+  if (pathname === "/members/checkout") return "session"; // you subscribe from here, so no subscription needed
   if (pathname.startsWith("/members/")) return "subscriber";
   if (pathname === "/registry/token") return "subscriber";
-  if (pathname === "/billing/checkout" || pathname === "/auth/logout") return "session";
+  if (pathname === "/auth/logout") return "session";
+  // Everything under /billing/ needs a session, except the admin override (bearer token, checked in the route).
+  if (pathname.startsWith("/billing/") && pathname !== "/billing/confirm") return "session";
   if (pathname === "/reports" || pathname.startsWith("/reports/")) {
     const r = parseReportPath(pathname);
     if (r && free.includes(r.slug)) return "public";
