@@ -9,7 +9,6 @@
 #   bin/deploy-mainnet.sh fc-keys       # agent function-call keys (secrets -> macOS Keychain)
 #   bin/deploy-mainnet.sh verify        # code_hash == local WASM, get_config, key permissions
 #   bin/deploy-mainnet.sh lock          # DELETE every full-access key on splitter + forwarder
-#   bin/deploy-mainnet.sh record        # write deploy/mainnet.json (public data only)
 #
 # Every write is signed with the temporary deploy key from the Keychain (see lib-mainnet.sh).
 # Any unexpected state stops the script. No USDC is moved.
@@ -19,10 +18,11 @@ FORWARDER_WASM="$ROOT/res/nearbi_forwarder.wasm"
 EMPTY=11111111111111111111111111111111
 YOCTO_PER_BYTE=10000000000000000000          # 1e19 (storage_amount_per_byte)
 SPLITTER_BUFFER=${SPLITTER_BUFFER:-50000000000000000000000}    # 0.05 NEAR: agent gas + failed-payout records
-FORWARDER_BUFFER=${FORWARDER_BUFFER:-100000000000000000000000} # 0.1 NEAR: forward gas, order records, 1-yocto deposits
+FORWARDER_BUFFER=${FORWARDER_BUFFER:-200000000000000000000000} # 0.2 NEAR: each forward (150 Tgas) holds 0.15 NEAR of the
+                                                               # forwarder balance at the 1e9 reserve price, plus order records
 STATE_ALLOWANCE=${STATE_ALLOWANCE:-3000}     # bytes: contract state after init + one FC key, rounded up
 OWNER_RESERVE=${OWNER_RESERVE:-50000000000000000000000}        # keep >= 0.05 NEAR on nearbi.near for fees
-INIT_GAS_TGAS=${INIT_GAS_TGAS:-20}         # init burns ~1.9 Tgas (sandbox, protocol 86); prepaid gas is RESERVED from the
+INIT_GAS_TGAS=${INIT_GAS_TGAS:-10}         # init burns ~1.9 Tgas (sandbox, protocol 86); prepaid gas is RESERVED from the
                                              # balance while the receipt runs, so 100 Tgas made a 2.148 NEAR splitter fail
 # Mainnet reserved the deploy+init receipt's gas at 1e9 yocto/gas (10x the 1e8 burn price) during
 # execution: derived from the LackBalanceForState of tx 3apoJELRBxjajcxHV3SFWGd3dtsKUmjpUUxzy8vaTwhD
@@ -90,7 +90,7 @@ only_keys() { # only_keys <account> <expected sorted pubkeys...>
   local want; want="$(printf '%s\n' "$@" | sort | tr '\n' ' ')"
   [ "$got" = "$want" ] || die "$acct keys are [$got], expected [$want]"
 }
-fc_pub() { security find-generic-password -s "nearbi-mainnet-fc-$1" -a "$1" 2>/dev/null | sed -n 's/.*"icmt"<blob>="\(ed25519:[1-9A-HJ-NP-Za-km-z]*\)".*/\1/p'; }
+fc_pub() { { security find-generic-password -s "nearbi-mainnet-fc-$1" -a "$1" 2>/dev/null || true; } | sed -n 's/.*"icmt"<blob>="\(ed25519:[1-9A-HJ-NP-Za-km-z]*\)".*/\1/p'; }
 
 case "${1:-}" in
 preflight)
@@ -198,7 +198,7 @@ fc-keys)
       | python3 -c 'import sys,json; fc=json.load(sys.stdin)["result"]["permission"]["FunctionCall"]; print("    on-chain:", json.dumps(fc))' >&2
   }
   add_fc "$SPLITTER" "record_cost, anchor_report" "0.25 NEAR"
-  add_fc "$FORWARDER" "forward" "0.25 NEAR"
+  add_fc "$FORWARDER" "forward" "0.5 NEAR"
   ;;
 
 verify)

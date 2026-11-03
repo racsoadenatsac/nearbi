@@ -4,8 +4,9 @@ NearBI's payment rail: the onchain revenue splitter contract (v0.1.0-testnet) an
 settlement forwarder for NEAR Intents 1Click deliveries (v0.2.0-testnet, §7). Part of the NEAR Hackathon one-agent
 research shop; design in `rs-docs/ARCHITECTURE.md` §3.1.
 
-> **TESTNET ONLY.** Everything here runs on NEAR testnet with a mock token
-> (`usdc-mock`, no value). No mainnet account, key or fund is used anywhere.
+> **Mainnet (since 2026-11-03):** `splitter.nearbi.near` + `forwarder.nearbi.near`, real USDC, both
+> locked (no full-access keys). See §8. Everything in §3–§7 and all demos run on NEAR **testnet** with a
+> mock token (`usdc-mock`, no value).
 
 ## 1. Architecture
 
@@ -81,7 +82,8 @@ Rust is **not** installed on the host; all Rust tooling runs in Docker.
 | Release WASM | `sourcescan/cargo-near:0.22.0-rust-1.97.1@sha256:7467038b…` (linux/amd64), pinned in each contract's `[package.metadata.near.reproducible_build]` |
 | Unit + sandbox tests | `docker/dev.Dockerfile`: `rust:1.97.1-trixie` (digest-pinned) + cargo-near 0.22.0 (sha256-checked) |
 
-Rust 1.97 rather than 1.86: near-sdk 5.30 / near-workspaces 0.24 require rustc ≥ 1.95.
+Contracts use **near-sdk 5.29.1** (not 5.30), see "Protocol compatibility" below; sandbox tests use
+near-workspaces 0.23.0 with a nearcore 2.13.4 sandbox (protocol 86, same as mainnet).
 
 ```bash
 bin/build.sh                       # exports git HEAD, builds splitter, forwarder, mock-ft in the pinned image
@@ -109,6 +111,44 @@ Test counts (2026-11-03, against the release WASM in `res/`): unit 21 (splitter)
 sandbox 6 (splitter) + 8 (forwarder), all passing. The v0.2.0 rebuild (commit `47ee7e4`, which adds the
 forwarder) reproduced `nearbi_splitter.wasm` and `usdc_mock.wasm` byte for byte (same sha256 as above);
 the first attempt hung under QEMU again and was killed and re-run.
+
+### Protocol compatibility
+
+Mainnet ran **protocol 86** on 2026-11-03 (testnet already 88). A host function the network doesn't
+provide makes `deploy` fail with `Link Error: unknown or invalid import`, and the deploy+init tx is
+rolled back. That happened with the v0.2.0 WASMs:
+
+* near-sdk **5.30.0** (near-sys ≥ 0.3.0) added `Promise::universal_state_init`, and its action
+  dispatcher links `env.promise_batch_action_universal_state_init` into **every** contract that builds
+  a promise. That host function exists only from protocol 88 (`universal_accounts`). There is no
+  feature flag to drop it. All other imports (incl. gas-key and global-contract actions) are enabled on
+  86 (`gas_key_host_fns` since 85, `global_contract_host_fns` since 78, per mainnet
+  `EXPERIMENTAL_protocol_config`).
+* Fix: `near-sdk`/`near-contract-standards` `=5.29.1` (near-sys 0.2.14, near-sdk-env locked at 0.1.6;
+  near-sdk-env 0.1.8 would pull near-sys 0.4.0 back in). Same cargo-near 0.22.0 / rust 1.97.1 image.
+* Guard rails: `bin/wasm-imports.py` lists a WASM's imports; `bin/build.sh` fails if any import is in
+  `bin/denied-imports-protocol-86.txt` (universal-account, sha3 and ml-dsa host fns, sandbox/test fns).
+  `integration-tests/tests/common` runs every sandbox test on nearcore **2.13.4** and asserts protocol 86
+  (`NEARBI_SANDBOX_VERSION` / `NEARBI_SANDBOX_PROTOCOL` to change it when mainnet upgrades). The old
+  5.30 WASMs fail all 14 sandbox tests there with the same Link Error.
+* Gas on mainnet: while a tx runs, its prepaid gas is **held** from the signer's balance (and from a
+  function-call key's allowance) at 1e9 yocto/gas, ten times the ~1e8 actually charged. A deploy+init
+  with 100 Tgas on `init` therefore failed with `LackBalanceForState` (short 0.02594 NEAR). `init` burns
+  ~1.9 Tgas; `bin/deploy-mainnet.sh` attaches 10 Tgas and checks the balance before broadcasting.
+
+Release artifacts (built from `7f26be3`, rebuilt from a clean worktree byte for byte):
+
+| WASM | bytes | sha256 | code_hash |
+|---|---:|---|---|
+| `nearbi_splitter.wasm` | 205 443 | `a204827262d123224b6a286d34921ef7348ee58f100a9d5dc37b9b76d20b648c` | `BuT33o2VKMCx1rhxfZSYSsL5jWVfFjZNsv5xGSMV7YQB` |
+| `nearbi_forwarder.wasm` | 182 812 | `631ecec5011e039d55075e05b4726da7895ac96627a476452809f904ee998ea5` | `7fvcJC7FEwcM4oz4E1UWQ8EuPfh2P8vvVw6GBGLpaEK6` |
+| `usdc_mock.wasm` | 153 505 | `d6403cbcb2dad34ab7b6ccf1ec1ad7a03609c723822faa1daaedb100bfe27671` | (testnet v2 reuses the v1 token) |
+
+Tests against these (2026-11-03, protocol-86 sandbox): unit 21 + 36, sandbox 6 + 8, all passing.
+The v1 testnet contracts (`splitter.`/`forwarder.nearbi-agent.testnet`, §3/§7) still run the near-sdk 5.30
+build; the new build runs side by side as `splitter-v2.` / `forwarder-v2.nearbi-agent.testnet`
+(`deploy/testnet-v2.json`, demos `docs/demo-v2-run-2026-11-03T1639Z.txt` 37 s and
+`docs/demo-intents-v2-run-2026-11-03T1640Z.txt` 28 s).
 
 Sandbox tests deploy the real mock NEP-141 and the splitter, register storage, then
 check: exact split for odd amounts (1, 9 999, 12 345 679, 10 000 001 base units, plus
@@ -412,6 +452,60 @@ then `nearbi_forwarder forwarded {order_id, amount 49000000}`. Most of the 88 s 
 testnet tx (the liquidity drip took 57 s during an RPC incident); the forward itself took 11 s.
 The public ledger (rs-ledger) picked the sale up automatically: https://nearbi.ai/ledger/ now has
 13 events / 3 sales and reconciles against `get_stats()`.
+
+## 8. Mainnet
+
+Deployed 2026-11-03 17:01 UTC by `bin/deploy-mainnet.sh` (steps `preflight`, `splitter`, `forwarder`,
+`storage`, `fc-keys`, `verify`, `lock`), protocol 86. Public record with every tx: `deploy/mainnet.json`.
+
+| Role | Account | Notes |
+|---|---|---|
+| splitter | [`splitter.nearbi.near`](https://nearblocks.io/address/splitter.nearbi.near) | code_hash `BuT33o2VKMCx1rhxfZSYSsL5jWVfFjZNsv5xGSMV7YQB` = local `nearbi_splitter.wasm`; 1000 bps to contributors; accepts only USDC |
+| forwarder | [`forwarder.nearbi.near`](https://nearblocks.io/address/forwarder.nearbi.near) | code_hash `7fvcJC7FEwcM4oz4E1UWQ8EuPfh2P8vvVw6GBGLpaEK6` = local `nearbi_forwarder.wasm`; splitter = `splitter.nearbi.near`; agent = itself; change delay **86 400 s** |
+| owner + treasury | `nearbi.near` | operator's account; owner methods need its full-access key + 1 yocto |
+| contributors | `contributors.nearbi.near` | operator key only |
+| token | `17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1` | Circle USDC (6 decimals). Splitter, forwarder, contributors and nearbi.near are storage-registered |
+
+**Keys.** Neither contract account has a full-access key (deleted in the `lock` step, txs in
+`deploy/mainnet.json`), so their code is final: nobody can redeploy them or sign token transfers as
+them. A fix means a new contract, switched to through the forwarder's 24 h timelock. Each has one
+function-call key, whose secret is in the operator machine's macOS Keychain (`nearbi-mainnet-fc-<account>`), never on disk:
+
+| Account | Public key | Methods | Allowance |
+|---|---|---|---|
+| `splitter.nearbi.near` | `ed25519:HFbATpvL7pcDahRX6SFsRA4JSjUA1fGS9bDhEGnRDRZS` | `record_cost`, `anchor_report` | 0.25 NEAR |
+| `forwarder.nearbi.near` | `ed25519:5xFkgAW74jxwq8FFJPR14hfnKfM3q2HxXkJ4BwwsQwSi` | `forward` | 0.5 NEAR |
+
+**Allowance and balance sizing.** A function-call tx needs `allowance ≥ prepaid gas × 1e9` up front
+(the hold), but is charged only its burnt gas (~1e8/gas now). Measured on testnet v2: `record_cost` /
+`anchor_report` ≈ 0.00018 NEAR each (~1.8 Tgas); `forward` ≈ 0.0021 NEAR (~21 Tgas burnt of 150 prepaid).
+
+| Key | Hold per call | Usable allowance | Calls at current price | Calls if burnt gas were priced at 1e9 |
+|---|---:|---:|---:|---:|
+| splitter, 30 Tgas | 0.030 | 0.22 | ~1 200 | ~120 |
+| forwarder, 150 Tgas (contract minimum 130) | 0.150 | 0.35 | ~165 | ~16 |
+
+**These allowances can't be refilled.** Adding or replacing a key needs a full-access key on the same
+account, and both accounts are locked. The numbers above are lifetime budgets for these two keys
+(a key stops working once its allowance is below the hold). Refillable alternatives, no redeploy needed:
+
+* forwarder: the owner calls `set_agent(<account>)` (immediate, 1 yocto), e.g. `agent.nearbi.near`
+  with its own function-call key for `forward` on `forwarder.nearbi.near`; that key lives on an account
+  the operator controls, so it can be re-added with a new allowance at any time;
+* splitter: `record_cost` / `anchor_report` also accept the owner, so a function-call key on
+  `nearbi.near` limited to those two methods on `splitter.nearbi.near` works the same way.
+
+The tighter limit today is the forwarder's **own NEAR**, which pays the gas and holds the 0.15 NEAR
+per `forward`: after storage it has ~0.226 NEAR free; each order keeps ~0.002 NEAR of storage and
+burns ~0.002 NEAR of gas, so after ~19 orders it needs a NEAR top-up (a plain transfer from any
+account; no key needed). The splitter has ~0.184 NEAR free (holds 0.03 per agent call).
+
+Remaining operator step: remove the temporary deploy key from `nearbi.near`:
+
+```bash
+near account delete-keys nearbi.near public-keys ed25519:FvLoT3qgjGRKhsPvMVFtpuLyvKkY8QU6tSTw3DzoJKFZ \
+  network-config mainnet sign-with-keychain send   # or sign-with-ledger / the method holding ed25519:ECakcb9R…
+```
 
 ## Layout
 
