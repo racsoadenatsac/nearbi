@@ -1,0 +1,72 @@
+
+[  1s] splitter splitter-v2.nearbi-agent.testnet  split_bps_contributors=1000  token=usdc-mock.nearbi-agent.testnet
+
+[  1s] creating customer nearbi-cust-1793723967.testnet via faucet
+    tx: CRwc8XHHFXmiUsCZU5z9cCtdS8Nog86BYWSeHaXB47d
+    https://testnet.nearblocks.io/txns/CRwc8XHHFXmiUsCZU5z9cCtdS8Nog86BYWSeHaXB47d
+
+[  5s] customer registers on usdc-mock.nearbi-agent.testnet
+    tx: 6WeQ34HCLm3WnvUTNhyVzethM47mgEfJTzZ8yNtp1VaH
+    https://testnet.nearblocks.io/txns/6WeQ34HCLm3WnvUTNhyVzethM47mgEfJTzZ8yNtp1VaH
+
+[ 11s] mock-USDC drip: nearbi-agent.testnet -> nearbi-cust-1793723967.testnet 49.000000 USDCm
+    tx: 6rRoe6n8CRg3ZBkogsuJcpCvKeTLmDkSYCT7fqQtPiqU
+    https://testnet.nearblocks.io/txns/6rRoe6n8CRg3ZBkogsuJcpCvKeTLmDkSYCT7fqQtPiqU
+    usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "nearbi-agent.testnet", "new_owner_id": "nearbi-cust-1793723967.testnet", "amount": "49000000", "memo": "testnet demo drip"}]
+
+[ 18s] balances BEFORE
+    nearbi-cust-1793723967.testnet                          49.000000 USDCm
+    splitter-v2.nearbi-agent.testnet                         0.000000 USDCm
+    contributors.nearbi-agent.testnet                       14.700000 USDCm
+    treasury.nearbi-agent.testnet                          132.300000 USDCm
+
+[ 18s] customer pays 49.000000 USDCm: ft_transfer_call -> splitter-v2.nearbi-agent.testnet  msg={"order_id":"demo-20261103T163926Z"}
+    tx: BbBkurKL8rLg949N6HQoXvDcL3tZtpRCnu8eYj2n25Qc
+    https://testnet.nearblocks.io/txns/BbBkurKL8rLg949N6HQoXvDcL3tZtpRCnu8eYj2n25Qc
+    usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "nearbi-cust-1793723967.testnet", "new_owner_id": "splitter-v2.nearbi-agent.testnet", "amount": "49000000"}]
+    splitter-v2.nearbi-agent.testnet | nearbi_splitter sale [{"order_id": "demo-20261103T163926Z", "payer": "nearbi-cust-1793723967.testnet", "token": "usdc-mock.nearbi-agent.testnet", "amount": "49000000", "contributors_amount": "4900000", "treasury_amount": "44100000", "split_bps_contributors": 1000}]
+    usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "splitter-v2.nearbi-agent.testnet", "new_owner_id": "contributors.nearbi-agent.testnet", "amount": "4900000", "memo": "nearbi:demo-20261103T163926Z"}]
+    splitter-v2.nearbi-agent.testnet | nearbi_splitter payout [{"order_id": "demo-20261103T163926Z", "token": "usdc-mock.nearbi-agent.testnet", "recipient": "contributors.nearbi-agent.testnet", "role": "Contributors", "amount": "4900000"}]
+    usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "splitter-v2.nearbi-agent.testnet", "new_owner_id": "treasury.nearbi-agent.testnet", "amount": "44100000", "memo": "nearbi:demo-20261103T163926Z"}]
+    splitter-v2.nearbi-agent.testnet | nearbi_splitter payout [{"order_id": "demo-20261103T163926Z", "token": "usdc-mock.nearbi-agent.testnet", "recipient": "treasury.nearbi-agent.testnet", "role": "Treasury", "amount": "44100000"}]
+
+[ 27s] balances AFTER
+    nearbi-cust-1793723967.testnet                           0.000000 USDCm
+    splitter-v2.nearbi-agent.testnet                         0.000000 USDCm
+    contributors.nearbi-agent.testnet                       19.600000 USDCm
+    treasury.nearbi-agent.testnet                          176.400000 USDCm
+    delta customer -49.000000  contributors +4.900000  treasury +44.100000  splitter +0.000000
+    expected contributors 4.900000 + treasury 44.100000 = 49.000000  -> SPLIT OK
+
+[ 27s] agent (function-call key) record_cost inference 0.012500 USD
+    tx: CBi6nkQBAT3TMMeo9QLPBu9XVgJu9fF15xK15YEPfyDk
+    https://testnet.nearblocks.io/txns/CBi6nkQBAT3TMMeo9QLPBu9XVgJu9fF15xK15YEPfyDk
+    splitter-v2.nearbi-agent.testnet | nearbi_splitter cost [{"kind": "inference", "amount_usd_micros": "12500", "ref": "nearai:demo-20261103T163926Z"}]
+
+[ 31s] agent (function-call key) anchor_report demo-quick sha256=64f976a4f5004a7c4b523cd9629548bdacaf37305043e1981a6422434d647944
+    tx: B8u4ekcvBQUvjxS63VK9tUDo7RF3M8HkBq41bhiEBSRj
+    https://testnet.nearblocks.io/txns/B8u4ekcvBQUvjxS63VK9tUDo7RF3M8HkBq41bhiEBSRj
+    splitter-v2.nearbi-agent.testnet | nearbi_splitter report_anchor [{"slug": "demo-20261103T163926Z", "manifest_sha256": "64f976a4f5004a7c4b523cd9629548bdacaf37305043e1981a6422434d647944"}]
+
+[ 35s] agent key tries set_split(5000) -> must be rejected
+    rejected: Transaction method name <set_split> isn't allowed by the access key
+
+[ 36s] stats
+    [
+        {
+            "token": "usdc-mock.nearbi-agent.testnet",
+            "sales": 1,
+            "total_received": "49000000",
+            "contributors_amount": "4900000",
+            "treasury_amount": "44100000",
+            "pending_failed": "0"
+        }
+    ]
+
+SUMMARY  order demo-20261103T163926Z  customer nearbi-cust-1793723967.testnet  duration 37s
+  create customer            https://testnet.nearblocks.io/txns/CRwc8XHHFXmiUsCZU5z9cCtdS8Nog86BYWSeHaXB47d
+  storage_deposit customer   https://testnet.nearblocks.io/txns/6WeQ34HCLm3WnvUTNhyVzethM47mgEfJTzZ8yNtp1VaH
+  drip                       https://testnet.nearblocks.io/txns/6rRoe6n8CRg3ZBkogsuJcpCvKeTLmDkSYCT7fqQtPiqU
+  sale ft_transfer_call      https://testnet.nearblocks.io/txns/BbBkurKL8rLg949N6HQoXvDcL3tZtpRCnu8eYj2n25Qc
+  record_cost                https://testnet.nearblocks.io/txns/CBi6nkQBAT3TMMeo9QLPBu9XVgJu9fF15xK15YEPfyDk
+  anchor_report              https://testnet.nearblocks.io/txns/B8u4ekcvBQUvjxS63VK9tUDo7RF3M8HkBq41bhiEBSRj
