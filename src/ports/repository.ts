@@ -4,8 +4,9 @@
 import type { StoredChallenge } from "../core/signin";
 import type { RegistryTokenRecord } from "../core/registry-token";
 import type { SubscriptionRecord } from "../core/subscription";
+import type { OrderBrief, OrderRecord, OrderStatus, ProductId } from "../core/products";
 
-export type { RegistryTokenRecord, StoredChallenge, SubscriptionRecord };
+export type { OrderBrief, OrderRecord, OrderStatus, ProductId, RegistryTokenRecord, StoredChallenge, SubscriptionRecord };
 
 export interface AccountRecord {
   accountId: string;
@@ -54,6 +55,10 @@ export interface PaymentRecord {
   settledAmountOut: string | null;
   /** Set by the forwarding agent (rs-agent bin/forwarder-runner) once forward(order_id = id) is final onchain. */
   forwardedTx: string | null;
+  /** What was bought. null on payments created before products existed: those are subscriptions. */
+  product: ProductId | null;
+  /** One-off products: the customer's brief, validated at checkout and copied onto the order when paid. */
+  brief: OrderBrief | null;
 }
 
 /** Index entry for a live payment the background sweep still has to watch (see Repository.listOpenPayments). */
@@ -110,6 +115,23 @@ export type ApplyPaymentResult =
   | { ok: true }
   | { ok: false; reason: "not_pending" | "tx_used" | "conflict" };
 
+export interface ApplyOrderPaymentInput {
+  paymentId: string;
+  txHash: string;
+  nowSec: number;
+  /** The order to create (status "paid"); its accountId/paymentId must match the payment. */
+  order: OrderRecord;
+}
+
+export type ApplyOrderPaymentResult = { ok: true } | { ok: false; reason: "not_pending" | "tx_used" };
+
+export interface OrderUpdate {
+  status: OrderStatus;
+  /** undefined: leave as is. null: clear. */
+  deliveryUrl?: string | null;
+  nowSec: number;
+}
+
 export interface Repository {
   // auth
   putChallenge(c: StoredChallenge): Promise<void>;
@@ -138,6 +160,18 @@ export interface Repository {
    */
   listOpenPayments(limit: number): Promise<OpenPaymentRef[]>;
   closeOpenPayment(id: string): Promise<void>;
+  /**
+   * One-off products: atomically payment in PAYABLE_STATUSES -> paid, claim txHash, create the ORDER
+   * (status "paid") and index it as awaiting delivery. Never touches the subscription. All or nothing.
+   */
+  applyOrderPayment(input: ApplyOrderPaymentInput): Promise<ApplyOrderPaymentResult>;
+  getOrder(paymentId: string): Promise<OrderRecord | null>;
+  /** An account's orders, newest first. */
+  listOrders(accountId: string): Promise<OrderRecord[]>;
+  /** Orders not yet delivered (status paid or in_progress), oldest first. */
+  listOpenOrders(limit: number): Promise<OrderRecord[]>;
+  /** Set status (and optionally the delivery URL). delivered removes it from the open list. null if no such order. */
+  updateOrder(paymentId: string, u: OrderUpdate): Promise<OrderRecord | null>;
   /** Idempotent: the same payment enqueued twice is one entry (the first write wins). */
   enqueueForward(e: ForwardQueueEntry): Promise<void>;
   listForwardQueue(limit: number): Promise<ForwardQueueEntry[]>;

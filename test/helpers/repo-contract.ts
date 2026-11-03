@@ -1,6 +1,6 @@
 // One behavioural contract for every Repository implementation (memory always, DynamoDB Local optionally).
 import { describe, expect, it } from "vitest";
-import type { PaymentRecord, Repository } from "../../src/ports/repository";
+import type { OrderRecord, PaymentRecord, Repository } from "../../src/ports/repository";
 
 const pay = (id: string, accountId = "alice.near", over: Partial<PaymentRecord> = {}): PaymentRecord => ({
   id,
@@ -28,8 +28,26 @@ const pay = (id: string, accountId = "alice.near", over: Partial<PaymentRecord> 
   settlementTx: null,
   settledAmountOut: null,
   forwardedTx: null,
+  product: "subscription",
+  brief: null,
   ...over,
 });
+
+const brief = { question: "How many real users used Intents last week?", contact: "@alice_near", scope: null };
+const order = (paymentId: string, accountId = "alice.near", over: Partial<OrderRecord> = {}): OrderRecord => ({
+  paymentId,
+  accountId,
+  product: "quick_answer",
+  brief,
+  amountUsd: 29,
+  status: "paid",
+  deliveryUrl: null,
+  createdAt: 1100,
+  updatedAt: 1100,
+  ...over,
+});
+const oneOff = (id: string, accountId = "alice.near", over: Partial<PaymentRecord> = {}) =>
+  pay(id, accountId, { product: "quick_answer", brief, amountUsd: 29, amountOut: "29000000", ...over });
 
 export function repositoryContract(name: string, make: () => Promise<Repository>) {
   describe(`Repository contract: ${name}`, () => {
@@ -153,6 +171,60 @@ export function repositoryContract(name: string, make: () => Promise<Repository>
       await r.enqueueForward(e);
       await r.enqueueForward({ ...e, amount: "1", enqueuedAt: 1600 });
       expect(await r.listForwardQueue(10)).toEqual([e]);
+    });
+
+    it("one-off payments round-trip with product and brief", async () => {
+      const r = await make();
+      const p = oneOff("q1", "alice.near", { product: "deep_dive", brief: { question: "Q?", contact: null, scope: "DeFi" }, amountUsd: 499 });
+      await r.createPayment(p);
+      expect(await r.getPayment("q1")).toEqual(p);
+    });
+
+    it("applyOrderPayment: paid + ORDER + open-order index, subscription untouched, all or nothing", async () => {
+      const r = await make();
+      await r.createPayment(oneOff("q1"));
+      expect(await r.applyOrderPayment({ paymentId: "q1", txHash: "1click:dep-q1", nowSec: 1100, order: order("q1") })).toEqual({ ok: true });
+      expect(await r.getPayment("q1")).toMatchObject({ status: "paid", txHash: "1click:dep-q1", paidAt: 1100 });
+      expect(await r.getOrder("q1")).toEqual(order("q1"));
+      expect(await r.getSubscription("alice.near")).toBeNull();
+      expect(await r.listOpenOrders(10)).toEqual([order("q1")]);
+      // second time: not_pending, nothing duplicated
+      expect(await r.applyOrderPayment({ paymentId: "q1", txHash: "1click:other", nowSec: 1200, order: order("q1", "alice.near", { createdAt: 1200 }) })).toEqual({ ok: false, reason: "not_pending" });
+      expect(await r.listOrders("alice.near")).toEqual([order("q1")]);
+      // tx claim reused by another payment: nothing changes
+      await r.createPayment(oneOff("q2"));
+      expect(await r.applyOrderPayment({ paymentId: "q2", txHash: "1click:dep-q1", nowSec: 1300, order: order("q2") })).toEqual({ ok: false, reason: "tx_used" });
+      expect(await r.getPayment("q2")).toMatchObject({ status: "pending", txHash: null });
+      expect(await r.getOrder("q2")).toBeNull();
+      // refunded payments can't become orders
+      await r.createPayment(oneOff("q3", "alice.near", { status: "refunded" }));
+      expect(await r.applyOrderPayment({ paymentId: "q3", txHash: "tx-q3", nowSec: 1300, order: order("q3") })).toEqual({ ok: false, reason: "not_pending" });
+      expect(await r.getOrder("q3")).toBeNull();
+      expect(await r.getOrder("missing")).toBeNull();
+    });
+
+    it("orders: per-account list newest first; open list oldest first; delivered leaves the open list", async () => {
+      const r = await make();
+      for (const [id, acct, t] of [["o1", "alice.near", 1000], ["o2", "bob.near", 1100], ["o3", "alice.near", 1200]] as const) {
+        await r.createPayment(oneOff(id, acct));
+        await r.applyOrderPayment({ paymentId: id, txHash: `tx-${id}`, nowSec: t, order: order(id, acct, { createdAt: t, updatedAt: t }) });
+      }
+      expect((await r.listOrders("alice.near")).map((o) => o.paymentId)).toEqual(["o3", "o1"]);
+      expect(await r.listOrders("nobody.near")).toEqual([]);
+      expect((await r.listOpenOrders(10)).map((o) => o.paymentId)).toEqual(["o1", "o2", "o3"]);
+      expect((await r.listOpenOrders(2)).map((o) => o.paymentId)).toEqual(["o1", "o2"]);
+
+      expect(await r.updateOrder("o1", { status: "in_progress", nowSec: 1500 })).toMatchObject({ status: "in_progress", updatedAt: 1500, deliveryUrl: null });
+      expect((await r.listOpenOrders(10)).map((o) => [o.paymentId, o.status])).toEqual([["o1", "in_progress"], ["o2", "paid"], ["o3", "paid"]]);
+      const done = await r.updateOrder("o1", { status: "delivered", deliveryUrl: "/reports/o1/", nowSec: 1600 });
+      expect(done).toEqual(order("o1", "alice.near", { createdAt: 1000, status: "delivered", deliveryUrl: "/reports/o1/", updatedAt: 1600 }));
+      expect(await r.getOrder("o1")).toEqual(done);
+      expect((await r.listOpenOrders(10)).map((o) => o.paymentId)).toEqual(["o2", "o3"]);
+      // re-opening puts it back; deliveryUrl untouched when not given
+      expect(await r.updateOrder("o1", { status: "in_progress", nowSec: 1700 })).toMatchObject({ deliveryUrl: "/reports/o1/" });
+      expect((await r.listOpenOrders(10)).map((o) => o.paymentId)).toEqual(["o1", "o2", "o3"]);
+      expect(await r.updateOrder("nope", { status: "delivered", nowSec: 1 })).toBeNull();
+      expect(await r.getSubscription("alice.near")).toBeNull();
     });
 
     it("registry tokens: one live token per account", async () => {

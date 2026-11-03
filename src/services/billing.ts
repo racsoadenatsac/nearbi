@@ -2,6 +2,7 @@
 // applyPayment + the NEAR Intents adapter.
 import QRCode from "qrcode";
 import type { IntentsConfig } from "../config";
+import { isOneOff, type OrderBrief, type Product, type ProductId } from "../core/products";
 import { periodEndAfterPayment } from "../core/subscription";
 import {
   DRY_QUOTE_RECIPIENT,
@@ -27,6 +28,8 @@ export interface BillingDeps {
 /** What the checkout page and the status poller get back. */
 export interface PaymentView {
   paymentId: string;
+  /** What is being bought (legacy payments without a product are subscriptions). */
+  product: ProductId;
   mode: "dry" | "live" | "stub";
   status: PaymentStatus;
   statusLabel: string;
@@ -93,7 +96,10 @@ export async function listPaymentTokens(intents: IntentsAdapter): Promise<TokenO
 
 export interface CheckoutInput {
   accountId: string;
-  amountUsd: number;
+  /** Resolved server-side from the catalog; the price is product.priceUsd, never a client value. */
+  product: Product;
+  /** Required for one-off products (validated by validateBrief); ignored for the subscription. */
+  brief?: OrderBrief | null;
   nowSec: number;
   originAsset: string;
   /** Origin-chain refund address. Omitted: refunds go to the signed-in account's NEAR Intents balance. */
@@ -120,6 +126,9 @@ export function quoteRecipient(cfg: IntentsConfig): string {
 export async function createCheckout(d: BillingDeps, i: CheckoutInput): Promise<PaymentView> {
   const dry = d.config.mode === "dry";
   const paymentId = crypto.randomUUID();
+  const oneOff = isOneOff(i.product.id);
+  if (oneOff && !i.brief) throw new CheckoutError(400, "brief required: tell us your question");
+  const amountUsd = i.product.priceUsd;
   const origin = await d.intents.findToken(i.originAsset).catch((e) => {
     throw new CheckoutError(503, `token list unavailable: ${(e as Error).message}`);
   });
@@ -143,7 +152,7 @@ export async function createCheckout(d: BillingDeps, i: CheckoutInput): Promise<
   try {
     q = await d.intents.quote({
       originAsset: origin.assetId,
-      amountUsd: i.amountUsd,
+      amountUsd,
       ...refund,
       recipient: quoteRecipient(d.config),
       deadline,
@@ -160,7 +169,7 @@ export async function createCheckout(d: BillingDeps, i: CheckoutInput): Promise<
   const pay: PaymentRecord = {
     id: paymentId,
     accountId: i.accountId,
-    amountUsd: i.amountUsd,
+    amountUsd,
     token: q.originAsset,
     depositAddress: q.depositAddress,
     status: dry ? "preview" : "pending",
@@ -183,6 +192,8 @@ export async function createCheckout(d: BillingDeps, i: CheckoutInput): Promise<
     settlementTx: null,
     settledAmountOut: null,
     forwardedTx: null,
+    product: i.product.id,
+    brief: oneOff ? i.brief! : null,
   };
   await d.repo.createPayment(pay);
   return view(pay, origin, await d.intents.findToken(q.destinationAsset), { dry });
@@ -384,13 +395,23 @@ function matchesOurQuote(st: OneClickStatusResponse, pay: PaymentRecord, raw: st
 // ---------------------------------------------------------------------------------------- confirm
 
 export type ConfirmResult =
-  | { ok: true; alreadyPaid: boolean; accountId: string; currentPeriodEnd: number }
+  | {
+      ok: true;
+      alreadyPaid: boolean;
+      accountId: string;
+      product: ProductId;
+      /** Subscription: the new period end. One-off products: null (they never extend the subscription). */
+      currentPeriodEnd: number | null;
+      /** One-off products: the order id (= payment id). */
+      orderId: string | null;
+    }
   | { ok: false; status: 404 | 409; error: string };
 
 const MAX_ATTEMPTS = 3;
 
 /**
- * Mark a payable payment as paid and extend the account's subscription by one month. Idempotent:
+ * Mark a payable payment as paid. Subscription: extend the account's subscription by one month. One-off
+ * products (Quick Answer / Deep Dive): create the ORDER instead, never extending the subscription. Idempotent:
  * confirming an already-paid payment returns alreadyPaid and never extends twice. Concurrent renewals
  * are serialized by the repository's optimistic check on the subscription's current period end.
  * Used by the 1Click poller on SUCCESS and by the admin override (POST /billing/confirm).
@@ -399,11 +420,39 @@ export async function confirmPayment(repo: Repository, paymentId: string, txHash
   for (let attempt = 1; ; attempt++) {
     const pay = await repo.getPayment(paymentId);
     if (!pay) return { ok: false, status: 404, error: "payment not found" };
+    const product: ProductId = pay.product ?? "subscription";
+    const oneOff = isOneOff(product);
     if (pay.status === "paid") {
+      if (oneOff) return { ok: true, alreadyPaid: true, accountId: pay.accountId, product, currentPeriodEnd: null, orderId: pay.id };
       const sub = await repo.getSubscription(pay.accountId);
-      return { ok: true, alreadyPaid: true, accountId: pay.accountId, currentPeriodEnd: sub?.currentPeriodEnd ?? 0 };
+      return { ok: true, alreadyPaid: true, accountId: pay.accountId, product, currentPeriodEnd: sub?.currentPeriodEnd ?? 0, orderId: null };
     }
     if (!PAYABLE_STATUSES.includes(pay.status)) return { ok: false, status: 409, error: `payment is ${pay.status}` };
+
+    if (oneOff) {
+      // One-off report: create the ORDER atomically with the payment; the subscription is never touched.
+      if (!pay.brief) return { ok: false, status: 409, error: "payment has no order brief" };
+      const r = await repo.applyOrderPayment({
+        paymentId,
+        txHash,
+        nowSec,
+        order: {
+          paymentId,
+          accountId: pay.accountId,
+          product,
+          brief: pay.brief,
+          amountUsd: pay.amountUsd,
+          status: "paid",
+          deliveryUrl: null,
+          createdAt: nowSec,
+          updatedAt: nowSec,
+        },
+      });
+      if (r.ok) return { ok: true, alreadyPaid: false, accountId: pay.accountId, product, currentPeriodEnd: null, orderId: paymentId };
+      if (r.reason === "tx_used") return { ok: false, status: 409, error: "tx_hash already used" };
+      if (attempt >= MAX_ATTEMPTS) return { ok: false, status: 409, error: "concurrent update, retry" };
+      continue; // not_pending: paid concurrently -> next loop reports alreadyPaid
+    }
 
     const sub = await repo.getSubscription(pay.accountId);
     const newPeriodEnd = periodEndAfterPayment(sub, nowSec);
@@ -415,7 +464,7 @@ export async function confirmPayment(repo: Repository, paymentId: string, txHash
       newPeriodEnd,
       expected: { exists: !!sub, currentPeriodEnd: sub?.currentPeriodEnd ?? null },
     });
-    if (r.ok) return { ok: true, alreadyPaid: false, accountId: pay.accountId, currentPeriodEnd: newPeriodEnd };
+    if (r.ok) return { ok: true, alreadyPaid: false, accountId: pay.accountId, product, currentPeriodEnd: newPeriodEnd, orderId: null };
     if (r.reason === "tx_used") return { ok: false, status: 409, error: "tx_hash already used" };
     // not_pending: paid concurrently -> loop reports alreadyPaid. conflict: subscription moved -> recompute.
     if (attempt >= MAX_ATTEMPTS) return { ok: false, status: 409, error: "concurrent update, retry" };
@@ -424,6 +473,7 @@ export async function confirmPayment(repo: Repository, paymentId: string, txHash
 
 // -------------------------------------------------------------------------------------------- view
 
+const ORDER_PAID_LABEL = "Paid: your order is in our queue. Track it under Your orders on the members page";
 const LABELS: Record<PaymentStatus, string> = {
   preview: PREVIEW_LABEL,
   pending: "Waiting for your deposit",
@@ -444,9 +494,10 @@ async function view(
   const decimals = origin?.decimals;
   const base: PaymentView = {
     paymentId: p.id,
+    product: p.product ?? "subscription",
     mode: p.mode ?? "stub",
     status: p.status,
-    statusLabel: o.label ?? LABELS[p.status],
+    statusLabel: o.label ?? (p.status === "paid" && isOneOff(p.product) ? ORDER_PAID_LABEL : LABELS[p.status]),
     amountUsd: p.amountUsd,
     originAsset: p.token,
     origin: origin ? { symbol: origin.symbol, blockchain: origin.blockchain, decimals: origin.decimals } : null,
