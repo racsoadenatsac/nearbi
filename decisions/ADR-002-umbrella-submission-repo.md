@@ -1,7 +1,7 @@
 # ADR-002: Public umbrella repo with submodules for submission
 
 - Date: 2026-11-02
-- Status: Proposed
+- Status: Superseded by [ADR-003](ADR-003-single-monorepo.md) (2026-11-03)
 
 ## Context
 The submission form accepts one public repo link. ADR-001 gives us many repos.
