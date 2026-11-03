@@ -90,6 +90,16 @@ No NAT, EC2, RDS, load balancers or provisioned concurrency.
 - App bundle: nearbi-app `v0.2.0`. Catalog seeded (`REPORT#near-users-vs-bots`, `REPORT#near-thesis`). Content bucket empty
   (no gated reports published yet).
 
+## Payments (NEAR Intents 1Click)
+
+The Lambda gets `INTENTS_MODE` (`var.intents_mode`, default `dry`), `SETTLEMENT_ASSET`
+(`var.settlement_asset`, default native USDC on NEAR `nep141:17208628…6133a1`) and, only when
+`var.settlement_recipient` is non-empty, `SETTLEMENT_RECIPIENT`. In dry mode leave the recipient empty: the
+app quotes against an inert placeholder (1Click rejects testnet accounts, so `splitter.nearbi-agent.testnet`
+can't be used). `intents_mode = "live"` fails validation here, and the app refuses to start, unless the
+recipient is a mainnet NEAR account. `ONECLICK_JWT` (optional partner key, only lowers fees) is not wired
+yet; add it to `local.secrets` when there is one. Go-live checklist: nearbi-app README "Payments".
+
 ## Free reports (static, public)
 
 `local.free_report_slugs` in `tofu/cdn.tf` lists the public reports (`near-users-vs-bots`, `near-thesis`). Each
