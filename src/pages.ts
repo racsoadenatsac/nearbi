@@ -20,7 +20,7 @@ function layout(title: string, body: string, opts: { accountId?: string | null; 
 <link rel="stylesheet" href="/assets/site.css">
 <link rel="stylesheet" href="/assets/app.css">
 </head><body>
-<header class="nav"><a class="brand" href="/">NearBI</a><a href="/#reports">Reports</a><a href="/members">Members</a>${right}</header>
+<header class="nav"><a class="brand" href="/">NearBI</a><a href="/#reports">Reports</a><a href="/ledger/">Ledger</a><a href="/members">Members</a>${right}</header>
 <main class="page"><div class="wrap">
 ${body}
 </div></main>
