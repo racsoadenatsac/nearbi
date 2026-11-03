@@ -108,7 +108,7 @@ resource "aws_lambda_function" "app" {
       NEAR_RPC_URL      = var.near_rpc_url
       AUTH_RECIPIENT    = var.domain
       REGISTRY_HOST     = "registry.${var.domain}"
-      FREE_REPORT_SLUG  = "near-users-vs-bots"
+      FREE_REPORT_SLUGS = join(",", local.free_report_slugs)
     })
   }
 
