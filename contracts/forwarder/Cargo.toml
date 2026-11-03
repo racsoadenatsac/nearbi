@@ -1,0 +1,25 @@
+[package]
+name = "nearbi-forwarder"
+description = "NearBI settlement forwarder: holds 1Click settlement USDC and can only send it into the revenue splitter."
+version = "0.2.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk.workspace = true
+near-contract-standards.workspace = true
+
+[dev-dependencies]
+near-sdk = { workspace = true, features = ["unit-testing"] }
+
+[package.metadata.near.reproducible_build]
+# Same pinned image as the splitter; see bin/build.sh.
+image = "sourcescan/cargo-near:0.22.0-rust-1.97.1"
+image_digest = "sha256:7467038bdddc86484b73b416eeadce926ff59013e128e53dec5a19e1cb4b2234"
+passed_env = []
+container_build_command = ["cargo", "near", "build", "non-reproducible-wasm", "--locked"]

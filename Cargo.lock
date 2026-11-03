@@ -2391,6 +2391,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nearbi-forwarder"
+version = "0.2.0"
+dependencies = [
+ "near-contract-standards",
+ "near-sdk",
+]
+
+[[package]]
 name = "nearbi-splitter"
 version = "0.1.0"
 dependencies = [
