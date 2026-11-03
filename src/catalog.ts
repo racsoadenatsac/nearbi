@@ -3,6 +3,15 @@ import type { ReportRecord } from "./ports/repository";
 
 export const SEED_REPORTS: ReportRecord[] = [
   {
+    slug: "near-thesis",
+    title: "NEAR thesis: does Intents volume lead real usage?",
+    summary:
+      "The data rejected our own hypothesis: neither Intents volume nor the NEAR price leads real-user growth. Intents grew 521.4x while real users outside KaiChing fell 92.3%.",
+    publishedAt: "2026-11-02",
+    isFree: true,
+    pdfFile: "NEAR-thesis-intents-vs-real-usage.pdf",
+  },
+  {
     slug: "near-users-vs-bots",
     title: "NEAR activity: real users or bots?",
     summary:
