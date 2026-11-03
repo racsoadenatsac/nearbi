@@ -35,6 +35,9 @@ locals {
   free_report_slugs = ["near-users-vs-bots", "near-thesis"]
   free_report_paths = flatten([for s in local.free_report_slugs : ["/reports/${s}", "/reports/${s}/*"]])
 
+  # Public static sections that must never reach the app (published by other repos, e.g. rs-ledger -> /ledger/).
+  public_static_paths = ["/ledger", "/ledger/*"]
+
   # Ordered behaviors (precedence = list order), from the app README.
   app_behaviors = [
     { path = "/reports/*", methods = ["GET", "HEAD"] },
@@ -81,10 +84,11 @@ resource "aws_cloudfront_distribution" "site" {
     }
   }
 
-  # 1) Free reports: static and cacheable, placed before the gated /reports/* rule. The exact path
-  #    (no slash) also goes to static so the CloudFront Function can redirect it.
+  # 1) Free reports and public static sections (/ledger): static and cacheable, placed before the gated
+  #    /reports/* rule and every app behavior. The exact path (no slash) also goes to static so the
+  #    CloudFront Function can redirect it.
   dynamic "ordered_cache_behavior" {
-    for_each = local.free_report_paths
+    for_each = concat(local.free_report_paths, local.public_static_paths)
     content {
       path_pattern           = ordered_cache_behavior.value
       target_origin_id       = local.static_origin_id
