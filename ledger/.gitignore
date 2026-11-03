@@ -1,0 +1,14 @@
+# secrets: never commit
+.env
+.env.*
+*.key
+*credentials*.json
+secrets/
+# build output and caches (data/ledger.jsonl IS committed: the append-only snapshot)
+out/
+data/cache/
+.tools/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store

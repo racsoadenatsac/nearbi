@@ -1,0 +1,38 @@
+{
+  "default_network": "mainnet",
+  "usd_decimals": 6,
+  "networks": {
+    "mainnet": {
+      "network": "mainnet",
+      "network_badge": "MAINNET (real USDC)",
+      "splitter": "splitter.nearbi.near",
+      "forwarder": "forwarder.nearbi.near",
+      "token": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+      "rpc": ["https://rpc.mainnet.fastnear.com", "https://archival-rpc.mainnet.fastnear.com"],
+      "fastnear_tx_api": "https://tx.main.fastnear.com",
+      "explorer_tx": "https://nearblocks.io/txns/",
+      "explorer_account": "https://nearblocks.io/address/",
+      "site_url": "https://nearbi.ai/ledger/",
+      "s3_prefix": "ledger/",
+      "s3_exclude": "testnet/*",
+      "other_label": "Testnet ledger (demo, mock USDC)",
+      "other_url": "/ledger/testnet/"
+    },
+    "testnet": {
+      "network": "testnet",
+      "network_badge": "TESTNET (mock USDC, no real value)",
+      "splitter": "splitter.nearbi-agent.testnet",
+      "forwarder": null,
+      "token": "usdc-mock.nearbi-agent.testnet",
+      "rpc": ["https://rpc.testnet.near.org", "https://archival-rpc.testnet.near.org"],
+      "fastnear_tx_api": "https://tx.test.fastnear.com",
+      "explorer_tx": "https://testnet.nearblocks.io/txns/",
+      "explorer_account": "https://testnet.nearblocks.io/address/",
+      "site_url": "https://nearbi.ai/ledger/testnet/",
+      "s3_prefix": "ledger/testnet/",
+      "s3_exclude": "",
+      "other_label": "Mainnet ledger (live)",
+      "other_url": "/ledger/"
+    }
+  }
+}

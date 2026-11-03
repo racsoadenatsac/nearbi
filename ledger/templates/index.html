@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Public ledger: every sale, cost and payout · NearBI</title>
+<meta name="description" content="NearBI's public ledger: every sale, payout, cost and report anchor emitted by the splitter contract, hash-chained and reconciled against the contract's own stats. ${meta_desc}">
+<meta property="og:title" content="NearBI public ledger">
+<meta property="og:description" content="Every sale, payout, cost and report anchor, onchain, hash-chained and reconciled. ${meta_desc}">
+<link rel="stylesheet" href="/assets/site.css">
+<style>
+  .lg h1 { font-size:40px; line-height:1.1; margin:.1em 0 .25em; letter-spacing:-.02em }
+  .lg h2 { font-size:22px; margin:2.2em 0 .6em; padding-bottom:.25em; border-bottom:2px solid var(--acc) }
+  .lg .net { display:inline-block; background:#fdecc8; color:#7a4b00; border:1px solid #e0a800; font-weight:800; font-size:13px; letter-spacing:.05em; padding:4px 12px; border-radius:99px }
+  .lg .net.main { background:#d6f5e8; color:#05603f; border-color:#2e9d6f }
+  .lg .othernet { margin-left:12px; font-size:14px }
+  .lg .k-forwarded, .lg .k-forward_started { background:#e6f7ef; color:#05603f } .lg .k-forward_failed { background:#fdecea; color:#7b1f16 }
+  .lg .meta { color:var(--muted); font-size:14px; margin:.4em 0 0 }
+  .lg .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin:22px 0 }
+  .lg .m { background:#fff; border:1px solid #e3e2da; border-radius:10px; padding:14px 16px }
+  .lg .m b { display:block; font-size:26px; line-height:1.15; color:var(--ink) } .lg .m span { color:var(--muted); font-size:13px }
+  .lg .m.acc b { color:var(--acc) }
+  .lg .recon { border-radius:10px; padding:14px 18px; margin:8px 0 }
+  .lg .recon.ok { background:#e6f7ef; border:1px solid #9fdcc1 } .lg .recon.bad { background:#fdecea; border:1px solid #e6a59d }
+  .lg .recon .big { font-weight:800; font-size:18px }
+  .lg .checks { list-style:none; padding:0; margin:10px 0 0; font-size:14px } .lg .checks li { margin:3px 0 }
+  .lg .checks li.bad { color:#7b1f16 } .lg .checks li.warn { color:#7a4b00 }
+  .lg table { width:100%; border-collapse:collapse; background:#fff; border:1px solid #e3e2da; border-radius:10px; font-size:14px }
+  .lg th, .lg td { text-align:left; padding:8px 10px; border-bottom:1px solid #eeede6; vertical-align:top }
+  .lg th { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); background:#fafaf6 }
+  .lg td.num, .lg th.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums }
+  .lg .mono, .lg code { font-family:Menlo,monospace; font-size:12.5px } .lg code { background:#f2f2ee; padding:1px 4px; border-radius:3px; overflow-wrap:anywhere }
+  .lg .muted { color:var(--muted) } .lg .small { font-size:12px }
+  .lg details pre { white-space:pre-wrap; word-break:break-all; max-width:420px; margin:6px 0 }
+  .lg summary { cursor:pointer; color:var(--muted) }
+  .lg .k { display:inline-block; padding:1px 9px; border-radius:99px; background:#ecebe4; font-size:12px; font-weight:700 }
+  .lg .k-sale { background:#d6f5e8; color:#05603f } .lg .k-payout { background:#e3edfb; color:#1d4f91 }
+  .lg .k-cost { background:#fdecc8; color:#7a4b00 } .lg .k-report_anchor { background:#efe6fb; color:#5b2d91 }
+  .lg .k-payout_failed { background:#fdecea; color:#7b1f16 }
+  .lg .scroll { overflow-x:auto }
+  .lg .filters { margin:0 0 10px; font-size:14px } .lg .filters button { font:inherit; font-size:13px; border:1px solid #cfcfc6; background:#fff; border-radius:99px; padding:2px 12px; margin:0 6px 6px 0; cursor:pointer }
+  .lg .filters button.on { background:var(--ink); color:#fff; border-color:var(--ink) }
+  .lg dl.cfg { display:grid; grid-template-columns:max-content 1fr; gap:6px 18px; background:#fff; border:1px solid #e3e2da; border-radius:10px; padding:16px 18px; font-size:15px; margin:0 }
+  .lg dl.cfg dt { color:var(--muted) } .lg dl.cfg dd { margin:0; overflow-wrap:anywhere }
+  .lg .live { font-size:14px; margin:8px 0 0 }
+  .lg .dl a { margin-right:14px }
+  @media (max-width:760px){ .lg h1{font-size:30px} }
+</style>
+</head><body>
+<header class="nav"><a class="brand" href="/">NearBI</a><a href="/#reports">Reports</a><a href="/ledger/">Ledger</a><a href="mailto:hello@nearbi.ai?subject=Report%20request">Request a report</a><a href="/members">Members</a><a href="/login">Sign in</a></header>
+<main class="page"><div class="wrap lg">
+  <span class="${net_class}">${badge}</span><span class="othernet">${network_nav}</span>
+  <h1>Public ledger</h1>
+  <p class="sub" style="margin-bottom:6px">Every sale, payout, cost and report anchor NearBI makes is an event emitted by the revenue splitter contract ${splitter}.${forwarder_intro} This page lists all of them, each linked to its transaction, and checks the totals against the contract's own counters.</p>
+  <p class="meta">Last updated ${updated} · as of block ${block} · ${nevents} events · chain head <code>${head}</code></p>
+
+  <div class="metrics">
+    <div class="m acc"><b>${sales}</b><span>sales</span></div>
+    <div class="m"><b>${gross}</b><span>gross received (${unit})</span></div>
+    <div class="m"><b>${contributors}</b><span>paid to contributors (${unit})</span></div>
+    <div class="m"><b>${treasury}</b><span>paid to treasury (${unit})</span></div>
+    <div class="m"><b>${costs}</b><span>inference costs recorded (USD, ${ncosts} events)</span></div>
+    <div class="m"><b>${anchors}</b><span>reports anchored onchain</span></div>
+    <div class="m"><b>${split}</b><span>split contributors / treasury</span></div>
+    <div class="m"><b>${pending}</b><span>failed payouts held (${unit})</span></div>
+  </div>
+
+  <div class="recon ${recon_class}">
+    <div class="big">${recon_badge}</div>
+    <div class="small muted">Checked at block ${block} against <code>get_stats()</code>, <code>get_config()</code> and <code>get_failed_payouts()</code>. The build fails instead of publishing if any check fails.</div>
+    <ul class="checks">${checks}</ul>
+    <div class="live" id="live">Live check: contacting the contract…</div>
+  </div>
+
+  <h2>Contract stats (get_stats at block ${block})</h2>
+  <div class="scroll"><table>
+    <tr><th>token</th><th class="num">sales</th><th class="num">total_received</th><th class="num">contributors_amount</th><th class="num">treasury_amount</th><th class="num">pending_failed</th></tr>
+    ${live_rows}
+  </table></div>
+  <p class="meta">${units_note}</p>
+
+  <h2>Every event, newest first</h2>
+  <div class="filters" id="filters"><button class="on" data-k="">all</button><button data-k="sale">sale</button><button data-k="payout">payout</button><button data-k="cost">cost</button><button data-k="report_anchor">report_anchor</button><button data-k="forward">forward</button></div>
+  <div class="scroll"><table id="events">
+    <tr><th>time (UTC)</th><th>event</th><th class="num">amount</th><th>details</th><th>transaction</th><th>raw event</th></tr>
+    ${rows}
+  </table></div>
+
+  <h2>Contract configuration</h2>
+  <dl class="cfg">
+    <dt>contract</dt><dd>${splitter} (v${version})</dd>
+    <dt>owner</dt><dd>${owner}</dd>
+    <dt>treasury</dt><dd>${cfg_treasury}</dd>
+    <dt>contributors</dt><dd>${cfg_contributors}</dd>
+    <dt>split</dt><dd>${bps} bps contributors / ${bps_t} bps treasury</dd>
+    <dt>accepted tokens</dt><dd>${tokens}</dd>
+    <dt>paused</dt><dd>${paused}</dd>
+  </dl>
+  ${forwarder_section}
+
+  <h2>Verify it yourself</h2>
+  <p class="dl"><a href="ledger.jsonl" download>ledger.jsonl</a><a href="ledger.json">ledger.json</a><a href="verify_ledger.py" download>verify_ledger.py</a></p>
+  <p>Each line of <code>ledger.jsonl</code> is one event with its block, transaction, receipt and the exact <code>EVENT_JSON</code> log it came from. Lines are hash-chained: <code>line_hash = sha256(canonical_json(line minus hashes) + prev_hash)</code>, starting from 64 zeros, so no past row can be changed or dropped without breaking every later hash. The verifier is standard-library Python:</p>
+<pre>curl -sO ${site}ledger.jsonl
+curl -sO ${site}verify_ledger.py
+python3 verify_ledger.py ledger.jsonl         # hash chain, split math, totals
+python3 verify_ledger.py ledger.jsonl --rpc   # + re-fetch every event and block from NEAR RPC</pre>
+  <p>Or ask the contract directly:</p>
+<pre>curl -s ${rpc} -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"query","params":{"request_type":"call_function","finality":"final","account_id":"${splitter_id}","method_name":"get_stats","args_base64":"e30="}}' \
+  | python3 -c 'import sys,json; print(bytes(json.load(sys.stdin)["result"]["result"]).decode())'</pre>
+  <p class="meta">${footnote}</p>
+</div></main>
+<footer class="foot">© 2026 NearBI · An autonomous research agent built at NEAR HACKATHON · #NEARHackathon</footer>
+<script>
+(function () {
+  var f = document.getElementById("filters");
+  f.addEventListener("click", function (e) {
+    var k = e.target.getAttribute("data-k"); if (k === null) return;
+    [].forEach.call(f.children, function (b) { b.className = b === e.target ? "on" : ""; });
+    [].forEach.call(document.querySelectorAll("#events tr[data-kind]"), function (r) {
+      var rk = r.getAttribute("data-kind");
+      r.style.display = !k || rk.indexOf(k) === 0 ? "" : "none";
+    });
+  });
+  var el = document.getElementById("live");
+  var body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "query", params: { request_type: "call_function", finality: "final",
+    account_id: "${splitter_id}", method_name: "get_stats", args_base64: "e30=" } });
+  Promise.all([
+    fetch("ledger.json", { cache: "no-store" }).then(function (r) { return r.json(); }),
+    fetch("${rpc}", { method: "POST", headers: { "content-type": "application/json" }, body: body }).then(function (r) { return r.json(); })
+  ]).then(function (res) {
+    var doc = res[0], live = JSON.parse(new TextDecoder().decode(new Uint8Array(res[1].result.result)));
+    var fields = ["sales", "total_received", "contributors_amount", "treasury_amount", "pending_failed"], same = true;
+    live.forEach(function (s) { var t = doc.totals[s.token] || {}; fields.forEach(function (k) { if (String(s[k]) !== String(t[k] || 0)) same = false; }); });
+    if (live.length !== Object.keys(doc.totals).length) same = false;
+    el.textContent = same ? "✅ Live check (your browser, just now): the contract's current get_stats() matches this ledger."
+                          : "⏳ Live check: the contract has activity newer than this snapshot; the ledger refreshes after each sale.";
+  }).catch(function () { el.textContent = "Live check unavailable (RPC unreachable from your browser); use the commands below."; });
+})();
+</script>
+</body></html>
