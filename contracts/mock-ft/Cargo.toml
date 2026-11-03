@@ -1,0 +1,21 @@
+[package]
+name = "usdc-mock"
+description = "TESTNET-ONLY mock USDC: plain NEP-141 with 6 decimals. Not a real stablecoin."
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+near-sdk.workspace = true
+near-contract-standards.workspace = true
+
+[package.metadata.near.reproducible_build]
+image = "sourcescan/cargo-near:0.22.0-rust-1.97.1"
+image_digest = "sha256:7467038bdddc86484b73b416eeadce926ff59013e128e53dec5a19e1cb4b2234"
+passed_env = []
+container_build_command = ["cargo", "near", "build", "non-reproducible-wasm", "--locked"]
