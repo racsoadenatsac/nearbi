@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""forwarder-runner: forward settled NearBI payments from forwarder.nearbi.near into splitter.nearbi.near.
+
+  bin/forwarder-runner --once                 one pass over the FWDQ queue, then exit
+  bin/forwarder-runner --loop [--interval 60] repeat until stopped (Ctrl-C) or a stop condition
+  bin/forwarder-runner --status               preflight + queue listing only, never signs
+  bin/forwarder-runner --once --dry-run       every check, no transaction
+  bin/forwarder-runner --order <paymentId> --amount <base units>   one payment not on the queue
+                                              (e.g. confirmed by the admin override); same checks
+
+Exit codes: 0 ok / nothing to do, 1 error (stopped), 2 an order needs attention (others processed),
+3 "SSO expired" (run `aws sso login --profile nearbi` yourself), 4 top up forwarder.nearbi.near / key allowance.
+"""
+import argparse
+import os
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from rs_agent import forwarder as fw  # noqa: E402
+
+
+def near_cli() -> str:
+    p = os.environ.get("NEAR_CLI") or str(ROOT.parent / "rs-payments/.tools/bin/near")
+    if not os.access(p, os.X_OK):
+        sys.exit(f"near-cli-rs not found at {p}; set NEAR_CLI or run rs-payments/bin/fetch-near-cli.sh")
+    return p
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    mode = ap.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--once", action="store_true")
+    mode.add_argument("--loop", action="store_true")
+    mode.add_argument("--status", action="store_true")
+    mode.add_argument("--order", metavar="PAYMENT_ID")
+    ap.add_argument("--amount", help="with --order: settled amount in USDC base units (6 decimals)")
+    ap.add_argument("--interval", type=int, default=60, help="--loop: seconds between passes (min 15)")
+    ap.add_argument("--dry-run", action="store_true", help="run every check but send nothing")
+    ap.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "nearbi"))
+    a = ap.parse_args()
+    if a.order and not a.amount:
+        ap.error("--order needs --amount")
+
+    db = fw.Dynamo(profile=a.profile)
+    runner = fw.Runner(fw.Rpc(), db, fw.OneClick(), fw.Signer(near_cli()), dry_run=a.dry_run or a.status)
+    try:
+        if a.status:
+            pre = runner.preflight()
+            q = db.forward_queue()
+            fw.log(f"{fw.FORWARDER}: USDC {pre['usdc'] / 1e6:.6f}, free NEAR {pre['free_near'] / fw.YOCTO:.4f} "
+                   f"(~{max(0, pre['free_near'] - fw.MIN_FREE_NEAR_YOCTO) // (4 * 10**21) + (1 if pre['free_near'] >= fw.MIN_FREE_NEAR_YOCTO else 0)} forwards before a top-up), "
+                   f"FC allowance {pre['allowance'] / fw.YOCTO:.4f} NEAR, forwarded {pre['config'].get('forwarded_count')} orders, "
+                   f"open orders {pre['config'].get('open_orders')}, paused={pre['config'].get('paused')}")
+            fw.log(f"FWDQ queue: {len(q)} entr{'y' if len(q) == 1 else 'ies'}" + "".join(f"\n  {e.get('paymentId')} amount={e.get('amount')} enqueuedAt={e.get('enqueuedAt')}" for e in q))
+            return fw.EXIT_OK
+        if a.order:
+            return runner.run_once(manual=fw.manual_entry(db, a.order, a.amount))
+        if a.once:
+            return runner.run_once()
+        interval = max(15, a.interval)
+        while True:
+            rc = runner.run_once()
+            if rc not in (fw.EXIT_OK, fw.EXIT_ATTENTION):
+                return rc
+            time.sleep(interval)
+    except fw.Stop as s:
+        fw.log(f"STOP: {s}")
+        return s.code
+    except KeyboardInterrupt:
+        return fw.EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())
