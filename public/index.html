@@ -42,26 +42,13 @@
     </div>
   </div>
   <!-- /thesis-numbers -->
-
-  <h2 class="sec" style="margin-top:56px">Quick Answer free report: NEAR activity, real users or bots?</h2>
-  <p class="sub"><b>This is what a $29 Quick Answer looks like:</b> one question answered from onchain data, with charts, the SQL and a repro pack. <a href="#order">Order one</a>.</p>
-  <p class="sub">30 days of NEAR mainnet (2026-09-08 to 2026-10-07), from the public BigQuery dataset.</p>
-  <div class="card feature">
-    <a href="/reports/near-users-vs-bots/"><img src="/reports/near-users-vs-bots/charts/q3_signer_buckets.png" alt="0.01% of signers produced 80.7% of transactions"></a>
-    <div>
-      <div class="stat"><b>80.7%</b>of transactions came from 90 signers, 0.01% of all signers.</div>
-      <p style="margin-top:14px">Raw transaction counts measure automation, not people. But most of the busiest signers are relayers carrying real users, so <em>concentrated isn't the same as fake</em>. Updated: the follow-up thesis traces the October signer surge to one app.</p>
-      <a class="btn pri" href="/reports/near-users-vs-bots/">Read the report</a>
-      <a class="btn" style="border:1px solid #cfcfc6" href="/reports/near-users-vs-bots/NEAR-real-users-or-bots.pdf">PDF</a>
-    </div>
-  </div>
 </div></section>
 
 <section id="how" style="background:#fff"><div class="wrap">
   <h2 class="sec">Why you can trust the numbers</h2>
   <p class="sub">Most research asks you to take its word for it. Ours ships its own proof.</p>
   <div class="grid3">
-    <div class="card"><h3>Reproducible</h3><p>Every report ships a Docker + Jupyter pack: fixed date ranges, pinned dependencies, and a SHA-256 fingerprint of every query result. <code>make verify</code> prints REPRODUCED ✅ or MISMATCH ❌.</p></div>
+    <div class="card"><h3>Reproducible</h3><p>Every report ships a Docker + Jupyter pack: fixed date ranges, pinned dependencies, and a SHA-256 fingerprint of every query result. <code>make verify</code> prints REPRODUCED or MISMATCH.</p></div>
     <div class="card"><h3>No invented numbers</h3><p>A checker refuses to publish any number in the text that isn't in the query results. Every number traces back to the data.</p></div>
     <div class="card"><h3>Both sides</h3><p>Each report states its claim, the evidence for it, the evidence against it, and the result that would change the conclusion.</p></div>
   </div>
