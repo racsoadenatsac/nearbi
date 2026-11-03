@@ -7,8 +7,9 @@ site (`./public`) is plain static files in S3 behind the same CloudFront distrib
 
 Part of the NEAR Hackathon one-agent research shop. See `rs-docs/ARCHITECTURE.md`.
 
-> Status: code and tests only. Nothing has been deployed and no AWS resources exist yet. Infra (IaC) is
-> the operator's step; the exact resources are listed under [Deploy: AWS resources](#deploy-aws-resources).
+> Status: deployed at https://nearbi.ai through `../nearbi-infra` (OpenTofu). Payments run in
+> **`INTENTS_MODE=dry`**: checkout shows real NEAR Intents prices, but no deposit address is issued, so
+> nothing can be paid yet. See [Payments](#payments-near-intents-1click) for what live mode needs.
 
 ## What is real and what is stubbed
 
@@ -19,8 +20,9 @@ Part of the NEAR Hackathon one-agent research shop. See `rs-docs/ARCHITECTURE.md
 | NEAR RPC `view_access_key` check (full-access keys only) | **Real** code; tests use a mocked `fetch` |
 | Session cookie (HMAC-SHA256, HttpOnly/Secure/SameSite=Lax, 7 days) | **Real** |
 | Subscription period math (calendar month, clamping, stacking) | **Real** |
-| Checkout: **NEAR Intents 1Click quote** | **STUB**: `src/adapters/intents.ts` returns `STUB-NOT-A-REAL-ADDRESS-…`; the UI shows a "Test mode, do not send funds" banner |
-| Payment confirmation | **Manual**: `POST /billing/confirm` with `ADMIN_TOKEN`. 1Click status polling is a TODO |
+| Checkout: **NEAR Intents 1Click quote** | **Real** (`src/intents/`): live token list, EXACT_OUTPUT quotes for the price in the settlement asset. `INTENTS_MODE=dry` (deployed) uses DRY quotes: real prices, no deposit address, "Preview: payments not enabled yet" banner |
+| Payment status | **Real** code: `GET /billing/status/:id` polls 1Click and extends the subscription once on `SUCCESS`. Exercised offline only (live statuses can't exist without a real deposit) |
+| Payment confirmation override | **Manual**: `POST /billing/confirm` with `ADMIN_TOKEN` |
 | Gating (public / session / subscriber) | **Real** |
 | Private content: HTML proxied from S3, everything else via presigned S3 GET | **Real** code; presigning is tested offline, S3 reads with a fake client |
 | DynamoDB single-table repository | **Real**; passes the shared repository contract against **DynamoDB Local** (`bin/test-dynamo-local.sh`), never against AWS |
@@ -42,8 +44,10 @@ src/
     registry-token.ts token generation, hashing, validity, docker instructions
     account.ts, encoding.ts
   ports/           Repository and ContentStore interfaces
-  adapters/        memory-repository, dynamo-repository, memory-content, s3-content, near-rpc, intents (STUB)
-  services/        billing (checkout/confirm), registry (issue/validate): core + Repository
+  adapters/        memory-repository, dynamo-repository, memory-content, s3-content, near-rpc
+  intents/         NEAR Intents 1Click: typed client (timeouts, retries), adapter (token cache, USD quotes),
+                   amounts (BigInt), settlement rules, 1Click status -> payment state
+  services/        billing (tokens/checkout/status/confirm), registry (issue/validate): core + Repository
   app.ts           Hono app; all dependencies injected
   lambda.ts        AWS Lambda entry (hono/aws-lambda), wires DynamoDB + S3
   dev.ts           local dev server (in-memory storage, serves ./public)
@@ -51,6 +55,7 @@ src/
   config.ts, catalog.ts, pages.ts
 public/            static site (copied from ../nearbi-site) + JS/CSS for the dynamic pages
 test/              vitest; network is blocked by test/setup/no-network.ts
+  fixtures/1click/ responses recorded from the live 1Click API (bin/smoke-1click.sh --record)
 ```
 
 ## Development
@@ -63,6 +68,8 @@ bin/node.sh npm ci
 bin/node.sh npm test                 # vitest, offline
 bin/node.sh npm run typecheck
 bin/test-dynamo-local.sh             # repository contract against amazon/dynamodb-local (Docker, no AWS)
+bin/smoke-1click.sh                  # opt-in LIVE check: real DRY quotes for $49 from a few assets (network)
+bin/smoke-1click.sh --record         # same, and rewrite test/fixtures/1click/*.json
 bin/node.sh npm run build            # -> dist/lambda/index.mjs (+ .map)
 docker run --rm --network none -v "$PWD":/app -w /app \
   -e SESSION_SECRET=$(openssl rand -hex 32) -e ADMIN_TOKEN=x -e TABLE_NAME=t -e CONTENT_BUCKET=b -e AWS_REGION=us-east-1 \
@@ -72,8 +79,9 @@ docker run --rm --network none -v "$PWD":/app -w /app \
 PUBLISH_8787=1 bin/node.sh env SESSION_SECRET=$(openssl rand -hex 32) ADMIN_TOKEN=dev npm run dev
 ```
 
-The dev server seeds a gated report `dev-premium-sample`. To try a subscription locally, sign in, click
-Subscribe, then confirm the stub payment:
+The dev server seeds a gated report `dev-premium-sample`. Checkout calls the real 1Click API (DRY quotes in
+the default dry mode). To try a subscription locally, sign in, click Subscribe, get a preview quote, then
+confirm that payment with the admin override:
 `curl -XPOST localhost:8787/billing/confirm -H 'authorization: Bearer dev' -H 'content-type: application/json' -d '{"paymentId":"…","txHash":"dev-1"}'`.
 
 ## Configuration (Lambda environment)
@@ -94,6 +102,14 @@ Subscribe, then confirm the stub payment:
 | `AUTH_RECIPIENT` | no | `nearbi.ai` | NEP-413 recipient |
 | `REGISTRY_HOST` | no | `registry.nearbi.ai` | |
 | `FREE_REPORT_SLUGS` | no | `near-users-vs-bots,near-thesis` | comma-separated public reports (static site); legacy `FREE_REPORT_SLUG` still read |
+| `INTENTS_MODE` | no | `dry` | `dry`: real DRY quotes, nothing payable, preview banner. `live`: real deposit addresses. Live **refuses to start** unless `SETTLEMENT_RECIPIENT` is a mainnet account |
+| `SETTLEMENT_ASSET` | no | USDC on NEAR (`nep141:17208628…6133a1`) | 1Click asset id revenue settles in; the price is fixed in it (EXACT_OUTPUT) |
+| `SETTLEMENT_RECIPIENT` | live only | | mainnet NEAR account receiving revenue (`*.near` or 64-hex implicit). Testnet accounts are rejected by 1Click and by the app |
+| `SETTLEMENT_DELIVERY` | no | `transfer` | `transfer` (plain `ft_transfer`, refundable) or `ft_transfer_call` (experimental 1Click `customRecipientMsg` = `{"order_id": <paymentId>}`; **no refund if the receiver fails**; live also needs `SETTLEMENT_ACCEPT_NO_REFUND=yes`) |
+| `ONECLICK_JWT` | no | | 1Click partner JWT, sent as `X-API-Key`. Not required; without it 1Click adds 25 bps. Secret |
+| `ONECLICK_BASE_URL` | no | `https://1click.chaindefuser.com/v0` | |
+| `QUOTE_SLIPPAGE_BPS` | no | `100` | max 500. Applied to the input side under EXACT_OUTPUT |
+| `QUOTE_TTL_MINUTES` | no | `30` | quote deadline (60 min minimum for BTC-like chains) |
 
 Lambda reads config once at cold start and fails fast if required variables are missing. Secrets are
 injected as environment variables by the deploy (simplest). Reading them from SSM at cold start is not
@@ -163,14 +179,15 @@ One table, on-demand billing. Key schema: `PK` (S, partition) + `SK` (S, sort). 
 | Account | `ACCT#<accountId>` | `PROFILE` | `createdAt` (`if_not_exists`), `lastLoginAt` | Update on every login |
 | Subscription | `ACCT#<accountId>` | `SUB` | `status`, `currentPeriodEnd`, `lastPaymentTx`, `updatedAt` | Get (consistent) on every gated request |
 | Current registry token | `ACCT#<accountId>` | `RTOKEN` | `tokenHash` | pointer used to revoke the previous token |
-| Payment | `PAY#<paymentId>` | `PAYMENT` | `accountId`, `amountUsd`, `token`, `depositAddress`, `status`, `txHash`, `createdAt`, `paidAt`, `quoteJson` | Put on checkout, Get on confirm |
+| Payment | `PAY#<paymentId>` | `PAYMENT` | `accountId`, `amountUsd`, `token`, `depositAddress`, `status`, `txHash`, `createdAt`, `paidAt`, `quoteJson`, `mode`, `quoteId`, `depositMemo`, `destinationAsset`, `recipient`, `amountIn`, `amountInFormatted`, `minAmountIn`, `amountOut`, `deadline`, `intentsStatus`, `checkedAt`, `settlementTx` | Put on checkout, Get + conditional Update on status poll, Get on confirm. Stub-era items read back with the 1Click fields null |
 | Tx-hash claim | `TX#<txHash>` | `TX` | `paymentId`, `accountId` | makes a tx hash usable once |
 | Registry token | `RTOK#<sha256(token)>` | `RTOKEN` | `accountId`, `expiresAt`, `revoked`, `createdAt`, `ttl` (= expiry + 90 days) | Get by hash on validation |
 | Catalog entry | `CATALOG` | `REPORT#<slug>` | `slug`, `title`, `summary`, `publishedAt`, `isFree`, `pdfFile` | Query `PK = CATALOG` for the members page |
 
 Atomic operations:
 
-- **Confirm payment** is one `TransactWriteItems`: (1) payment `status = pending` → `paid`; (2) put the
+- **Confirm payment** is one `TransactWriteItems`: (1) payment `status IN (preview, pending, processing,
+  incomplete, expired)` → `paid` (`refunded`/`failed` can never be paid); (2) put the
   `TX#` claim with `attribute_not_exists`; (3) set the subscription, conditional on `currentPeriodEnd`
   still equal to the value read before computing the new end (or the item not existing). The service
   retries a lost race up to 3 times, so two payments confirmed at once both count, and confirming the
@@ -232,13 +249,102 @@ CloudFront behavior):
 5. Tests to add: scope parsing (several scopes, malformed ones), username mismatch, revoked/expired token,
    lapsed subscription, JWT verified against the public cert.
 
-## Payments TODO (NEAR Intents 1Click)
+## Payments (NEAR Intents 1Click)
 
-`src/adapters/intents.ts` is a stub. Real integration: `POST https://1click.chaindefuser.com/v0/quote`
-(EXACT_OUTPUT into USDC on NEAR, recipient = treasury account), then poll
-`GET /v0/status?depositAddress=…` from a scheduled Lambda (EventBridge Scheduler) and call
-`confirmPayment()` on `SUCCESS`, which replaces the manual `POST /billing/confirm`. Check the request shape
-against the current 1Click docs before shipping.
+Checked against https://docs.near-intents.org (1Click pages, OpenAPI at
+`https://1click.chaindefuser.com/docs/v0/openapi.yaml`) and the live API on 2026-11-02.
+
+### Flow
+
+1. `GET /members/checkout` (session) loads `public/js/checkout.js`, which fetches `GET /billing/tokens`: the
+   live `GET /v0/tokens` list (210 tokens on 2026-11-02), cached 5 min per Lambda environment and served
+   stale for up to 1 h if 1Click is down. Popular assets first.
+2. `POST /billing/checkout {originAsset, refundTo?}` asks `POST /v0/quote` for
+   `swapType: EXACT_OUTPUT`, `amount` = `MONTHLY_PRICE_USD` in the settlement asset's base units
+   (49 USD → `49000000` USDC), `depositType: ORIGIN_CHAIN`, `recipient: SETTLEMENT_RECIPIENT`,
+   `recipientType: DESTINATION_CHAIN`, `deadline` = now + 30 min (60 for BTC-like chains),
+   `slippageTolerance: 100`, `referral: nearbi`, `dry` = (`INTENTS_MODE` = `dry`). Refunds default to
+   `refundType: INTENTS` / `refundTo: <signed-in NEAR account>` (no address to type, and 1Click charged
+   no refund fee for it in the dry quotes, vs 2400 base units for an origin-chain refund on Base). Passing
+   `refundTo` switches to `refundType: ORIGIN_CHAIN`. The payment is stored with deposit address, quote id
+   (1Click `correlationId`), `amountIn`, assets, deadline and the full signed quote; status `pending`
+   (live) or `preview` (dry).
+3. The page shows amount to send (`amountIn`, which includes the slippage buffer; anything above
+   `minAmountIn` that isn't needed is refunded), the deposit address (+ memo for chains that need one), a
+   server-rendered QR code and a countdown. Live payments are polled every 10 s via
+   `GET /billing/status/:id` (owner only), which calls `GET /v0/status?depositAddress=…` at most every 5 s
+   per payment.
+4. Status mapping (`src/intents/status-map.ts`): `PENDING_DEPOSIT` → `pending` (also a 404 "address not
+   found"), `KNOWN_DEPOSIT_TX` / `PROCESSING` → `processing`, `INCOMPLETE_DEPOSIT` → `incomplete`,
+   `SUCCESS` → `paid`, `REFUNDED` → `refunded`, `FAILED` → `failed`; unknown future values leave the
+   payment unchanged. `pending` for 15 min past the deadline becomes `expired` (a late `SUCCESS` is still
+   honoured). Before confirming, the status payload's embedded quote must match ours (deposit address,
+   recipient, destination asset, EXACT_OUTPUT amount, settled `amountOut` ≥ price). `SUCCESS` calls
+   `confirmPayment()` with the claim key `1click:<depositAddress>`, so it extends exactly once however
+   often it's polled. `POST /billing/confirm` stays as the admin override.
+
+### Findings
+
+- **JWT: not required.** `/tokens`, `/quote` (dry and non-dry), `/status` all work without one
+  (unauthenticated rate-limit headers: 1200 req/60 s). The partner JWT (Partner Dashboard,
+  partners.near-intents.org) only changes fees: unauthenticated quotes pay an extra 25 bps; authenticated
+  20 bps, or 1 bp on stablecoin pairs. In our unauthenticated dry quotes 1Click added
+  `appFees: [{fee: 1}]` to the USDC→USDC route. Send it as `X-API-Key` (or `Authorization: Bearer`).
+- **EXACT_OUTPUT: supported.** `amount` is the output; the response has `amountIn` (with slippage buffer)
+  and `minAmountIn`. Deposit below `minAmountIn` → refunded by the deadline; above `amountIn` → excess
+  refunded to `refundTo`.
+- **Dry quotes** omit `depositAddress`, `deadline` and `timeWhenInactive`. Quotes answer **HTTP 201**.
+  There is no quote id; `correlationId` + `timestamp` + `signature` (ed25519 by 1Click) identify a quote.
+- **Recipient** format must match `recipientType`; **testnet accounts are rejected** (HTTP 400 "Internal
+  server error" for `splitter.nearbi-agent.testnet`). Dry quotes therefore use the all-zero implicit
+  account as an inert placeholder when no mainnet recipient is set. `deadline` in the past → 400
+  "deadline is not valid"; a malformed `refundTo` → 400 "refundTo is not valid".
+- **Contract delivery with `ft_transfer_call` + msg: yes, but experimental and unrefundable.** The quote
+  field `customRecipientMsg` makes the NEAR withdrawal use `ft_transfer_call(msg)` instead of
+  `ft_transfer`; the live API accepts it in a dry quote. The spec labels it "HIGHLY EXPERIMENTAL" and
+  warns funds are lost for non-NEP-141 tokens, missing `storage_deposit`, or a receiver without
+  `ft_on_transfer`. The Verifier docs (Withdrawals → "How msg affects refunds") add that any withdrawal
+  with a `msg` gets **no refund** if the receiving call fails. Our splitter hands the tokens back to the sender
+  (panic or full refund via `ft_resolve_transfer`) for a non-accepted token, a malformed msg and while
+  paused; with 1Click as the sender that "refund" lands with the Verifier and is not credited back, so
+  the payment would be lost. Untested end to end: it can only be verified with a real payment.
+
+### Settlement design and trust tradeoff
+
+Default (`SETTLEMENT_DELIVERY=transfer`): 1Click delivers plain `ft_transfer` USDC to a
+**NearBI-controlled settlement account** (`SETTLEMENT_RECIPIENT`). A separate step forwards each payment
+into the splitter with `ft_transfer_call(splitter, amount, {"order_id": <paymentId>})`. That forwarder is
+not built yet; it could be the agent's key on the settlement account, or a small contract that holds the
+settlement funds and only calls `ft_transfer_call` into the splitter.
+
+- Trust: between delivery and forwarding, NearBI holds the revenue. The onchain split is enforced only
+  once funds reach the splitter, so contributors trust the operator/agent to forward everything, promptly
+  and with the right order ids. This is auditable (each 1Click withdrawal and each forward are public
+  NEAR txs, matched by order id via the stored quote) but not enforced. A forwarding-only contract (no
+  `ft_transfer` out except into the splitter) would remove most of that trust.
+- Safety: plain `ft_transfer` withdrawals are refundable by the Verifier if they fail, and a failed
+  forward stays in our account where it can be retried.
+
+Opt-in (`SETTLEMENT_DELIVERY=ft_transfer_call`, `SETTLEMENT_RECIPIENT=<mainnet splitter>`): 1Click
+calls the splitter directly with `{"order_id": <paymentId>}`, so the split is enforced from the first
+block with no custody gap. The cost is the experimental API and **no refund** on failure. Payer
+attribution changes too: the splitter's `sale.payer` would be the Verifier/1Click account, not the
+customer; the order id is the only link. Live mode requires `SETTLEMENT_ACCEPT_NO_REFUND=yes` for this.
+
+### Switching to `INTENTS_MODE=live` (operator)
+
+1. Choose the settlement account (mainnet `*.near` or implicit) and who controls its keys; for the
+   splitter path, deploy the mainnet splitter (owner, treasury, contributors, split bps, accepted token =
+   USDC `17208628…6133a1`).
+2. `storage_deposit` the recipient (and the splitter, treasury, contributors) on the USDC contract.
+3. Decide `SETTLEMENT_DELIVERY` (`transfer` + forwarder, recommended; or `ft_transfer_call`, after a small
+   real test payment).
+4. Optional: get a partner JWT and store it as the `ONECLICK_JWT` secret.
+5. Build the forwarder (for `transfer`) and a scheduled poller (EventBridge → status check for pending
+   payments), since today only an open checkout page polls; a user who closes the tab is confirmed on
+   their next visit to the page or by the admin override.
+6. Set `INTENTS_MODE=live` + `SETTLEMENT_RECIPIENT`; the Lambda won't start if the recipient isn't a
+   mainnet account. Make one small real payment and follow it on explorer.near-intents.org.
 
 ## Deploy: AWS resources
 
@@ -278,7 +384,7 @@ certificate must be in **us-east-1**.
 
 **Secrets** (SSM Parameter Store SecureString or Secrets Manager)
 - `SESSION_SECRET` (≥ 32 random bytes), `ADMIN_TOKEN`, `ORIGIN_VERIFY_SECRET`.
-- Later: the registry JWT signing key (`nearbi/registry-jwt-key`) and the 1Click JWT if one is used.
+- Later: the registry JWT signing key (`nearbi/registry-jwt-key`) and `ONECLICK_JWT` if one is used.
 
 **Registry** (when the token-auth endpoint exists)
 - S3 bucket `nearbi-registry` (private) and a task role with `s3:ListBucket`, `s3:GetBucketLocation`,
@@ -288,4 +394,4 @@ certificate must be in **us-east-1**.
   from Secrets Manager/SSM), ALB or NLB with the `registry.nearbi.ai` certificate, security groups.
 
 **Later**
-- EventBridge Scheduler rule + Lambda for 1Click status polling.
+- EventBridge Scheduler rule + Lambda for 1Click status polling of payments nobody is watching.
