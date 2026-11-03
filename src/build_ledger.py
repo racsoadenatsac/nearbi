@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build the NearBI public ledger from the splitter contract's NEP-297 events.
+"""Build the NearBI public ledger from the splitter (and, on mainnet, forwarder) contracts' NEP-297 events.
+
+Networks (config.json "networks"): `--network mainnet` (default; splitter.nearbi.near + forwarder.nearbi.near,
+published at /ledger/) or `--network testnet` (splitter.nearbi-agent.testnet only, published at
+/ledger/testnet/). Each network has its own data/<network>/, data/cache/<network>/ and out/<network>/ledger/.
 
 Pipeline (standard library only, Python 3.12):
   1. discover  every tx touching the splitter: FastNEAR tx API (account index, includes receipts and
@@ -31,13 +35,32 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 import verify_ledger as V  # noqa: E402
 
-CFG = json.loads((ROOT / "config.json").read_text())
+ALL = json.loads((ROOT / "config.json").read_text())
+
+
+def _network():
+    for i, a in enumerate(sys.argv):
+        if a == "--network" and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+        if a.startswith("--network="):
+            return a.split("=", 1)[1]
+    return os.environ.get("LEDGER_NETWORK") or ALL["default_network"]
+
+
+NETWORK = _network()
+if NETWORK not in ALL["networks"]:
+    sys.exit("unknown network %r (config.json has %s)" % (NETWORK, ", ".join(ALL["networks"])))
+CFG = dict(ALL["networks"][NETWORK], usd_decimals=ALL["usd_decimals"])
 SPLITTER = CFG["splitter"]
-DATA = ROOT / "data"
-CACHE = DATA / "cache"
-OUT = ROOT / "out" / "ledger"
-UA = {"content-type": "application/json", "user-agent": "nearbi-ledger/0.1 (+https://nearbi.ai/ledger/)"}
+FORWARDER = CFG.get("forwarder")  # mainnet only; testnet's ledger stays splitter-only (append-only history)
+DATA = ROOT / "data" / NETWORK
+CACHE = ROOT / "data" / "cache" / NETWORK
+OUT = ROOT / "out" / NETWORK / "ledger"
+UA = {"content-type": "application/json", "user-agent": "nearbi-ledger/0.2 (+https://nearbi.ai/ledger/)"}
 STANDARD = "nearbi_splitter"
+FWD_STANDARD = "nearbi_forwarder"
+# executor account -> the event standard we accept from it
+SOURCES = {SPLITTER: STANDARD, **({FORWARDER: FWD_STANDARD} if FORWARDER else {})}
 CUTOFF_BLOCKS = int(os.environ.get("LEDGER_CUTOFF_BLOCKS", "20"))  # let the indexer catch up with finality
 
 
@@ -116,10 +139,11 @@ def fastnear_txs(hashes):
 def discover(prev_lines, allow_seed_only):
     sources = {}
     try:
-        acc, count = fastnear_account_txs(SPLITTER)
-        for t in acc:
-            sources.setdefault(t["transaction_hash"], set()).add("fastnear")
-        log("discover: fastnear lists %d txs (txs_count=%s)" % (len(acc), count))
+        for account in SOURCES:
+            acc, count = fastnear_account_txs(account)
+            for t in acc:
+                sources.setdefault(t["transaction_hash"], set()).add("fastnear")
+            log("discover: fastnear lists %d txs for %s (txs_count=%s)" % (len(acc), account, count))
         fast_ok = True
     except RuntimeError as e:
         if not allow_seed_only:
@@ -165,7 +189,8 @@ def extract(h, tx, fast):
     rows, problems = [], []
     for pos, o in enumerate(tx["receipts_outcome"]):
         out = o["outcome"]
-        if out["executor_id"] != SPLITTER or not ok_status(out["status"]):
+        standard = SOURCES.get(out["executor_id"])
+        if standard is None or not ok_status(out["status"]):
             continue
         evs = [(i, l) for i, l in enumerate(out["logs"]) if l.startswith("EVENT_JSON:")]
         if not evs:
@@ -178,7 +203,7 @@ def extract(h, tx, fast):
         hdr = block_header(o["block_hash"])
         for i, raw in evs:
             ev = json.loads(raw[len("EVENT_JSON:"):])
-            if ev.get("standard") != STANDARD:
+            if ev.get("standard") != standard:
                 continue
             rows.append({"_sort": (hdr["height"], pos, i), "raw": raw, "ev": ev, "tx_hash": h, "signer": signer,
                          "receipt_id": o["id"], "log_index": i, "block": hdr["height"],
@@ -216,7 +241,22 @@ def normalize(r, tokens):
     if token:
         m = tokens.get(token)
         unit, decimals = m["symbol"], m["decimals"]
-    if kind == "sale":
+    if r["ev"]["standard"] == FWD_STANDARD:
+        # forwarder amounts are always in its configured token (the events carry it only on init/forward_started)
+        m = tokens.get(CFG["token"])
+        unit, decimals = m["symbol"], m["decimals"]
+        if kind in ("forward_started", "forwarded"):
+            amounts = {"amount": d["amount"]}
+        elif kind == "forward_failed":
+            amounts = {"amount": d["amount"], "unused": d["unused"]}
+        elif kind == "received":
+            amounts = {"amount": d["amount"]}
+            accounts["sender"] = d["sender"]
+        if d.get("by"):
+            accounts["by"] = d["by"]
+        if not amounts:
+            unit, decimals = None, 0
+    elif kind == "sale":
         amounts = {k: d[k] for k in ("amount", "contributors_amount", "treasury_amount")}
         accounts["payer"] = d["payer"]
     elif kind in ("payout", "payout_failed"):
@@ -255,10 +295,10 @@ def chain(bodies):
 # -------------------------------------------------------------------------------------- reconcile
 
 def init_split(sources, txs):
-    """split_bps_contributors from the splitter's own `init` call, read from chain."""
-    for h in sources:
+    """split_bps_contributors from the splitter's own successful `init` call, read from chain."""
+    for h in sorted(sources, key=lambda h: (txs[h]["transaction_outcome"]["block_hash"], h)):
         t = txs[h]["transaction"]
-        if t["receiver_id"] != SPLITTER:
+        if t["receiver_id"] != SPLITTER or not ok_status(txs[h]["status"]):
             continue
         for a in t["actions"]:
             fc = a.get("FunctionCall") if isinstance(a, dict) else None
@@ -282,6 +322,8 @@ def reconcile(lines, live_stats, config, failed_live, init_bps, init_tx, splitte
     totals, outstanding = V.totals(lines)
     fields = ("sales", "total_received", "contributors_amount", "treasury_amount", "pending_failed")
     live = {s["token"]: s for s in live_stats}
+    if not (set(live) | set(totals)):
+        check("totals == get_stats()", True, "0 sales: get_stats() is empty and there are no sale events")
     for tok in sorted(set(live) | set(totals)):
         e, l = totals.get(tok, {}), live.get(tok, {})
         diffs = ["%s events=%s contract=%s" % (f, e.get(f, 0), l.get(f, 0)) for f in fields
@@ -301,6 +343,8 @@ def reconcile(lines, live_stats, config, failed_live, init_bps, init_tx, splitte
     # split in effect for every sale: init value, then config_change events, in chain order
     bps, bad = init_bps, []
     for ln in lines:
+        if ln.get("standard", STANDARD) != STANDARD:
+            continue
         if ln["kind"] == "config_change" and ln["data"]["field"] == "split_bps_contributors":
             bps = int(ln["data"]["value"])
         elif ln["kind"] == "sale":
@@ -310,7 +354,7 @@ def reconcile(lines, live_stats, config, failed_live, init_bps, init_tx, splitte
             amt = int(ln["amounts"]["amount"])
             if int(ln["amounts"]["contributors_amount"]) != V.split_amount(amt, bps or 0)[0]:
                 bad.append("%s contributors_amount does not match configured split" % ln["order_id"])
-    nsales = sum(1 for ln in lines if ln["kind"] == "sale")
+    nsales = sum(1 for ln in lines if ln["kind"] == "sale" and ln.get("standard", STANDARD) == STANDARD)
     check("every sale used the configured split", not bad and init_bps is not None,
           "; ".join(bad) or "%d sales at %s bps (init tx %s, plus config_change events)" % (nsales, bps, init_tx))
     check("configured split == get_config()", bps == config["split_bps_contributors"],
@@ -321,6 +365,33 @@ def reconcile(lines, live_stats, config, failed_live, init_bps, init_tx, splitte
           "%d outstanding" % len(outstanding) if live_failed == outstanding else
           "events %s vs contract %s" % (outstanding, live_failed))
     return checks, totals
+
+
+def reconcile_forwarder(lines, fcfg, check_add):
+    """Forwarder events vs forwarder.get_config() at the same block, and every forward matched by a sale."""
+    fwd = [ln for ln in lines if ln.get("standard") == FWD_STANDARD]
+    sales = {(ln["order_id"], ln["amounts"]["amount"]) for ln in lines
+             if ln.get("standard", STANDARD) == STANDARD and ln["kind"] == "sale" and ln["accounts"].get("payer") == FORWARDER}
+    done = [ln for ln in fwd if ln["kind"] == "forwarded"]
+    count, total = len(done), sum(int(ln["amounts"]["amount"]) for ln in done)
+    check_add("forwarded events == forwarder get_config()",
+              count == int(fcfg["forwarded_count"]) and total == int(fcfg["forwarded_total"]),
+              "events %d orders / %d units, contract %s / %s" % (count, total, fcfg["forwarded_count"], fcfg["forwarded_total"]))
+    last = {}
+    for ln in fwd:
+        if ln["kind"] in ("forward_started", "forwarded", "forward_failed"):
+            last[ln["order_id"]] = ln["kind"]
+    open_orders = sum(1 for k in last.values() if k != "forwarded")
+    check_add("open orders (in flight + retryable) == get_config().open_orders", open_orders == int(fcfg["open_orders"]),
+              "events %d, contract %s" % (open_orders, fcfg["open_orders"]))
+    unmatched = [ln["order_id"] for ln in done if (ln["order_id"], ln["amounts"]["amount"]) not in sales]
+    orphan = sorted(o for o, a in sales if (o, a) not in {(ln["order_id"], ln["amounts"]["amount"]) for ln in done})
+    check_add("every forward has its splitter sale (same order_id, amount) and vice versa", not unmatched and not orphan,
+              "forwarded without sale: %s; sale from forwarder without forwarded: %s" % (unmatched, orphan)
+              if unmatched or orphan else "%d forwards, %d sales from the forwarder" % (count, len(sales)))
+    check_add("forwarder points at this splitter", fcfg["splitter"] == SPLITTER and fcfg["token"] == CFG["token"],
+              "splitter %s, token %s, paused %s, pending change %s" % (fcfg["splitter"], fcfg["token"], fcfg["paused"],
+                                                                      json.dumps(fcfg.get("pending_change"))))
 
 
 # ----------------------------------------------------------------------------------------- render
@@ -337,7 +408,34 @@ def short(h, n=8):
     return h[:n] + "…" if h and len(h) > n + 1 else (h or "")
 
 
+def describe_forwarder(ln):
+    d, disp, k = ln["data"], ln["display"], ln["kind"]
+    if k == "forward_started":
+        return "Forwarding order <code>%s</code> into %s (attempt %s, by %s)" % (
+            esc(d["order_id"]), acct(d["splitter"]), esc(d["attempt"]), acct(d["by"]))
+    if k == "forwarded":
+        return "Order <code>%s</code> forwarded into the splitter" % esc(d["order_id"])
+    if k == "forward_failed":
+        return "<b>Forward failed</b> for <code>%s</code>; %s back in the forwarder (retryable)" % (esc(d["order_id"]), disp["unused"])
+    if k == "received":
+        return "Received from %s" % acct(d["sender"])
+    if k == "init":
+        return "Forwarder initialised: splitter %s, token %s, agent %s, owner %s, change delay %s s" % (
+            acct(d["splitter"]), acct(d["token"]), acct(d["agent"]), acct(d["owner"]), esc(d["change_delay_sec"]))
+    if k == "config_change":
+        return "Forwarder config <code>%s</code> = <code>%s</code> by %s" % (esc(d["field"]), esc(json.dumps(d["value"])), acct(d["by"]))
+    if k == "change_proposed":
+        return "<b>Timelocked change proposed</b>: <code>%s</code> → %s (delay %s s)" % (esc(d["field"]), acct(d["value"]), esc(d["delay_sec"]))
+    if k == "change_accepted":
+        return "<b>Change accepted</b>: <code>%s</code> %s → %s" % (esc(d["field"]), acct(d["old"]), acct(d["new"]))
+    if k == "change_cancelled":
+        return "Change cancelled: <code>%s</code> → %s" % (esc(d["field"]), acct(d["value"]))
+    return esc(json.dumps(d))
+
+
 def describe(ln):
+    if ln.get("standard") == FWD_STANDARD:
+        return describe_forwarder(ln)
     d, disp, k = ln["data"], ln["display"], ln["kind"]
     if k == "sale":
         return "Order <code>%s</code> paid by %s: contributors %s, treasury %s (%s bps)" % (
@@ -384,8 +482,35 @@ def render(lines, doc):
         '<td class="num">%s</td>' % esc(s[f]) for f in ("sales", "total_received", "contributors_amount",
                                                         "treasury_amount", "pending_failed")))
         for s in doc["contract_stats"])
+    fsec = ""
+    if doc.get("forwarder_config"):
+        f = doc["forwarder_config"]
+        pend = f.get("pending_change")
+        fsec = ('<h2>Settlement forwarder</h2><p>NEAR Intents delivers each payment as USDC to %s. Its code has one way to move '
+                'funds: <code>forward(order_id, amount)</code> into the splitter configured below; splitter, token and owner '
+                'can only change after a public %s s timelock.</p><dl class="cfg"><dt>contract</dt><dd>%s (v%s)</dd>'
+                '<dt>forwards into</dt><dd>%s</dd><dt>token</dt><dd>%s</dd><dt>agent</dt><dd>%s</dd><dt>owner</dt><dd>%s</dd>'
+                '<dt>change delay</dt><dd>%s s</dd><dt>pending change</dt><dd>%s</dd><dt>forwarded</dt><dd>%s orders, %s %s</dd>'
+                '<dt>open orders</dt><dd>%s</dd><dt>paused</dt><dd>%s</dd></dl>') % (
+            acct(FORWARDER), esc(f["change_delay_sec"]), acct(FORWARDER), esc(f["version"]), acct(f["splitter"]),
+            acct(f["token"]), acct(f["agent"]), acct(f["owner"]), esc(f["change_delay_sec"]),
+            esc(json.dumps(pend)) if pend else "none", esc(f["forwarded_count"]),
+            fmt_units(f["forwarded_total"], doc["forwarder_decimals"]), esc(t["unit"]), esc(f["open_orders"]),
+            "yes" if f["paused"] else "no")
+    mainnet = CFG["network"] == "mainnet"
     tpl = string.Template((ROOT / "templates" / "index.html").read_text())
     return tpl.substitute(
+        net_class="net main" if mainnet else "net",
+        network_nav='<a href="%s">%s</a>' % (esc(CFG["other_url"]), esc(CFG["other_label"])),
+        forwarder_section=fsec,
+        forwarder_intro=(" Payments made through NEAR Intents reach it through the settlement forwarder %s, whose "
+                         "events are listed here too." % acct(FORWARDER)) if FORWARDER else "",
+        meta_desc=("Mainnet, real USDC on NEAR." if mainnet else "Testnet, mock USDC (no real value)."),
+        units_note=("Raw integer units (USDC has 6 decimals)." if mainnet else "Raw integer units (mock USDC has 6 decimals)."),
+        footnote=("This is the live NEAR mainnet deployment: amounts are real USDC (Circle, native on NEAR). "
+                  "Amounts in the contracts are integers; the decimal figures here are display only." if mainnet else
+                  "This is a testnet deployment paid in a mock USDC token with no real value. Amounts in the contract "
+                  "are integers; the decimal figures here are display only."),
         badge=esc(CFG["network_badge"]),
         updated=esc(doc["generated_at"].replace("T", " ").replace("Z", " UTC")),
         block=doc["as_of_block"],
@@ -396,7 +521,7 @@ def render(lines, doc):
         split="%g%% / %g%%" % (cfg["split_bps_contributors"] / 100, cfg["split_bps_treasury"] / 100),
         recon_class="ok" if recon_ok else "bad",
         recon_badge="✅ Reconciled with the contract" if recon_ok else "❌ Reconciliation FAILED",
-        checks=checks, live_rows=live, rows="".join(rows) or '<tr><td colspan="6">No events yet.</td></tr>',
+        checks=checks, live_rows=live or '<tr><td colspan="6">No sales yet: get_stats() is empty.</td></tr>', rows="".join(rows) or '<tr><td colspan="6">No events yet.</td></tr>',
         nevents=len(lines), head=esc(doc["head_hash"]),
         owner=acct(cfg["owner"]), cfg_treasury=acct(cfg["treasury"]), cfg_contributors=acct(cfg["contributors"]),
         tokens=", ".join(acct(x) for x in cfg["accepted_tokens"]), paused="yes" if cfg["paused"] else "no",
@@ -435,6 +560,10 @@ def build_once(prev_lines, allow_seed_only):
         balances[s["token"]] = view(s["token"], "ft_balance_of", {"account_id": SPLITTER}, block=H)
     init_bps, init_tx = init_split(sources, txs)
     checks, totals = reconcile(lines, live_stats, config, failed, init_bps, init_tx, balances)
+    fcfg = None
+    if FORWARDER:
+        fcfg = view(FORWARDER, "get_config", block=H)
+        reconcile_forwarder(lines, fcfg, lambda name, ok, detail: checks.append({"check": name, "ok": bool(ok), "detail": detail}))
     for p in problems:
         checks.append({"check": "FastNEAR cross-check", "ok": False, "detail": p})
     # append-only: the previously published ledger must be a prefix
@@ -443,11 +572,13 @@ def build_once(prev_lines, allow_seed_only):
     checks.append({"check": "append-only (previous ledger is a prefix)", "ok": prefix_ok,
                    "detail": "%d previous lines kept, %d new" % (n, len(lines) - n) if prefix_ok else
                    "previous ledger.jsonl is not a prefix of the rebuilt one"})
-    return H, lines, config, live_stats, failed, checks, totals, tokens
+    return H, lines, config, live_stats, failed, checks, totals, tokens, fcfg
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--network", choices=sorted(ALL["networks"]), default=NETWORK,
+                    help="mainnet (default; /ledger/) or testnet (/ledger/testnet/)")
     ap.add_argument("--retries", type=int, default=int(os.environ.get("LEDGER_RETRIES", "5")))
     ap.add_argument("--allow-seed-only", action="store_true", help="build without FastNEAR (seed list + ledger)")
     ap.add_argument("--rebuild-chain", action="store_true", help="ignore data/ledger.jsonl (breaks append-only)")
@@ -459,7 +590,7 @@ def main():
         [json.loads(l) for l in prev_path.read_text().splitlines() if l.strip()]
 
     for attempt in range(1, a.retries + 1):
-        H, lines, config, live_stats, failed, checks, totals, tokens = build_once(prev, a.allow_seed_only)
+        H, lines, config, live_stats, failed, checks, totals, tokens, fcfg = build_once(prev, a.allow_seed_only)
         ok = all(c["ok"] for c in checks)
         if ok or attempt == a.retries:
             break
@@ -469,7 +600,7 @@ def main():
                 log("  ❌ %s: %s" % (c["check"], c["detail"]))
         time.sleep(15)
 
-    print("\nRECONCILIATION at block %d (%s)" % (H, SPLITTER))
+    print("\nRECONCILIATION [%s] at block %d (%s%s)" % (NETWORK, H, SPLITTER, " + " + FORWARDER if FORWARDER else ""))
     for c in checks:
         print("  %s %s: %s" % ("⚠️ " if c.get("warn") else ("✅" if c["ok"] else "❌"), c["check"], c["detail"]))
     print("RESULT: %s" % ("RECONCILED" if ok else "MISMATCH"))
@@ -477,15 +608,16 @@ def main():
         return 1
 
     # display totals (single token today; per-token totals stay in ledger.json)
-    tok = next(iter(totals), None)
+    tok = next(iter(totals), None) or (config["accepted_tokens"][0] if config.get("accepted_tokens") else None)
     t = totals.get(tok, {})
     meta = tokens.get(tok) if tok else {"symbol": "", "decimals": 0}
     dec = meta["decimals"]
-    costs = sum(int(ln["amounts"]["amount"]) for ln in lines if ln["kind"] == "cost")
+    costs = sum(int(ln["amounts"]["amount"]) for ln in lines if ln["kind"] == "cost" and ln.get("standard") == STANDARD)
     now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     doc = {
         "generated_at": now, "network": CFG["network"], "network_badge": CFG["network_badge"],
-        "splitter": SPLITTER, "as_of_block": H, "head_hash": lines[-1]["line_hash"] if lines else V.GENESIS,
+        "splitter": SPLITTER, "forwarder": FORWARDER, "as_of_block": H,
+        "forwarder_config": fcfg, "forwarder_decimals": tokens.get(CFG["token"])["decimals"] if FORWARDER else None, "head_hash": lines[-1]["line_hash"] if lines else V.GENESIS,
         "config": config, "contract_stats": live_stats, "failed_payouts": failed,
         "totals": {k: {f: str(v) for f, v in s.items() if f != "token"} for k, s in totals.items()},
         "totals_display": {
@@ -500,6 +632,7 @@ def main():
     OUT.mkdir(parents=True, exist_ok=True)
     jsonl = "".join(json.dumps(ln, ensure_ascii=False, separators=(",", ":")) + "\n" for ln in lines)
     (OUT / "ledger.jsonl").write_text(jsonl)
+    DATA.mkdir(parents=True, exist_ok=True)
     (DATA / "ledger.jsonl").write_text(jsonl)
     (OUT / "ledger.json").write_text(json.dumps(doc, ensure_ascii=False, indent=1))
     shutil.copyfile(ROOT / "src" / "verify_ledger.py", OUT / "verify_ledger.py")

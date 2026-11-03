@@ -5,6 +5,9 @@
     python3 verify_ledger.py ledger.jsonl --rpc      # also re-fetch every event from NEAR RPC and compare
                                                      # raw logs, block hashes, timestamps and get_stats()
 
+The network (mainnet: splitter.nearbi.near + forwarder.nearbi.near; testnet: splitter.nearbi-agent.testnet)
+is inferred from the explorer links in the file; override with --network.
+
 Hash chain: each line is a JSON object with `prev_hash` and `line_hash`.
     body      = the line without `prev_hash` and `line_hash`
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -20,7 +23,24 @@ import urllib.request
 
 GENESIS = "0" * 64
 BPS = 10_000
-EXPLORER = "https://testnet.nearblocks.io/txns/"
+EXPLORER = "https://testnet.nearblocks.io/txns/"  # testnet (kept for compatibility)
+NETWORKS = {
+    "mainnet": {"explorer": "https://nearblocks.io/txns/", "splitter": "splitter.nearbi.near",
+                "forwarder": "forwarder.nearbi.near",
+                "rpc": ["https://rpc.mainnet.fastnear.com", "https://archival-rpc.mainnet.fastnear.com"]},
+    "testnet": {"explorer": EXPLORER, "splitter": "splitter.nearbi-agent.testnet", "forwarder": None,
+                "rpc": ["https://rpc.testnet.near.org", "https://archival-rpc.testnet.near.org"]},
+}
+SPLITTER_STANDARD, FORWARDER_STANDARD = "nearbi_splitter", "nearbi_forwarder"
+
+
+def infer_network(lines):
+    for ln in lines:
+        if str(ln.get("explorer", "")).startswith(NETWORKS["mainnet"]["explorer"]):
+            return "mainnet"
+        if str(ln.get("explorer", "")).startswith(EXPLORER):
+            return "testnet"
+    return "mainnet"
 
 
 def canonical(obj):
@@ -71,8 +91,9 @@ def check_chain(lines):
     return errors, prev
 
 
-def check_rows(lines):
+def check_rows(lines, explorer=None):
     """Each row must agree with its own raw event; every sale must follow the split math."""
+    explorer = explorer or NETWORKS[infer_network(lines)]["explorer"]
     errors = []
     seen = set()
     for i, ln in enumerate(lines):
@@ -80,7 +101,9 @@ def check_rows(lines):
         if key in seen:
             errors.append("line %d: duplicate event %s" % (i + 1, key))
         seen.add(key)
-        kind, data, _ = parse_event(ln["raw"])
+        kind, data, ev = parse_event(ln["raw"])
+        if ev.get("standard") != ln.get("standard", SPLITTER_STANDARD):
+            errors.append("line %d: standard %s != raw event %s" % (i + 1, ln.get("standard"), ev.get("standard")))
         if kind != ln["kind"]:
             errors.append("line %d: kind %s != raw event %s" % (i + 1, ln["kind"], kind))
         if ln.get("data") != data:
@@ -91,9 +114,9 @@ def check_rows(lines):
                 errors.append("line %d: amounts.%s=%s differs from raw event (%s)" % (i + 1, k, v, src))
         if ln.get("order_id") != data.get("order_id") or ln.get("token") != data.get("token"):
             errors.append("line %d: order_id/token differ from raw event" % (i + 1))
-        if ln.get("explorer") != EXPLORER + ln["tx_hash"]:
+        if ln.get("explorer") != explorer + ln["tx_hash"]:
             errors.append("line %d: explorer link does not point at its tx" % (i + 1))
-        if kind == "sale":
+        if kind == "sale" and ev.get("standard") == SPLITTER_STANDARD:
             amt = int(data["amount"])
             c, t = split_amount(amt, int(data["split_bps_contributors"]))
             if (c, t) != (int(data["contributors_amount"]), int(data["treasury_amount"])):
@@ -107,7 +130,9 @@ def totals(lines):
     stats = {}
     failed = {}  # failure id -> amount, while outstanding
     for ln in lines:
-        kind, d, _ = parse_event(ln["raw"])
+        kind, d, ev = parse_event(ln["raw"])
+        if ev.get("standard") != SPLITTER_STANDARD:
+            continue  # forwarder events don't move splitter totals
         tok = d.get("token")
         if kind in ("sale", "payout", "payout_failed"):
             s = stats.setdefault(tok, {"token": tok, "sales": 0, "total_received": 0, "contributors_amount": 0,
@@ -158,7 +183,7 @@ def view(url, account, method, args=None, block=None):
     return json.loads(bytes(res["result"]).decode())
 
 
-def check_rpc(lines, rpc_urls, splitter):
+def check_rpc(lines, rpc_urls, splitter, forwarder=None):
     """Re-fetch every tx and block from NEAR RPC; raw logs must match byte for byte."""
     errors = []
     txs = {}
@@ -185,8 +210,9 @@ def check_rpc(lines, rpc_urls, splitter):
             continue
         out = o["outcome"]
         logs = out["logs"]
-        if out["executor_id"] != splitter:
-            errors.append("line %d: receipt executed by %s, not %s" % (ln["seq"] + 1, out["executor_id"], splitter))
+        want = forwarder if ln.get("standard") == FORWARDER_STANDARD else splitter
+        if out["executor_id"] != want:
+            errors.append("line %d: receipt executed by %s, not %s" % (ln["seq"] + 1, out["executor_id"], want))
         if not any(k in out["status"] for k in ("SuccessValue", "SuccessReceiptId")):
             errors.append("line %d: receipt did not succeed" % (ln["seq"] + 1))
         if ln["log_index"] >= len(logs) or logs[ln["log_index"]] != ln["raw"]:
@@ -214,16 +240,21 @@ def main(argv=None):
     ap.add_argument("ledger", help="path to ledger.jsonl")
     ap.add_argument("--rpc", action="store_true", help="also re-check every event and get_stats() against NEAR RPC")
     ap.add_argument("--rpc-url", action="append", default=None,
-                    help="RPC endpoint(s), tried in order (default: testnet + testnet archival)")
-    ap.add_argument("--splitter", default="splitter.nearbi-agent.testnet")
+                    help="RPC endpoint(s), tried in order (default: the network's RPC + archival)")
+    ap.add_argument("--network", choices=sorted(NETWORKS), help="default: inferred from the file's explorer links")
+    ap.add_argument("--splitter", help="default: the network's splitter")
     a = ap.parse_args(argv)
-    rpc_urls = a.rpc_url or ["https://rpc.testnet.near.org", "https://archival-rpc.testnet.near.org"]
 
     with open(a.ledger, encoding="utf-8") as f:
         lines = [json.loads(l) for l in f if l.strip()]
+    net = NETWORKS[a.network or infer_network(lines)]
+    rpc_urls = a.rpc_url or net["rpc"]
+    a.splitter = a.splitter or net["splitter"]
+    print("network: %s (%s%s)" % (a.network or infer_network(lines), a.splitter,
+                                  " + " + net["forwarder"] if net["forwarder"] else ""))
     errors, head = check_chain(lines)
     print("hash chain: %d lines, head %s ... %s" % (len(lines), head[:16], "OK" if not errors else "BROKEN"))
-    row_err = check_rows(lines)
+    row_err = check_rows(lines, net["explorer"])
     print("rows vs raw events + split math: %s" % ("OK" if not row_err else "%d problems" % len(row_err)))
     errors += row_err
     stats, outstanding = totals(lines)
@@ -236,7 +267,7 @@ def main(argv=None):
                 tok, s["paid_contributors"] + s["paid_treasury"], s["pending_failed"], s["total_received"]))
 
     if a.rpc:
-        rerr = check_rpc(lines, rpc_urls, a.splitter)
+        rerr = check_rpc(lines, rpc_urls, a.splitter, net["forwarder"])
         print("rpc re-check of %d events: %s" % (len(lines), "OK" if not rerr else "%d problems" % len(rerr)))
         errors += rerr
         last_block = max((ln["block"] for ln in lines), default=None)
