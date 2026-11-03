@@ -26,6 +26,8 @@ const pay = (id: string, accountId = "alice.near", over: Partial<PaymentRecord> 
   intentsStatus: null,
   checkedAt: null,
   settlementTx: null,
+  settledAmountOut: null,
+  forwardedTx: null,
   ...over,
 });
 
@@ -125,6 +127,32 @@ export function repositoryContract(name: string, make: () => Promise<Repository>
         const res = await r.applyPayment({ paymentId: `b-${st}`, accountId: "carol.near", txHash: `tx-${st}`, nowSec: 1100, newPeriodEnd: 99999, expected: { exists: true, currentPeriodEnd: end - 1000 } });
         expect(res).toEqual({ ok: false, reason: "not_pending" });
       }
+    });
+
+    it("live payments with a deposit address are indexed for the sweep; dry ones are not", async () => {
+      const r = await make();
+      await r.createPayment(pay("o1"));
+      await r.createPayment(pay("o2", "bob.near", { deadline: 9000 }));
+      await r.createPayment(pay("o3", "alice.near", { mode: "dry", depositAddress: null, status: "preview" }));
+      expect(await r.listOpenPayments(10)).toEqual([
+        { paymentId: "o1", createdAt: 1000, deadline: 2800 },
+        { paymentId: "o2", createdAt: 1000, deadline: 9000 },
+      ]);
+      await r.closeOpenPayment("o1");
+      await r.closeOpenPayment("o1"); // idempotent
+      expect((await r.listOpenPayments(10)).map((x) => x.paymentId)).toEqual(["o2"]);
+      expect((await r.getPayment("o1"))?.status).toBe("pending"); // closing the index leaves the payment alone
+    });
+
+    it("forward queue: enqueue is idempotent (first write wins); settledAmountOut round-trips", async () => {
+      const r = await make();
+      await r.createPayment(pay("f1"));
+      await r.updatePaymentStatus("f1", ["pending"], { status: "pending", intentsStatus: "SUCCESS", checkedAt: 1500, settledAmountOut: "49000001" });
+      expect((await r.getPayment("f1"))?.settledAmountOut).toBe("49000001");
+      const e = { paymentId: "f1", amount: "49000001", recipient: "forwarder.nearbi.near", destinationAsset: "nep141:usdc", depositAddress: "dep-f1", settlementTx: "Tx9", enqueuedAt: 1500 };
+      await r.enqueueForward(e);
+      await r.enqueueForward({ ...e, amount: "1", enqueuedAt: 1600 });
+      expect(await r.listForwardQueue(10)).toEqual([e]);
     });
 
     it("registry tokens: one live token per account", async () => {

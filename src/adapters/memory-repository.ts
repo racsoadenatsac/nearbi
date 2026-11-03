@@ -7,6 +7,8 @@ import {
   type PaymentRecord,
   type PaymentStatus,
   type PaymentStatusPatch,
+  type ForwardQueueEntry,
+  type OpenPaymentRef,
   type RegistryTokenRecord,
   type ReportRecord,
   type Repository,
@@ -25,6 +27,8 @@ export class MemoryRepository implements Repository {
   readonly tokens = new Map<string, RegistryTokenRecord>(); // tokenHash -> record
   readonly currentToken = new Map<string, string>(); // accountId -> tokenHash
   readonly reports = new Map<string, ReportRecord>();
+  readonly openPayments = new Map<string, OpenPaymentRef>();
+  readonly forwardQueue = new Map<string, ForwardQueueEntry>();
 
   constructor(seed: { reports?: ReportRecord[] } = {}) {
     for (const r of seed.reports ?? []) this.reports.set(r.slug, clone(r));
@@ -54,6 +58,7 @@ export class MemoryRepository implements Repository {
   async createPayment(p: PaymentRecord) {
     if (this.payments.has(p.id)) throw new Error(`payment ${p.id} already exists`);
     this.payments.set(p.id, clone(p));
+    if (p.mode === "live" && p.depositAddress) this.openPayments.set(p.id, { paymentId: p.id, createdAt: p.createdAt, deadline: p.deadline });
   }
   async getPayment(id: string) {
     const p = this.payments.get(id);
@@ -88,8 +93,22 @@ export class MemoryRepository implements Repository {
       intentsStatus: patch.intentsStatus,
       checkedAt: patch.checkedAt,
       ...(patch.settlementTx !== undefined ? { settlementTx: patch.settlementTx } : {}),
+      ...(patch.settledAmountOut !== undefined ? { settledAmountOut: patch.settledAmountOut } : {}),
     });
     return true;
+  }
+
+  async listOpenPayments(limit: number) {
+    return [...this.openPayments.values()].sort((a, b) => a.paymentId.localeCompare(b.paymentId)).slice(0, limit).map(clone);
+  }
+  async closeOpenPayment(id: string) {
+    this.openPayments.delete(id);
+  }
+  async enqueueForward(e: ForwardQueueEntry) {
+    if (!this.forwardQueue.has(e.paymentId)) this.forwardQueue.set(e.paymentId, clone(e));
+  }
+  async listForwardQueue(limit: number) {
+    return [...this.forwardQueue.values()].sort((a, b) => a.paymentId.localeCompare(b.paymentId)).slice(0, limit).map(clone);
   }
 
   async replaceRegistryToken(rec: RegistryTokenRecord) {

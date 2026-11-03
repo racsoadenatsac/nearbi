@@ -9,6 +9,8 @@
 //   TX#<txHash>         TX              uniqueness claim for a payment tx hash
 //   RTOK#<sha256>       RTOKEN          registry token (TTL: ttl)
 //   CATALOG             REPORT#<slug>   report catalog entry
+//   OPENPAY             PAY#<paymentId> live payment the scheduled sweep still watches (removed when settled)
+//   FWDQ                PAY#<paymentId> forward queue: 1Click SUCCESS, waiting for the forwarding agent
 //
 // Table: partition key PK (S), sort key SK (S), TTL attribute `ttl` (epoch seconds). No GSIs.
 
@@ -29,6 +31,8 @@ import {
   type PaymentRecord,
   type PaymentStatus,
   type PaymentStatusPatch,
+  type ForwardQueueEntry,
+  type OpenPaymentRef,
   type RegistryTokenRecord,
   type ReportRecord,
   type Repository,
@@ -45,6 +49,8 @@ export const keys = {
   tx: (hash: string) => ({ PK: `TX#${hash}`, SK: "TX" }),
   token: (hash: string) => ({ PK: `RTOK#${hash}`, SK: "RTOKEN" }),
   report: (slug: string) => ({ PK: "CATALOG", SK: `REPORT#${slug}` }),
+  openPayment: (id: string) => ({ PK: "OPENPAY", SK: `PAY#${id}` }),
+  forwardQueue: (id: string) => ({ PK: "FWDQ", SK: `PAY#${id}` }),
 };
 
 /** Registry token items linger this long after expiry before DynamoDB TTL removes them (audit trail). */
@@ -130,13 +136,66 @@ export class DynamoRepository implements Repository {
   }
 
   async createPayment(p: PaymentRecord) {
+    const put = { TableName: this.table, Item: { ...keys.payment(p.id), type: "payment", ...p }, ConditionExpression: "attribute_not_exists(PK)" };
+    if (!(p.mode === "live" && p.depositAddress)) {
+      await this.db.send(new PutCommand(put));
+      return;
+    }
+    // Live: the payment and its sweep index entry are written together, so no live payment is ever unwatched.
     await this.db.send(
-      new PutCommand({
-        TableName: this.table,
-        Item: { ...keys.payment(p.id), type: "payment", ...p },
-        ConditionExpression: "attribute_not_exists(PK)",
+      new TransactWriteCommand({
+        TransactItems: [
+          { Put: put },
+          {
+            Put: {
+              TableName: this.table,
+              Item: { ...keys.openPayment(p.id), type: "openpay", paymentId: p.id, createdAt: p.createdAt, deadline: p.deadline },
+            },
+          },
+        ],
       }),
     );
+  }
+
+  async listOpenPayments(limit: number): Promise<OpenPaymentRef[]> {
+    const r = await this.db.send(
+      new QueryCommand({ TableName: this.table, KeyConditionExpression: "PK = :pk", ExpressionAttributeValues: { ":pk": "OPENPAY" }, Limit: limit }),
+    );
+    return (r.Items ?? []).map((i) => ({ paymentId: i.paymentId, createdAt: i.createdAt, deadline: i.deadline ?? null }));
+  }
+
+  async closeOpenPayment(id: string) {
+    await this.db.send(new DeleteCommand({ TableName: this.table, Key: keys.openPayment(id) }));
+  }
+
+  async enqueueForward(e: ForwardQueueEntry) {
+    try {
+      await this.db.send(
+        new PutCommand({
+          TableName: this.table,
+          Item: { ...keys.forwardQueue(e.paymentId), type: "fwdq", ...e },
+          ConditionExpression: "attribute_not_exists(PK)",
+        }),
+      );
+    } catch (err) {
+      if ((err as { name?: string }).name !== "ConditionalCheckFailedException") throw err; // already queued
+    }
+  }
+
+  async listForwardQueue(limit: number): Promise<ForwardQueueEntry[]> {
+    const r = await this.db.send(
+      new QueryCommand({ TableName: this.table, KeyConditionExpression: "PK = :pk", ExpressionAttributeValues: { ":pk": "FWDQ" }, Limit: limit, ConsistentRead: true }),
+    );
+    const n = <T>(v: T | undefined): T | null => (v === undefined ? null : v);
+    return (r.Items ?? []).map((i) => ({
+      paymentId: i.paymentId,
+      amount: n(i.amount),
+      recipient: i.recipient,
+      destinationAsset: i.destinationAsset,
+      depositAddress: i.depositAddress,
+      settlementTx: n(i.settlementTx),
+      enqueuedAt: i.enqueuedAt,
+    }));
   }
 
   async getPayment(id: string): Promise<PaymentRecord | null> {
@@ -168,6 +227,8 @@ export class DynamoRepository implements Repository {
       intentsStatus: n(p.intentsStatus),
       checkedAt: n(p.checkedAt),
       settlementTx: n(p.settlementTx),
+      settledAmountOut: n(p.settledAmountOut),
+      forwardedTx: n(p.forwardedTx),
     };
   }
 
@@ -242,6 +303,10 @@ export class DynamoRepository implements Repository {
     if (patch.settlementTx !== undefined) {
       set += ", settlementTx = :stx";
       values[":stx"] = patch.settlementTx;
+    }
+    if (patch.settledAmountOut !== undefined) {
+      set += ", settledAmountOut = :sao";
+      values[":sao"] = patch.settledAmountOut;
     }
     try {
       await this.db.send(

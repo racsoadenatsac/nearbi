@@ -50,6 +50,33 @@ export interface PaymentRecord {
   intentsStatus: string | null; // last raw 1Click status
   checkedAt: number | null; // last 1Click status check
   settlementTx: string | null; // destination tx hash reported by 1Click on SUCCESS
+  /** Settled output (base units of destinationAsset) 1Click reported on SUCCESS; what the forwarder forwards. */
+  settledAmountOut: string | null;
+  /** Set by the forwarding agent (rs-agent bin/forwarder-runner) once forward(order_id = id) is final onchain. */
+  forwardedTx: string | null;
+}
+
+/** Index entry for a live payment the background sweep still has to watch (see Repository.listOpenPayments). */
+export interface OpenPaymentRef {
+  paymentId: string;
+  createdAt: number;
+  deadline: number | null;
+}
+
+/**
+ * Work item for the forwarding agent: a live payment 1Click reported SUCCESS for, delivered with plain
+ * ft_transfer to the settlement account (the forwarder contract). The agent calls
+ * forward(order_id = paymentId, amount) and removes the entry. Written before the subscription is extended.
+ */
+export interface ForwardQueueEntry {
+  paymentId: string;
+  /** settled amountOut in base units of destinationAsset; null if 1Click didn't report one (agent must not guess). */
+  amount: string | null;
+  recipient: string;
+  destinationAsset: string;
+  depositAddress: string;
+  settlementTx: string | null;
+  enqueuedAt: number;
 }
 
 export interface PaymentStatusPatch {
@@ -57,6 +84,7 @@ export interface PaymentStatusPatch {
   intentsStatus: string | null;
   checkedAt: number;
   settlementTx?: string | null;
+  settledAmountOut?: string | null;
 }
 
 export interface ReportRecord {
@@ -104,6 +132,15 @@ export interface Repository {
    * `from`. Never sets "paid" (only applyPayment does). Returns false if the condition failed.
    */
   updatePaymentStatus(id: string, from: readonly PaymentStatus[], patch: PaymentStatusPatch): Promise<boolean>;
+  /**
+   * Live payments still to be watched by the scheduled sweep. createPayment adds every live payment that
+   * has a deposit address (atomically with the payment); the sweep removes it with closeOpenPayment.
+   */
+  listOpenPayments(limit: number): Promise<OpenPaymentRef[]>;
+  closeOpenPayment(id: string): Promise<void>;
+  /** Idempotent: the same payment enqueued twice is one entry (the first write wins). */
+  enqueueForward(e: ForwardQueueEntry): Promise<void>;
+  listForwardQueue(limit: number): Promise<ForwardQueueEntry[]>;
 
   // registry
   /** Store a new token and revoke the account's previous one (one live token per account). */
