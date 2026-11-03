@@ -380,8 +380,13 @@ shape (no `requestContext`, so no HTTP request can produce it) to `sweepOpenPaym
 - The index entry is removed once the payment is `paid` / `refunded` / `failed`, or 24 h after the deadline
   for `expired` ones (a late `SUCCESS` inside that window still confirms; later only via the page or the
   admin override).
-- 7 s time budget per run (Lambda timeout 10 s), at most 100 payments; the rest is picked up next minute.
-- Each run logs one JSON line: `{"task":"sweep-payments","mode":"live","open":…,"checked":…,"closed":…,"paid":…,"errors":…,"truncated":…}`.
+- 7 s time budget per run (Lambda timeout 10 s), up to 500 open payments, visited in random order with 4 in
+  parallel, so a long list can't starve its tail; whatever doesn't fit is picked up next minute.
+- 1Click keeps a deposit address open **~72 h past the deadline we request** (we ask for +30 min; the live
+  quote on 2026-11-03 came back with `deadline` = request + 72 h, and the page shows that real window). An
+  abandoned checkout therefore stays open for days: payments older than 1 h with no deposit seen are
+  re-checked at most every 10 min (`SWEEP_FAST_AGE`, `SWEEP_SLOW_RECHECK`), younger ones every minute.
+- Each run logs one JSON line: `{"task":"sweep-payments","mode":"live","open":…,"checked":…,"deferred":…,"closed":…,"paid":…,"errors":…,"truncated":…}`.
 
 The admin override (`POST /billing/confirm`) does **not** queue a forward (it has no settled amount);
 forward such a payment by hand with `rs-agent bin/forwarder-runner --order <paymentId> --amount <base units>`.
