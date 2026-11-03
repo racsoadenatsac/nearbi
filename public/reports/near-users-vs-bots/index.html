@@ -27,6 +27,7 @@
   .rs-report pre { background:#111; color:#e8e8e8; padding:16px; border-radius:8px; overflow:auto; font-size:13px; }
   .rs-report .cta { display:inline-block; background:var(--ink); color:#fff !important; padding:12px 20px; border-radius:8px; text-decoration:none; font-weight:600; margin:6px 8px 6px 0; }
   .rs-report .cta.alt { background:var(--acc); }
+  .rs-report .update { background:#fff8e6; border-left:4px solid #e0a800; padding:10px 14px; border-radius:6px; margin:.6em 0 0; font-size:15px; }
   .rs-report .note { color:var(--muted); font-size:13px; }
 </style>
 <article class="rs-report">
@@ -59,14 +60,15 @@
   <ol>
     <li><strong>Relayers carry real users.</strong> With NEAR meta-transactions, a relayer signs and pays gas for a user's action. Signer-level analysis undercounts the users behind relayers. It doesn't prove the activity is fake.</li>
     <li><strong>The busiest day was broad-based.</strong> The peak of 1,217,209 transactions on 2026-09-27 came with the top-10 share <em>falling</em> to 46.1%.</li>
-    <li><strong>Signers surged in early October.</strong> They went from 62,105 to 176,719 in two days and stayed high, while transactions per signer fell from 18.5 to 3.9. Real growth, or a campaign, airdrop or sybil wave? This data can't tell them apart.</li>
+    <li><strong>Signers surged in early October.</strong> They went from 62,105 to 176,719 in two days and stayed high, while transactions per signer fell from 18.5 to 3.9. Real growth, or a campaign, airdrop or sybil wave? This data can't tell them apart.
+      <p class="update"><strong>Update (2026-11-02).</strong> The follow-up <a href="/reports/near-thesis/">NEAR thesis</a> attributes this surge to one app: the new signers were sub-accounts of KaiChing (<code>*.users.kaiching</code>) signing directly, and they stopped soon after. That points to one app's campaign rather than broad organic growth. The figures in this report are unchanged.</p></li>
   </ol>
   <figure><img src="charts/q1_daily_activity.png" alt="Daily transactions and distinct signers"></figure>
 
   <h2>What would change the conclusion</h2>
   <ul>
     <li><strong>Attributing relayer traffic to end users.</strong> If hundreds of thousands of distinct users sit behind relayers, NEAR's real user base is far larger than its signer count.</li>
-    <li><strong>Retention of the October signers.</strong> If most stay active for 30 days, it's real growth. If they vanish, it was a campaign or sybil wave.</li>
+    <li><strong>Retention of the October signers.</strong> If most stay active for 30 days, it's real growth. If they vanish, it was a campaign or sybil wave. <em>Update (2026-11-02): the follow-up <a href="/reports/near-thesis/">NEAR thesis</a> attributes the surge to KaiChing sub-accounts, which stopped signing soon after.</em></li>
     <li><strong>Funding graph of the generated-name accounts.</strong> Shared funders would mean one operator.</li>
   </ul>
 
