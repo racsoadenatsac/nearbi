@@ -60,8 +60,13 @@ create_sub "$CONTRIBUTORS" "0.2 NEAR"
 
 # 3. mock token
 WANT_TOKEN_HASH="$(wasm_code_hash "$TOKEN_WASM")"
-if [ "$(code_hash "$TOKEN")" = "$WANT_TOKEN_HASH" ]; then
+HAVE_TOKEN_HASH="$(code_hash "$TOKEN")"
+if [ "$HAVE_TOKEN_HASH" = "$WANT_TOKEN_HASH" ]; then
   log "$TOKEN already deployed ($WANT_TOKEN_HASH)"
+elif [ "${NEARBI_REUSE_TOKEN:-0}" = 1 ] && [ "$HAVE_TOKEN_HASH" != "11111111111111111111111111111111" ]; then
+  # side-by-side v2 deploy: keep the existing (initialized) mock token and its balances
+  log "reusing existing $TOKEN (code_hash $HAVE_TOKEN_HASH; NEARBI_REUSE_TOKEN=1)"
+  WANT_TOKEN_HASH="$HAVE_TOKEN_HASH"
 else
   [ "$(code_hash "$TOKEN")" = "11111111111111111111111111111111" ] \
     || { echo "$TOKEN has different code; refusing to redeploy (state is initialized)" >&2; exit 1; }
@@ -159,7 +164,7 @@ rec = {
   "splitter_code_hash": "$WANT_SPLITTER_HASH",
   "token_code_hash": "$WANT_TOKEN_HASH",
   "splitter_wasm_sha256": open("$ROOT/res/nearbi_splitter.wasm.sha256").read().split()[0],
-  "token_wasm_sha256": open("$ROOT/res/usdc_mock.wasm.sha256").read().split()[0],
+  "token_wasm_sha256": open("$ROOT/res/usdc_mock.wasm.sha256").read().split()[0] if "${NEARBI_REUSE_TOKEN:-0}" != "1" else None,
   "build_commit": open("$ROOT/res/BUILD_COMMIT").read().strip(),
   "agent_function_call_key": {"public_key": "$FC_PUB", "receiver_id": "$SPLITTER",
                               "method_names": ["record_cost", "anchor_report"], "allowance": "0.25 NEAR"},
@@ -170,4 +175,4 @@ json.dump(rec, open(path, "w"), indent=2); open(path, "a").write("\n")
 PY
 chmod 644 "$DEPLOY_JSON"
 log "config:"; view "$SPLITTER" get_config '{}' | python3 -m json.tool
-log "deployment record: deploy/testnet.json"
+log "deployment record: $DEPLOY_JSON"

@@ -120,7 +120,7 @@ print("    on-chain permission OK:", json.dumps(fc))
 python3 - "$DEPLOY_JSON" <<PY
 import json, sys, os
 path = sys.argv[1]
-rec = json.load(open(path))
+rec = json.load(open(path)) if os.path.exists(path) else {}
 old = rec.get("forwarder", {})
 txs = old.get("txs", [])
 for line in """$(printf '%s\n' "${TXS[@]+"${TXS[@]}"}")""".splitlines():
@@ -146,4 +146,4 @@ json.dump(rec, open(path, "w"), indent=2); open(path, "a").write("\n")
 PY
 chmod 644 "$DEPLOY_JSON"
 log "config:"; view "$FORWARDER" get_config '{}' | python3 -m json.tool
-log "deployment record: deploy/testnet.json (forwarder)"
+log "deployment record: $DEPLOY_JSON (forwarder)"
