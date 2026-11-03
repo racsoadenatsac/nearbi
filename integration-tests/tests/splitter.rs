@@ -2,6 +2,8 @@
 //!
 //! Uses the release artifacts in res/ (built by bin/build.sh). Override with
 //! SPLITTER_WASM / FT_WASM.
+mod common;
+
 use near_workspaces::network::Sandbox;
 use near_workspaces::result::ExecutionFinalResult;
 use near_workspaces::types::{AccessKey, KeyType, NearToken, SecretKey};
@@ -110,7 +112,7 @@ fn events(res: &ExecutionFinalResult, name: &str) -> Vec<Value> {
 }
 
 async fn setup(bps: u16) -> anyhow::Result<Env> {
-    let worker = near_workspaces::sandbox().await?;
+    let worker = common::sandbox().await?;
     let root = worker.root_account()?;
     let owner = root.create_subaccount("owner").initial_balance(NearToken::from_near(100)).transact().await?.into_result()?;
     let token = deploy_token(&worker, &owner, "usdc").await?;

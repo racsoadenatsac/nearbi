@@ -59,3 +59,10 @@ for t in "${TARGETS[@]}"; do
   echo "    res/$crate.wasm  $(wc -c < "res/$crate.wasm") bytes  sha256 $(cut -d' ' -f1 "res/$crate.wasm.sha256")"
 done
 echo "$COMMIT" > res/BUILD_COMMIT
+
+# Mainnet compatibility gate: fail if any WASM imports a host function that mainnet
+# (protocol 86) does not provide. See README "Protocol compatibility".
+for t in "${TARGETS[@]}"; do
+  case "$t" in splitter) c=nearbi_splitter ;; forwarder) c=nearbi_forwarder ;; mock-ft) c=usdc_mock ;; esac
+  python3 -I "$ROOT/bin/wasm-imports.py" --deny "$ROOT/bin/denied-imports-protocol-86.txt" "res/$c.wasm"
+done
