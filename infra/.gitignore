@@ -1,0 +1,25 @@
+# secrets: never commit
+.env
+.env.*
+*.key
+*credentials*.json
+*service-account*.json
+secrets/
+# build/runtime
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.ipynb_checkpoints/
+.DS_Store
+cache/
+# OpenTofu: never commit state, plans or local provider caches
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+*.tfvars
+!example.tfvars
+build/
