@@ -44,13 +44,21 @@ async function loadTokens() {
   }
 }
 
+// Human-readable remaining time: "2 d 23 h 49 m", "1 h 05 m", "4 m 12 s".
+function fmtLeft(s) {
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (d) return `${d} d ${h} h ${String(m).padStart(2, "0")} m`;
+  if (h) return `${h} h ${String(m).padStart(2, "0")} m`;
+  return `${m} m ${String(sec).padStart(2, "0")} s`;
+}
+
 function countdown(deadline) {
   clearInterval(countdownTimer);
   const el = $("#countdown");
   if (!el || !deadline) return;
   const tick = () => {
     const s = Math.max(0, Math.floor((Date.parse(deadline) - Date.now()) / 1000));
-    el.textContent = s ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : "expired";
+    el.textContent = s ? fmtLeft(s) + (deadline ? ` (until ${new Date(deadline).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })})` : "") : "expired";
     if (!s) clearInterval(countdownTimer);
   };
   tick();
