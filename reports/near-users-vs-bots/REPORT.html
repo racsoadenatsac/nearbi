@@ -26,12 +26,15 @@ h2, table, img { break-inside: avoid; } h2 { break-after: avoid; }
 <ol>
 <li><strong>Relayers carry real users.</strong> NEAR supports meta-transactions: a relayer signs and pays gas for a user's action. <code>sweat-relayer.near</code>, <code>meteor-relayer.near</code>, <code>relay.aurora</code> and <code>omni-relayer.bridge.near</code> are relayer-style accounts, so a large part of the "automated" 80.7% may be real people whose activity is counted under one signer. <strong>Signer-level analysis undercounts users behind relayers.</strong> It doesn't prove the activity is fake.</li>
 <li><strong>Volume growth on the busiest day was broad-based, not bot-driven.</strong> The window's peak, 1,217,209 transactions on 2026-09-27, came with the top-10 share <em>falling</em> to 46.1% (top 100: 77.8%). <em>(q1, q2)</em></li>
-<li><strong>Distinct signers surged in early October.</strong> They went from 62,105 on 2026-10-01 to 176,719 on 2026-10-03, and stayed high (177,196 on 2026-10-04, 175,774 on 2026-10-07), while transactions per signer fell from 18.5 to 3.9. <em>(q1)</em> That's a lot of new, lightly active signers. It could be real user growth, or a campaign, airdrop or sybil wave. This data can't tell them apart.</li>
+<li>
+<p><strong>Distinct signers surged in early October.</strong> They went from 62,105 on 2026-10-01 to 176,719 on 2026-10-03, and stayed high (177,196 on 2026-10-04, 175,774 on 2026-10-07), while transactions per signer fell from 18.5 to 3.9. <em>(q1)</em> That's a lot of new, lightly active signers. It could be real user growth, or a campaign, airdrop or sybil wave. This data can't tell them apart.</p>
+<p><strong>Update (2026-11-02).</strong> The follow-up <a href="https://nearbi.ai/reports/near-thesis/">NEAR thesis</a> attributes this surge to one app: the new signers were sub-accounts of KaiChing (<code>*.users.kaiching</code>) signing directly, and they stopped soon after. That points to one app's campaign rather than broad organic growth. The figures in this report are unchanged.</p>
+</li>
 </ol>
 <h2>What would change the conclusion</h2>
 <ul>
 <li><strong>Attributing relayer traffic to end users.</strong> If decoding the relayed actions (receipt predecessor/receiver) shows hundreds of thousands of distinct end users behind relayers, then NEAR's real user base is much larger than its signer count, and the claim softens from "automation" to "routed through infrastructure".</li>
-<li><strong>Retention of the October signers.</strong> If a large share of the signers who appeared 2026-10-02 to 2026-10-07 stay active for 30 days, that's real growth. If most vanish, it was a campaign or sybil wave.</li>
+<li><strong>Retention of the October signers.</strong> If a large share of the signers who appeared 2026-10-02 to 2026-10-07 stay active for 30 days, that's real growth. If most vanish, it was a campaign or sybil wave. <em>Update (2026-11-02): the follow-up <a href="https://nearbi.ai/reports/near-thesis/">NEAR thesis</a> attributes the surge to KaiChing sub-accounts, which stopped signing soon after.</em></li>
 <li><strong>Funding graph of the generated-name accounts.</strong> If they share funders, they're one operator, which would support the bot reading.</li>
 </ul>
 <p>These are the next queries in the full deep-dive report.</p>
