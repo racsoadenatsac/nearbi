@@ -82,5 +82,63 @@
       "tx": "CGksMFW2XJhwZncUrY8fzZKNoAx3htk3umcGZHiccb6J",
       "explorer": "https://testnet.nearblocks.io/txns/CGksMFW2XJhwZncUrY8fzZKNoAx3htk3umcGZHiccb6J"
     }
-  ]
+  ],
+  "forwarder": {
+    "contract": "forwarder.nearbi-agent.testnet",
+    "owner": "nearbi-agent.testnet",
+    "splitter": "splitter.nearbi-agent.testnet",
+    "token": "usdc-mock.nearbi-agent.testnet",
+    "agent": "forwarder.nearbi-agent.testnet",
+    "change_delay_sec_at_init": 0,
+    "oneclick_simulator": "oneclick-sim.nearbi-agent.testnet",
+    "code_hash": "Ht4N9MPmr7KRpgQDTYLkv4piR4TQ4R7LSZGnMwxo38Go",
+    "wasm_sha256": "facf6a98de68c631616c83018eb4fc3d4be54cae002345f63ac367c002bca0a0",
+    "build_commit": "47ee7e47f498cf09d71f485a29b3207c675d8e70",
+    "agent_function_call_key": {
+      "public_key": "ed25519:4e7uzpp3u8U3aFwEb5HtRWfCLhQU8QWeSQyNradfASQp",
+      "receiver_id": "forwarder.nearbi-agent.testnet",
+      "method_names": [
+        "forward"
+      ],
+      "allowance": "0.5 NEAR"
+    },
+    "txs": [
+      {
+        "step": "create",
+        "account": "forwarder.nearbi-agent.testnet",
+        "tx": "Aeo41QVKkYb2KmAv7EF3pjvspiuBffzXm6CEXJPMkM53",
+        "explorer": "https://testnet.nearblocks.io/txns/Aeo41QVKkYb2KmAv7EF3pjvspiuBffzXm6CEXJPMkM53"
+      },
+      {
+        "step": "create",
+        "account": "oneclick-sim.nearbi-agent.testnet",
+        "tx": "9TRueDfd7ce6NR96gxZ3mPTE4u3PesixwuBqc63wJ97n",
+        "explorer": "https://testnet.nearblocks.io/txns/9TRueDfd7ce6NR96gxZ3mPTE4u3PesixwuBqc63wJ97n"
+      },
+      {
+        "step": "deploy",
+        "account": "forwarder.nearbi-agent.testnet",
+        "tx": "4RJB4V1zTZn67QUgxK9u39LaxumQCowTMbY6KVqFuzVB",
+        "explorer": "https://testnet.nearblocks.io/txns/4RJB4V1zTZn67QUgxK9u39LaxumQCowTMbY6KVqFuzVB"
+      },
+      {
+        "step": "storage",
+        "account": "forwarder.nearbi-agent.testnet",
+        "tx": "Bxc2GMMP6zdDNQFAN5AQbPUA3fsaTPQVThxtXGwaFJZS",
+        "explorer": "https://testnet.nearblocks.io/txns/Bxc2GMMP6zdDNQFAN5AQbPUA3fsaTPQVThxtXGwaFJZS"
+      },
+      {
+        "step": "storage",
+        "account": "oneclick-sim.nearbi-agent.testnet",
+        "tx": "8KDCsGJGBKRBLKd4MxVh7sQt2t9rFsbPzZa1khJ6iUPo",
+        "explorer": "https://testnet.nearblocks.io/txns/8KDCsGJGBKRBLKd4MxVh7sQt2t9rFsbPzZa1khJ6iUPo"
+      },
+      {
+        "step": "add-fc-key",
+        "account": "forwarder.nearbi-agent.testnet",
+        "tx": "Cc7RB6iTFc8kDLSFaASTFWdRq8sqLWQqM3uum9cSorKD",
+        "explorer": "https://testnet.nearblocks.io/txns/Cc7RB6iTFc8kDLSFaASTFWdRq8sqLWQqM3uum9cSorKD"
+      }
+    ]
+  }
 }
