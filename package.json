@@ -1,6 +1,6 @@
 {
   "name": "nearbi-app",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "nearbi.ai app on AWS Lambda: Sign in with NEAR, NEAR Intents subscriptions, gated S3 reports, registry tokens",
