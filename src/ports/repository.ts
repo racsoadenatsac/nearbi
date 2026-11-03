@@ -13,7 +13,12 @@ export interface AccountRecord {
   lastLoginAt: number;
 }
 
-export type PaymentStatus = "pending" | "paid" | "failed" | "expired";
+/**
+ * preview: DRY quote, nothing can be paid. pending: waiting for the deposit. processing: deposit seen /
+ * swap running. incomplete: deposit below the quote. paid: subscription extended (only applyPayment sets
+ * it). refunded / failed: 1Click gave the funds back / errored. expired: deadline passed with no deposit.
+ */
+export type PaymentStatus = "preview" | "pending" | "processing" | "incomplete" | "paid" | "refunded" | "failed" | "expired";
 
 export interface PaymentRecord {
   id: string; // uuid
