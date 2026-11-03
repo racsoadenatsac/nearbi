@@ -36,6 +36,27 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 1
 fi
 
+# reports/: only these report packs are free and may ship. Every other pack under reports/ in rs-reports
+# (paid orders) is stripped by git filter-repo before the pull. The filter is deterministic, so the
+# filtered commits keep the same ids as the ones already in this monorepo's (purged) history.
+FREE_REPORTS=(near-users-vs-bots)
+
+filtered_reports_src() {  # $1 = rs-reports path; prints the path of a filtered clone
+  command -v git-filter-repo >/dev/null || { echo "!! git-filter-repo is required (brew install git-filter-repo)" >&2; return 1; }
+  local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/nearbi-reports.XXXXXX")
+  git clone -q --no-local --single-branch --branch main "$1" "$tmp/rs-reports" >&2
+  local args=() pack
+  while read -r pack; do
+    [ -z "$pack" ] && continue
+    printf '%s\n' "${FREE_REPORTS[@]}" | grep -qxF "$pack" || args+=(--path "reports/$pack/")
+  done < <(git -C "$tmp/rs-reports" log --format= --name-only main -- reports/ | awk -F/ 'NF>2{print $2}' | sort -u)
+  if [ ${#args[@]} -gt 0 ]; then
+    git -C "$tmp/rs-reports" filter-repo --force --quiet --invert-paths "${args[@]}" >&2
+    echo "   reports: stripped non-free packs: ${args[*]}" | sed 's/--path //g' >&2
+  fi
+  echo "$tmp/rs-reports"
+}
+
 want=("$@")
 selected() {
   [ ${#want[@]} -eq 0 ] && return 0
@@ -51,6 +72,9 @@ for entry in "${MAP[@]}"; do
   if [ ! -d "$src/.git" ]; then
     echo "!! $prefix: source repo $src not found" >&2; fail=1; continue
   fi
+  if [ "$prefix" = reports ]; then
+    src=$(filtered_reports_src "$src") || { fail=1; continue; }
+  fi
   before=$(git rev-parse HEAD)
   if out=$(git subtree pull --prefix="$prefix" "$src" "$branch" \
              -m "chore(monorepo): sync $prefix/ from $repo ($branch)" 2>&1); then
@@ -65,10 +89,11 @@ for entry in "${MAP[@]}"; do
     git merge --abort 2>/dev/null || true
     fail=1
   fi
+  case "$src" in "${TMPDIR:-/tmp}"/nearbi-reports.*) rm -rf "$(dirname "$src")" ;; esac
 done
 
 # Paid / buyer report packs must never ship: refuse to leave one in reports/.
-paid=$(git ls-files reports/reports | awk -F/ '{print $3}' | sort -u | grep -vxE 'near-users-vs-bots' || true)
+paid=$(git ls-files reports/reports | awk -F/ '{print $3}' | sort -u | grep -vxF -f <(printf '%s\n' "${FREE_REPORTS[@]}") || true)
 if [ -n "$paid" ]; then
   echo "!! reports/ now contains report packs that are not on the free allowlist:" >&2
   echo "$paid" | sed 's/^/   /' >&2
