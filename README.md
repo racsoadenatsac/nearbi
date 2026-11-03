@@ -85,7 +85,7 @@ No NAT, EC2, RDS, load balancers or provisioned concurrency.
 - Route 53 zone `Z0938026110HBFDE9BYFN`, nameservers: `ns-1069.awsdns-05.org`, `ns-1692.awsdns-19.co.uk`,
   `ns-584.awsdns-09.net`, `ns-86.awsdns-10.com`
 - ACM cert: `PENDING_VALIDATION` until the Namecheap nameservers are switched; `cert_validated = false`.
-- App bundle: nearbi-app `v0.2.0`. Catalog seeded (`REPORT#near-users-vs-bots`, `REPORT#near-thesis`). Content bucket empty
+- App bundle: nearbi-app `v0.4.0` (live payments, 2026-11-03). Catalog seeded (`REPORT#near-users-vs-bots`, `REPORT#near-thesis`). Content bucket empty
   (no gated reports published yet).
 
 ## Payments (NEAR Intents 1Click) — LIVE on mainnet since 2026-11-03
