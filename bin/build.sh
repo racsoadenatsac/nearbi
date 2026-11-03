@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Reproducible release build of both contracts.
+# Reproducible release build of the contracts.
 #
 # Exports the committed HEAD (uncommitted changes are NOT included), then runs
 # the `container_build_command` from each crate's
@@ -8,8 +8,8 @@
 # `cargo near build reproducible-wasm` does, minus the need for cargo-near on
 # the host. Output: res/<crate>.wasm + res/<crate>.wasm.sha256
 #
-#   bin/build.sh            # both contracts
-#   bin/build.sh splitter   # one
+#   bin/build.sh            # all contracts
+#   bin/build.sh forwarder  # one (splitter | forwarder | mock-ft)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -19,7 +19,7 @@ IMAGE_DIGEST="sha256:7467038bdddc86484b73b416eeadce926ff59013e128e53dec5a19e1cb4
 IMAGE="${IMAGE_TAG%%:*}@${IMAGE_DIGEST}"
 
 # keep the pin in one place: refuse to run if Cargo.toml metadata drifted
-for c in contracts/splitter contracts/mock-ft; do
+for c in contracts/splitter contracts/forwarder contracts/mock-ft; do
   grep -q "image_digest = \"$IMAGE_DIGEST\"" "$c/Cargo.toml" \
     || { echo "image digest in $c/Cargo.toml != $IMAGE_DIGEST" >&2; exit 1; }
 done
@@ -28,7 +28,7 @@ if [ -n "$(git status --porcelain -- contracts Cargo.toml Cargo.lock)" ]; then
   echo "warning: uncommitted changes under contracts/ are ignored; building HEAD $(git rev-parse --short HEAD)" >&2
 fi
 
-TARGETS=("${@:-splitter mock-ft}")
+TARGETS=("${@:-splitter forwarder mock-ft}")
 # shellcheck disable=SC2206
 TARGETS=(${TARGETS[*]})
 
@@ -42,6 +42,7 @@ COMMIT="$(git rev-parse HEAD)"
 for t in "${TARGETS[@]}"; do
   case "$t" in
     splitter) crate=nearbi_splitter ;;
+    forwarder) crate=nearbi_forwarder ;;
     mock-ft)  crate=usdc_mock ;;
     *) echo "unknown target $t" >&2; exit 1 ;;
   esac
