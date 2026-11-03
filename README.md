@@ -134,6 +134,7 @@ To publish another free report: add its slug here and in the app's `DEFAULT_FREE
 
 `/ledger` and `/ledger/*` (`local.public_static_paths` in `tofu/cdn.tf`) are static behaviors placed with the
 free reports, ahead of the gated `/reports/*` rule and every app behavior, so the ledger never reaches the
-Lambda; the index-rewrite function 301s `/ledger` to `/ledger/`. The files under `s3://nearbi-site/ledger/`
+Lambda; the index-rewrite function 301s `/ledger` to `/ledger/` and `/ledger/testnet` to `/ledger/testnet/`
+(mainnet ledger at `/ledger/`, testnet demo ledger at `/ledger/testnet/`). The files under `s3://nearbi-site/ledger/`
 are owned by **rs-ledger** (`bin/publish`: build, reconcile, upload with `Cache-Control: max-age=60`,
 invalidate `/ledger/*`), so `bin/sync-site.sh` excludes `ledger/*` from its `--delete` sync.
