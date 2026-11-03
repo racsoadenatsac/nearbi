@@ -286,58 +286,83 @@ export async function refreshPayment(d: BillingDeps, pay: PaymentRecord, nowSec:
 
 /** Expired payments stay watched this long past their deadline, so a late SUCCESS still confirms. */
 export const LATE_SUCCESS_WINDOW = 24 * 3600;
+/**
+ * 1Click keeps a deposit address open ~72 h past the deadline we request, so an abandoned checkout stays
+ * open for days. Payments older than this with no deposit seen are checked at most every SLOW_RECHECK s.
+ */
+export const SWEEP_FAST_AGE = 3600;
+export const SWEEP_SLOW_RECHECK = 600;
+const SWEEP_CONCURRENCY = 4;
 
 export interface SweepResult {
   open: number;
   checked: number;
+  /** Old payments with no deposit seen, skipped this run (backoff). */
+  deferred: number;
   closed: number;
   paid: number;
   errors: number;
-  /** Stopped early because the time budget ran out; the rest is picked up next run. */
+  /** Stopped early because the time budget ran out; the rest is picked up next run (order is randomized). */
   truncated: boolean;
 }
 
 /**
  * Background confirmation (EventBridge Scheduler -> Lambda, every minute): check every open live payment
  * against 1Click so payments confirm even if nobody keeps the checkout page open. Idempotent and safe to
- * run concurrently with the page's poller (same refreshPayment, same once-only confirm).
+ * run concurrently with the page's poller (same refreshPayment, same once-only confirm). Payments are
+ * visited in random order with bounded concurrency, so a long list can't starve its tail.
  */
 export async function sweepOpenPayments(
   d: BillingDeps,
   nowSec: number,
-  opts: { limit?: number; budgetMs?: number; clock?: () => number } = {},
+  opts: { limit?: number; budgetMs?: number; clock?: () => number; random?: () => number; concurrency?: number } = {},
 ): Promise<SweepResult> {
   const clock = opts.clock ?? Date.now;
+  const random = opts.random ?? Math.random;
   const started = clock();
   const budget = opts.budgetMs ?? 7000;
-  const refs = await d.repo.listOpenPayments(opts.limit ?? 100);
-  const res: SweepResult = { open: refs.length, checked: 0, closed: 0, paid: 0, errors: 0, truncated: false };
-  for (const ref of refs) {
-    if (clock() - started > budget) {
-      res.truncated = true;
-      break;
-    }
-    try {
-      const pay = await d.repo.getPayment(ref.paymentId);
-      if (!pay || pay.mode !== "live" || !pay.depositAddress) {
-        await d.repo.closeOpenPayment(ref.paymentId);
-        res.closed++;
-        continue;
-      }
-      const before = pay.status;
-      const r = await refreshPayment(d, pay, nowSec);
-      if (r.checked && !r.stale) res.checked++;
-      if (r.pay.status === "paid" && before !== "paid") res.paid++;
-      const lateWindowOver = r.pay.status === "expired" && r.pay.deadline !== null && nowSec > r.pay.deadline + LATE_SUCCESS_WINDOW;
-      if (TERMINAL.includes(r.pay.status) || lateWindowOver) {
-        await d.repo.closeOpenPayment(ref.paymentId);
-        res.closed++;
-      }
-    } catch (e) {
-      res.errors++;
-      console.error(`sweep ${ref.paymentId}: ${(e as Error).message}`);
-    }
+  const refs = await d.repo.listOpenPayments(opts.limit ?? 500);
+  for (let i = refs.length - 1; i > 0; i--) {
+    const j = Math.floor(random() * (i + 1));
+    [refs[i], refs[j]] = [refs[j]!, refs[i]!];
   }
+  const res: SweepResult = { open: refs.length, checked: 0, deferred: 0, closed: 0, paid: 0, errors: 0, truncated: false };
+  let next = 0;
+  const worker = async () => {
+    while (next < refs.length) {
+      if (clock() - started > budget) {
+        res.truncated = true;
+        return;
+      }
+      const ref = refs[next++]!;
+      try {
+        const pay = await d.repo.getPayment(ref.paymentId);
+        if (!pay || pay.mode !== "live" || !pay.depositAddress) {
+          await d.repo.closeOpenPayment(ref.paymentId);
+          res.closed++;
+          continue;
+        }
+        const quiet = (pay.status === "pending" || pay.status === "expired") && nowSec - pay.createdAt > SWEEP_FAST_AGE;
+        if (quiet && pay.checkedAt !== null && nowSec - pay.checkedAt < SWEEP_SLOW_RECHECK) {
+          res.deferred++;
+          continue;
+        }
+        const before = pay.status;
+        const r = await refreshPayment(d, pay, nowSec);
+        if (r.checked && !r.stale) res.checked++;
+        if (r.pay.status === "paid" && before !== "paid") res.paid++;
+        const lateWindowOver = r.pay.status === "expired" && r.pay.deadline !== null && nowSec > r.pay.deadline + LATE_SUCCESS_WINDOW;
+        if (TERMINAL.includes(r.pay.status) || lateWindowOver) {
+          await d.repo.closeOpenPayment(ref.paymentId);
+          res.closed++;
+        }
+      } catch (e) {
+        res.errors++;
+        console.error(`sweep ${ref.paymentId}: ${(e as Error).message}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, opts.concurrency ?? SWEEP_CONCURRENCY) }, worker));
   return res;
 }
 

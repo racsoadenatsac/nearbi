@@ -38,7 +38,7 @@ describe("scheduled tasks (EventBridge Scheduler input)", () => {
 
   it("runs in dry mode too (nothing open) and rejects unknown tasks", async () => {
     const { d } = deps("dry");
-    expect(await runScheduledTask({ nearbiTask: "sweep-payments" }, d, () => now)).toMatchObject({ open: 0, checked: 0 });
+    expect(await runScheduledTask({ nearbiTask: "sweep-payments" }, d, () => now)).toMatchObject({ open: 0, checked: 0, deferred: 0 });
     expect(await runScheduledTask({ nearbiTask: "rm-rf" }, d, () => now)).toMatchObject({ error: "unknown task" });
   });
 });
