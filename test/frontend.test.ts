@@ -30,9 +30,11 @@ describe("landing page order section", () => {
     expect(order).toMatch(/within 24 hours/);
     expect(order).toMatch(/within 48 hours/);
   });
-  it("Ecosystem stays a quote by email; the subscribe link stays", () => {
-    expect(order).toMatch(/<a class="btn pri" href="mailto:hello@nearbi\.ai[^"]*">Request a custom report<\/a>/);
+  it("Ecosystem card has a Request a quote mailto button; no checkout; the row below the cards is gone", () => {
+    expect(order).toContain('<a class="btn pri" href="mailto:hello@nearbi.ai?subject=Ecosystem%20report%20quote">Request a quote</a>');
     expect(order).not.toContain("product=ecosystem");
-    expect(order).toContain('href="#subscribe">Or subscribe: $49/month');
+    expect(order).not.toContain("Request a custom report");
+    expect(order).not.toContain("Or subscribe: $49/month");
+    expect(order.match(/class="btn pri"/g)).toHaveLength(3);
   });
 });
