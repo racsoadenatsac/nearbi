@@ -31,3 +31,15 @@ pre { background:#111; color:#e8e8e8; padding:16px; border-radius:8px; overflow:
 .card.feature { padding:28px }
 @media (max-width:760px){ .hero h1{font-size:36px} .feature{grid-template-columns:1fr} }
 img { max-width:100% } code { overflow-wrap:anywhere }
+
+/* Subscription band: dark, accent-framed, visually distinct from the white "Why" and light "Order" sections */
+.sub-band { background:var(--dark); color:#eef3ec; border-top:4px solid var(--acc); border-bottom:4px solid var(--acc) }
+.sub-band h2.sec { color:#fff; font-size:36px }
+.sub-band .sub, .sub-band p { color:#b9c7bd }
+.sub-band .sub b { color:#fff }
+.sub-band a { color:var(--acc) }
+.sub-band .eyebrow { display:inline-block; background:var(--acc); color:#04140d; font-weight:800; font-size:12px; letter-spacing:.08em; text-transform:uppercase; padding:4px 10px; border-radius:999px; margin-bottom:12px }
+.sub-band .card { background:#1f3127; border-color:#2f4a3a }
+.sub-band .card h3 { color:#fff } .sub-band .card p { color:#c9d6cd }
+.sub-band .card.hl { outline:2px solid var(--acc) }
+.sub-band .btn.pri { color:#04140d; font-size:18px; padding:15px 28px }
