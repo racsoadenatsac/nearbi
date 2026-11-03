@@ -1,7 +1,7 @@
 # rs-payments
 
-NearBI's payment rail: the onchain revenue splitter contract (this repo, v0.1.0-testnet)
-and, later, the NEAR Intents 1Click checkout. Part of the NEAR Hackathon one-agent
+NearBI's payment rail: the onchain revenue splitter contract (v0.1.0-testnet) and the
+settlement forwarder for NEAR Intents 1Click deliveries (v0.2.0-testnet, §7). Part of the NEAR Hackathon one-agent
 research shop; design in `rs-docs/ARCHITECTURE.md` §3.1.
 
 > **TESTNET ONLY.** Everything here runs on NEAR testnet with a mock token
@@ -84,9 +84,10 @@ Rust is **not** installed on the host; all Rust tooling runs in Docker.
 Rust 1.97 rather than 1.86: near-sdk 5.30 / near-workspaces 0.24 require rustc ≥ 1.95.
 
 ```bash
-bin/build.sh                       # exports git HEAD, builds both contracts in the pinned image
+bin/build.sh                       # exports git HEAD, builds splitter, forwarder, mock-ft in the pinned image
 cat res/*.sha256 res/BUILD_COMMIT  # committed checksums
 bin/dev.sh cargo test -p nearbi-splitter        # unit tests
+bin/dev.sh cargo test -p nearbi-forwarder       # forwarder unit tests
 bin/dev.sh cargo test -p integration-tests      # near-workspaces sandbox tests (uses res/*.wasm)
 ```
 
@@ -103,6 +104,11 @@ sha256 `193b1516326f09dafd3d6d1364cf085891ea4a021335184e3a83bad4f2b1fc13`, `usdc
 sha256 `1a380d783c16f3f3c9460707254b0cd0e6d366a079584c99cfc663391548ec01`, the same bytes that
 are deployed. On an Apple-silicon host the amd64 image runs under QEMU and takes about 10–12 min
 for both contracts. One attempt hung (cargo idle at 0 % CPU) and had to be killed and re-run.
+
+Test counts (2026-11-03, against the release WASM in `res/`): unit 21 (splitter) + 36 (forwarder),
+sandbox 6 (splitter) + 8 (forwarder), all passing. The v0.2.0 rebuild (commit `47ee7e4`, which adds the
+forwarder) reproduced `nearbi_splitter.wasm` and `usdc_mock.wasm` byte for byte (same sha256 as above);
+the first attempt hung under QEMU again and was killed and re-run.
 
 Sandbox tests deploy the real mock NEP-141 and the splitter, register storage, then
 check: exact split for odd amounts (1, 9 999, 12 345 679, 10 000 001 base units, plus
@@ -153,6 +159,9 @@ in `deploy/testnet.json`.
 | `splitter.nearbi-agent.testnet` | full access | `~/.near-credentials/testnet/splitter.nearbi-agent.testnet.json` | redeploy code, add/remove keys. Production: keep offline / OutLayer custody, or delete it |
 | `usdc-mock.`, `treasury.`, `contributors.` | full access | `~/.near-credentials/testnet/<account>.json` | own account only |
 | demo customers `nearbi-cust-*.testnet` | full access | `~/.near-credentials/testnet/<account>.json` | throwaway |
+| `forwarder.nearbi-agent.testnet` | full access | `~/.near-credentials/testnet/forwarder.nearbi-agent.testnet.json` | redeploy code, **sign `ft_transfer` as the forwarder** (bypasses the contract). Production: delete it (see §7 trust model) |
+| `oneclick-sim.nearbi-agent.testnet` | full access | `~/.near-credentials/testnet/<account>.json` | testnet stand-in for the 1Click sender |
+| **forwarder function-call key** | function-call on `forwarder.nearbi-agent.testnet`, methods `[forward]`, allowance 0.5 NEAR | `~/.near-credentials/nearbi-fc/forwarder.nearbi-agent.testnet.fc.json`, chmod 600 | `forward` only, no deposit; can't reach the token, transfer NEAR, add keys or call any owner method |
 | **agent function-call key** | function-call on `splitter.nearbi-agent.testnet`, methods `[record_cost, anchor_report]`, allowance 0.25 NEAR | `~/.near-credentials/nearbi-fc/splitter.nearbi-agent.testnet.fc.json`, chmod 600 | see below |
 
 Nothing is in the repo: `.gitignore` excludes key files, and every push is preceded by
@@ -223,14 +232,197 @@ Events in the sale tx: `nep141 ft_transfer` (customer→splitter), `nearbi_split
 {amount 49000000, contributors_amount 4900000, treasury_amount 44100000}`, two
 `nep141 ft_transfer` payouts, and two `nearbi_splitter payout` confirmations.
 
+## 7. Settlement forwarder (NEAR Intents 1Click), v0.2.0-testnet
+
+1Click delivers each subscription payment as a **plain `ft_transfer`** of USDC to a settlement
+account (`SETTLEMENT_DELIVERY=transfer` in nearbi-app). Delivery straight into the splitter with
+`ft_transfer_call` + msg is experimental and gets no refund on failure (nearbi-app README,
+"Settlement design and trust tradeoff"). The forwarder closes most of the custody gap: it **is**
+the settlement account, holds the funds, and its code has one way to move them, into the
+splitter with an order id.
+
+```
+1Click / Verifier ──ft_transfer 49 USDC (no msg)──▶ usdc-mock ──▶ forwarder.nearbi-agent.testnet (holds)
+                                                                       │
+agent: FC key on the forwarder, methods [forward], no deposit          │ forward(order_id, amount)
+                                                                       ▼
+            usdc-mock.ft_transfer_call(receiver = splitter from state, amount, {"order_id": …})
+                                                                       │
+                                     splitter.ft_on_transfer: split ───┼──▶ contributors / treasury
+                                                                       ▼
+                             forwarder.on_forward(used): forwarded | forward_failed (retryable)
+```
+
+### Invariant: tokens leave only into the splitter
+
+* The only outgoing token call in the code is `token.ft_transfer_call` in `send_to_splitter`, and
+  its `receiver_id` is `self.splitter` from state. No argument of any method can change the
+  receiver; `order_id` goes into `msg` through `serde_json` (no injection).
+* There is no `ft_transfer`, withdraw, sweep, `storage_withdraw`, NEAR transfer, upgrade or
+  arbitrary-call method. The only other promise is the `on_forward` callback to itself (`#[private]`).
+* `splitter`, `token` and `owner` change only by `propose_change(field, value)` → wait
+  `change_delay_sec` → `accept_change()`, both owner + 1 yocto and both evented
+  (`change_proposed {field, value, eta_ns, delay_sec}`, `change_accepted {field, old, new}`).
+  The delay is fixed at `init` (contract default **86 400 s**; testnet deploy uses **0** so the demo
+  and tests can show a change). One pending change at a time; `cancel_change` drops it. A token
+  change is refused while orders are in flight or retryable.
+* Tested in three ways: unit tests check every receipt created by every state-changing method
+  (only `ft_transfer_call` to the token with `receiver_id == splitter` and 1 yocto, or the
+  callback, never a NEAR transfer); sandbox tests make the owner and the agent try crafted args
+  (`receiver_id`/`splitter`/`token`/`msg` extras are ignored), nonexistent methods
+  (`ft_transfer`, `withdraw`, `sweep`, `storage_withdraw`, `upgrade`, … → `MethodNotFound`), the
+  private callback, an immediate `accept_change` under a 3 600 s delay, and the agent key signing
+  `ft_transfer(_call)` on the token (→ `ReceiverMismatch`); then they check the owner's token
+  balance never moved and every token is in the forwarder, treasury or contributors.
+
+### Order lifecycle and failure handling
+
+| State | Meaning | Next |
+|---|---|---|
+| (none) | never forwarded | `forward` → `in_flight` |
+| `in_flight` | `ft_transfer_call` sent, callback pending | a second `forward` panics |
+| `forwarded` | the splitter used the full amount | terminal; `is_forwarded` = true; `forward` panics |
+| `retryable` | splitter paused/panicked (FT standard refunded the forwarder) or the token call failed (e.g. balance too low); `unused` is back in the forwarder | `forward(order_id, unused)` retries (amount must equal `unused`) |
+
+`forward` needs ≥ 130 Tgas prepaid (100 Tgas + leftover to `ft_transfer_call`, 15 Tgas reserved for
+the callback) so the callback always runs. It attaches the 1 yocto that `ft_transfer_call`
+requires from the forwarder's own NEAR, so a function-call key can call it.
+
+### Interface (`contracts/forwarder`)
+
+| Method | Who | Notes |
+|---|---|---|
+| `init(owner, splitter, token, agent, change_delay_sec?)` | deployer | delay default 86 400 s, max 30 d; owner ≠ forwarder; splitter ∉ {forwarder, token} |
+| `forward(order_id, amount)` | `agent` or `owner`, no deposit | order_id 1–128 chars (same as the splitter); not while paused |
+| `on_forward(order_id, amount)` | private callback | records `forwarded` / `forward_failed` |
+| `ft_on_transfer(sender_id, amount, msg)` | configured token only | returns `"0"` (keeps everything), emits `received`; other tokens panic → refunded |
+| `set_agent(agent)`, `pause()`, `unpause()` | owner, 1 yocto | immediate; pausing stops `forward` only (deliveries still arrive) |
+| `propose_change(field: splitter\|token\|owner, value)`, `accept_change()`, `cancel_change()` | owner, 1 yocto | timelocked as above |
+| `get_config()`, `is_forwarded(order_id)`, `get_order(order_id)`, `get_pending(from_index?, limit?)` | view | `get_pending` = `in_flight` + `retryable` orders |
+
+Events (`standard: "nearbi_forwarder"`, `version: "1.0.0"`): `init`, `forward_started {order_id,
+amount, attempt, splitter, token, by}`, `forwarded {order_id, amount}`, `forward_failed {order_id,
+amount, unused}`, `received {sender, amount, msg}` (only for `ft_transfer_call` deliveries; plain
+transfers emit just the token's `ft_transfer`), `config_change {field, value, by}`,
+`change_proposed`, `change_accepted`, `change_cancelled`. The splitter's `sale` event for a
+forwarded order has `payer = forwarder.nearbi-agent.testnet`; the order id is the link to the
+1Click payment.
+
+### Trust model: what the forwarder does and does not remove
+
+Removed (enforced by code): the operator or agent sending settlement funds anywhere but the
+splitter; the agent doing anything but `forward` (protocol-level key scope + contract check);
+forwarding one order twice; losing funds on a failed forward (they stay, retryable);
+a silent splitter swap (public event + delay).
+
+Still trusted / honest limits:
+
+1. **Full-access keys of `forwarder.nearbi-agent.testnet`.** Whoever holds one can deploy new
+   code or sign `usdc.ft_transfer` as the forwarder directly, bypassing every rule above. On testnet
+   the key is kept (as for the splitter) at `~/.near-credentials/testnet/forwarder.nearbi-agent.testnet.json`
+   so bugs can be fixed. For mainnet: delete all full-access keys after deploy (then the code is
+   final; a fix means a new forwarder via the timelocked flow on the 1Click side), or hand them to
+   a custody with its own delay/multisig. `bin/demo-intents.sh` prints the keys on the account so
+   this is visible.
+2. **The owner** (`nearbi-agent.testnet`, full access) can, immediately: pause forwarding (funds
+   then sit in the forwarder; it cannot take them), and `set_agent`. With the delay: point the
+   forwarder at any splitter or token, or hand ownership over. A malicious splitter could pass
+   funds on anywhere; the protection is that the change is public for `change_delay_sec` before
+   it takes effect (24 h on mainnet; **0 on this testnet deployment**, so on testnet it's evented
+   but not delayed). Watchers must actually watch `change_proposed`.
+3. **Order id ↔ amount mapping.** A plain `ft_transfer` doesn't notify the contract, so it can't
+   tell which delivery belongs to which order. The agent picks `(order_id, amount)`; it can forward
+   under the wrong order id or amount, or not forward at all (funds then sit idle, not lost). The
+   ledger can reconcile 1Click withdrawals (public NEAR txs) against `forwarded` events by order
+   id, but the contract doesn't enforce it.
+4. **Promptness.** Nothing forces the agent to forward. Anyone could be allowed to call `forward`
+   for "unclaimed" balance in a future version; not done here because the order id must come from
+   the payment record.
+5. **Token and splitter contracts.** The forwarder trusts the token's NEP-141 behaviour (refunds
+   unused amounts in `ft_resolve_transfer`) and the splitter. If `ft_resolve_transfer` itself ran
+   out of gas (not possible with the standard 5 Tgas and our gas floor) the callback would mark the
+   order retryable although the splitter had used the funds; a retry would then fail for lack of
+   balance rather than double-pay, unless other deliveries had arrived in the meantime.
+6. **Storage.** Every order id is stored forever (~200 bytes ≈ 0.002 NEAR from the forwarder's
+   balance); the forwarder needs NEAR top-ups at scale. It also needs `storage_deposit` on any new
+   token before a token change.
+7. **1Click → forwarder leg.** The forwarder must be storage-registered on USDC or the 1Click
+   withdrawal fails (refunded by the Verifier). Testnet accounts are rejected by 1Click, so the
+   1Click delivery is **simulated** here by `oneclick-sim.nearbi-agent.testnet`.
+
+### Deploy and demo
+
+```bash
+bin/build.sh                        # also builds res/nearbi_forwarder.wasm
+bin/deploy-forwarder-testnet.sh     # idempotent; FWD_CHANGE_DELAY_SEC=… (default 0 on testnet)
+bin/demo-intents.sh                 # simulated 1Click delivery -> forward -> split; fails if >= 120 s
+```
+
+`deploy-forwarder-testnet.sh` creates `forwarder.` (2.3 NEAR; the 185 KB WASM needs ~1.9 NEAR of
+storage) and `oneclick-sim.` (0.1 NEAR), deploys + inits the forwarder (owner = agent, agent = the
+forwarder account itself, i.e. its function-call key), registers both on usdc-mock, adds the agent
+function-call key (`[forward]`, allowance 0.5 NEAR) at
+`~/.near-credentials/nearbi-fc/forwarder.nearbi-agent.testnet.fc.json` (chmod 600, dir 700),
+verifies its on-chain permission and writes the `forwarder` section of `deploy/testnet.json`.
+
+`demo-intents.sh`: the agent gives `oneclick-sim` 49 USDCm (its "liquidity"); `oneclick-sim` sends a
+plain `ft_transfer` of 49.000000 to the forwarder; the agent calls `forward(order_id, 49000000)`
+with the function-call key; the splitter pays 4.900000 / 44.100000; the script checks exact
+deltas (1click −49, forwarder 0, splitter 0, contributors +4.9, treasury +44.1), `is_forwarded`,
+that a second `forward` of the same order fails in the contract, and that the key can't call
+`set_agent`.
+
+### Current testnet deployment (2026-11-03 UTC)
+
+| Role | Account / value |
+|---|---|
+| forwarder contract | [`forwarder.nearbi-agent.testnet`](https://testnet.nearblocks.io/address/forwarder.nearbi-agent.testnet) — code_hash `Ht4N9MPmr7KRpgQDTYLkv4piR4TQ4R7LSZGnMwxo38Go` = sha256 `facf6a98…a0a0` of `res/nearbi_forwarder.wasm` (built from `47ee7e4`) |
+| owner | `nearbi-agent.testnet` |
+| splitter / token | `splitter.nearbi-agent.testnet` / `usdc-mock.nearbi-agent.testnet` |
+| change delay | 0 s (testnet demo setting; mainnet: 86 400 s) |
+| agent function-call key | `ed25519:4e7uzpp3u8U3aFwEb5HtRWfCLhQU8QWeSQyNradfASQp` on the forwarder, `[forward]`, allowance 0.5 NEAR |
+| simulated 1Click sender | `oneclick-sim.nearbi-agent.testnet` |
+
+Create/deploy/storage/key tx links are in `deploy/testnet.json` (`forwarder.txs`). The first
+deploy run got an RPC 524 after the deploy tx landed; the script was re-run (it is idempotent) and the
+create/deploy hashes were recovered from the FastNEAR tx index and checked with `EXPERIMENTAL_tx_status`.
+
+### Recorded run (2026-11-03 05:10 UTC, 88 s) — full log: `docs/demo-intents-run-2026-11-03T0510Z.txt`
+
+| Account | Before | After | Δ |
+|---|---:|---:|---:|
+| `oneclick-sim.nearbi-agent.testnet` | 49.000000 | 0.000000 | −49.000000 |
+| `forwarder.nearbi-agent.testnet` | 0.000000 | 0.000000 | 0 (49 in, 49 out) |
+| `splitter.nearbi-agent.testnet` | 0.000000 | 0.000000 | 0 |
+| `contributors.nearbi-agent.testnet` | 9.800000 | 14.700000 | +4.900000 |
+| `treasury.nearbi-agent.testnet` | 88.200000 | 132.300000 | +44.100000 |
+
+| Step | Tx |
+|---|---|
+| 49 USDCm liquidity to the 1Click simulator | [DcG6kRUH…](https://testnet.nearblocks.io/txns/DcG6kRUHEKzwAPBcYuc2ZvHL6sot91SqTACbPB4d1RpJ) |
+| **1Click delivery**: plain `ft_transfer` → forwarder | [8LWABgbC…](https://testnet.nearblocks.io/txns/8LWABgbCHDW1nsGJmERiGz8FLo8dnD3Cx3hxzYkagJN3) |
+| **forward** (function-call key) → `ft_transfer_call` → split | [9AFtmGBm…](https://testnet.nearblocks.io/txns/9AFtmGBmdrs4QYSX7rE1a1fDrqf17wYhgkLwXuzajnzB) |
+| same order forwarded again | [33gUmZ6D…](https://testnet.nearblocks.io/txns/33gUmZ6DCff9cz1kkXFnUNop8ApnTizBp3Rp4ZYvGSYN) fails: *Smart contract panicked: order already forwarded* |
+| `set_agent` with the function-call key | rejected by RPC before inclusion: *Transaction method name \<set_agent\> isn't allowed by the access key* (no tx) |
+
+Events in the forward tx: `nearbi_forwarder forward_started`, `nep141 ft_transfer`
+(forwarder→splitter 49000000), `nearbi_splitter sale {order_id intents-20261103T051041Z, payer
+forwarder, 4900000 / 44100000}`, two `nep141 ft_transfer` payouts + two `nearbi_splitter payout`,
+then `nearbi_forwarder forwarded {order_id, amount 49000000}`. Most of the 88 s was one slow
+testnet tx (the liquidity drip took 57 s during an RPC incident); the forward itself took 11 s.
+The public ledger (rs-ledger) picked the sale up automatically: https://nearbi.ai/ledger/ now has
+13 events / 3 sales and reconciles against `get_stats()`.
+
 ## Layout
 
 ```
 contracts/splitter     splitter contract + unit tests (src/tests.rs)
+contracts/forwarder    settlement forwarder + unit tests (src/tests.rs)
 contracts/mock-ft      testnet-only mock USDC (NEP-141/145/148, 6 decimals)
-integration-tests      near-workspaces sandbox tests
+integration-tests      near-workspaces sandbox tests (tests/splitter.rs, tests/forwarder.rs)
 res/                   release WASM + sha256 + BUILD_COMMIT
-bin/                   build, dev, deploy-testnet, demo, fetch-near-cli, check-secrets
+bin/                   build, dev, deploy-testnet, deploy-forwarder-testnet, demo, demo-intents,
+                       fetch-near-cli, check-secrets
 docs/                  recorded demo runs
 deploy/testnet.json    public deployment record
 docker/dev.Dockerfile  test toolchain
