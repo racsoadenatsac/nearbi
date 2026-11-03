@@ -13,6 +13,19 @@ const pay = (id: string, accountId = "alice.near", over: Partial<PaymentRecord> 
   createdAt: 1000,
   paidAt: null,
   quoteJson: "{}",
+  mode: "live",
+  quoteId: `q-${id}`,
+  depositMemo: null,
+  destinationAsset: "nep141:usdc",
+  recipient: "treasury.near",
+  amountIn: "49500000",
+  amountInFormatted: "49.5",
+  minAmountIn: "49005000",
+  amountOut: "49000000",
+  deadline: 2800,
+  intentsStatus: null,
+  checkedAt: null,
+  settlementTx: null,
   ...over,
 });
 
@@ -74,6 +87,44 @@ export function repositoryContract(name: string, make: () => Promise<Repository>
       // tx2 was not claimed by the failed attempt
       expect(await r.applyPayment({ paymentId: "p2", accountId: "alice.near", txHash: "tx2", nowSec: 1200, newPeriodEnd: 9000, expected: { exists: true, currentPeriodEnd: 5000 } })).toEqual({ ok: true });
       expect((await r.getSubscription("alice.near"))?.currentPeriodEnd).toBe(9000);
+    });
+
+    it("dry payments (no deposit address) round-trip", async () => {
+      const r = await make();
+      const p = pay("d1", "alice.near", { mode: "dry", status: "preview", depositAddress: null });
+      await r.createPayment(p);
+      expect(await r.getPayment("d1")).toEqual(p);
+    });
+
+    it("updatePaymentStatus is conditional on the current status and never marks paid", async () => {
+      const r = await make();
+      await r.createPayment(pay("u1"));
+      expect(await r.updatePaymentStatus("u1", ["pending"], { status: "processing", intentsStatus: "PROCESSING", checkedAt: 1200 })).toBe(true);
+      expect(await r.getPayment("u1")).toMatchObject({ status: "processing", intentsStatus: "PROCESSING", checkedAt: 1200, settlementTx: null });
+      expect(await r.updatePaymentStatus("u1", ["pending"], { status: "failed", intentsStatus: "FAILED", checkedAt: 1300 })).toBe(false);
+      expect((await r.getPayment("u1"))?.status).toBe("processing");
+      expect(await r.updatePaymentStatus("nope", ["pending"], { status: "failed", intentsStatus: null, checkedAt: 1 })).toBe(false);
+      await expect(r.updatePaymentStatus("u1", ["processing"], { status: "paid" as never, intentsStatus: null, checkedAt: 1 })).rejects.toThrow();
+      // settlementTx is only written when given
+      await r.updatePaymentStatus("u1", ["processing"], { status: "processing", intentsStatus: "PROCESSING", checkedAt: 1400, settlementTx: "Tx1" });
+      expect((await r.getPayment("u1"))?.settlementTx).toBe("Tx1");
+    });
+
+    it("applyPayment accepts every payable status, but not refunded/failed", async () => {
+      const r = await make();
+      let end = 5000;
+      for (const st of ["processing", "incomplete", "expired", "preview"] as const) {
+        await r.createPayment(pay(`a-${st}`, "carol.near", { status: st }));
+        const sub = await r.getSubscription("carol.near");
+        const res = await r.applyPayment({ paymentId: `a-${st}`, accountId: "carol.near", txHash: `tx-${st}`, nowSec: 1100, newPeriodEnd: end, expected: { exists: !!sub, currentPeriodEnd: sub?.currentPeriodEnd ?? null } });
+        expect(res).toEqual({ ok: true });
+        end += 1000;
+      }
+      for (const st of ["refunded", "failed"] as const) {
+        await r.createPayment(pay(`b-${st}`, "carol.near", { status: st }));
+        const res = await r.applyPayment({ paymentId: `b-${st}`, accountId: "carol.near", txHash: `tx-${st}`, nowSec: 1100, newPeriodEnd: 99999, expected: { exists: true, currentPeriodEnd: end - 1000 } });
+        expect(res).toEqual({ ok: false, reason: "not_pending" });
+      }
     });
 
     it("registry tokens: one live token per account", async () => {

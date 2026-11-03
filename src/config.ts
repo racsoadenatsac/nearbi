@@ -3,6 +3,25 @@
 // Manager; they are never committed.
 
 import { DEFAULT_FREE_REPORT_SLUGS } from "./core/gating";
+import { isMainnetAccount, looksLikeAssetId, ONECLICK_BASE_URL, USDC_ON_NEAR, type SettlementDelivery } from "./intents";
+
+export type IntentsMode = "dry" | "live";
+
+export interface IntentsConfig {
+  /** dry: real DRY quotes (no deposit address, nothing payable). live: real deposit addresses. */
+  mode: IntentsMode;
+  baseUrl: string;
+  /** Optional 1Click partner JWT (env ONECLICK_JWT). Only lowers fees; quotes work without it. Secret. */
+  jwt: string | null;
+  /** 1Click asset id revenue settles in (default: USDC on NEAR). The price is fixed in this asset. */
+  settlementAsset: string;
+  /** Mainnet NEAR account that receives revenue. Required in live mode; unset in dry mode is fine. */
+  settlementRecipient: string | null;
+  /** transfer: plain ft_transfer (default). ft_transfer_call: experimental 1Click customRecipientMsg, no refund on failure. */
+  delivery: SettlementDelivery;
+  slippageBps: number;
+  quoteTtlMinutes: number;
+}
 
 export interface Config {
   nearRpcUrl: string;
@@ -24,6 +43,7 @@ export interface Config {
   tableName: string;
   contentBucket: string;
   contentPrefix: string;
+  intents: IntentsConfig;
 }
 
 type Env = Record<string, string | undefined>;
@@ -58,8 +78,45 @@ export function loadConfig(env: Env, opts: { requireAws?: boolean } = {}): Confi
     tableName: opts.requireAws ? need("TABLE_NAME") : env.TABLE_NAME || "",
     contentBucket: opts.requireAws ? need("CONTENT_BUCKET") : env.CONTENT_BUCKET || "",
     contentPrefix: env.CONTENT_PREFIX || "",
+    intents: loadIntentsConfig(env),
   };
   if (missing.length) throw new Error(`missing required env: ${missing.join(", ")}`);
   if (cfg.sessionSecret.length < 32) throw new Error("SESSION_SECRET must be at least 32 characters");
   return cfg;
+}
+
+/**
+ * NEAR Intents settings. Throws (so the Lambda refuses to start) on anything that could send live
+ * payments to the wrong place: live mode needs SETTLEMENT_RECIPIENT set to a mainnet NEAR account.
+ */
+export function loadIntentsConfig(env: Env): IntentsConfig {
+  const mode = (env.INTENTS_MODE || "dry").trim();
+  if (mode !== "dry" && mode !== "live") throw new Error(`INTENTS_MODE must be "dry" or "live", got "${mode}"`);
+  const settlementAsset = (env.SETTLEMENT_ASSET || USDC_ON_NEAR).trim();
+  if (!looksLikeAssetId(settlementAsset)) throw new Error(`SETTLEMENT_ASSET is not a 1Click asset id: "${settlementAsset}"`);
+  const delivery = (env.SETTLEMENT_DELIVERY || "transfer").trim();
+  if (delivery !== "transfer" && delivery !== "ft_transfer_call") throw new Error(`SETTLEMENT_DELIVERY must be "transfer" or "ft_transfer_call"`);
+  const recipient = (env.SETTLEMENT_RECIPIENT || "").trim() || null;
+
+  if (mode === "live") {
+    if (!recipient) throw new Error("INTENTS_MODE=live requires SETTLEMENT_RECIPIENT (a mainnet NEAR account)");
+    if (!isMainnetAccount(recipient)) throw new Error(`INTENTS_MODE=live: SETTLEMENT_RECIPIENT "${recipient}" is not a mainnet NEAR account (*.near or 64-hex implicit)`);
+    if (delivery === "ft_transfer_call") {
+      if (!settlementAsset.startsWith("nep141:")) throw new Error("SETTLEMENT_DELIVERY=ft_transfer_call needs a NEP-141 SETTLEMENT_ASSET");
+      // 1Click marks customRecipientMsg HIGHLY EXPERIMENTAL and the Verifier gives no refund when an
+      // ft_transfer_call withdrawal fails, so a paused/misconfigured splitter loses the payment.
+      if (env.SETTLEMENT_ACCEPT_NO_REFUND !== "yes")
+        throw new Error("SETTLEMENT_DELIVERY=ft_transfer_call in live mode also requires SETTLEMENT_ACCEPT_NO_REFUND=yes (failed deliveries are not refunded)");
+    }
+  }
+  return {
+    mode,
+    baseUrl: (env.ONECLICK_BASE_URL || ONECLICK_BASE_URL).replace(/\/+$/, ""),
+    jwt: env.ONECLICK_JWT || null,
+    settlementAsset,
+    settlementRecipient: recipient,
+    delivery,
+    slippageBps: Math.min(num(env.QUOTE_SLIPPAGE_BPS, 100), 500),
+    quoteTtlMinutes: Math.min(Math.max(num(env.QUOTE_TTL_MINUTES, 30), 5), 24 * 60),
+  };
 }

@@ -5,7 +5,8 @@ import { generateTestKey } from "./helpers/keys";
 import { base64Decode } from "../src/core/encoding";
 import { hashToken } from "../src/core/registry-token";
 import { validateRegistryToken } from "../src/services/registry";
-import { setup, T0 } from "./helpers/app";
+import { BASE_USDC, setup, T0 } from "./helpers/app";
+import { statusBody } from "./helpers/oneclick";
 
 describe("auth endpoints", () => {
   it("sign-in sets an HttpOnly, Secure, SameSite=Lax session cookie", async () => {
@@ -99,6 +100,8 @@ describe("gating over HTTP", () => {
 
   it("APIs answer 401 / 402 instead of redirecting", async () => {
     expect((await t.json("/billing/checkout", {})).status).toBe(401);
+    expect((await t.req("/billing/tokens")).status).toBe(401);
+    expect((await t.req("/billing/status/0b6f3a1e-0000-4000-8000-000000000000")).status).toBe(401);
     expect((await t.json("/registry/token", {})).status).toBe(401);
     const { cookie } = await t.signIn();
     expect((await t.json("/registry/token", {}, { cookie })).status).toBe(402);
@@ -166,20 +169,76 @@ describe("gating over HTTP", () => {
 });
 
 describe("billing over HTTP", () => {
-  it("checkout returns a STUB deposit address and the configured price", async () => {
+  it("dry mode (default): checkout returns a real DRY quote, no deposit address, a preview payment", async () => {
     const t = setup({ MONTHLY_PRICE_USD: "99" });
     const { cookie } = await t.signIn();
-    const res = await t.json("/billing/checkout", {}, { cookie });
+    const res = await t.json("/billing/checkout", { originAsset: BASE_USDC }, { cookie });
     expect(res.status).toBe(201);
     const co = await res.json();
-    expect(co).toMatchObject({ amountUsd: 99, stub: true });
-    expect(co.depositAddress).toContain("STUB");
+    expect(co).toMatchObject({ mode: "dry", status: "preview", amountUsd: 99, depositAddress: null, qrSvg: null, origin: { symbol: "USDC", blockchain: "base" } });
+    expect(co.amountInFormatted).toMatch(/^\d+\.\d+$/);
+    expect(co.quoteId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(co.statusLabel).toMatch(/Preview/);
+    const sent = t.oneclick.calls.find((c) => c.url.endsWith("/quote"))!.body as Record<string, unknown>;
+    expect(sent).toMatchObject({ dry: true, swapType: "EXACT_OUTPUT", amount: "99000000", refundTo: "alice.near", refundType: "INTENTS", recipient: "0".repeat(64) });
+    expect(await t.repo.getPayment(co.paymentId)).toMatchObject({ mode: "dry", status: "preview", depositAddress: null, quoteId: co.quoteId, amountIn: co.amountIn });
+    // status for a preview never calls 1Click
+    const st = await (await t.req(`/billing/status/${co.paymentId}`, { cookie })).json();
+    expect(st).toMatchObject({ status: "preview", mode: "dry" });
+    expect(t.oneclick.calls.some((c) => c.url.includes("/status"))).toBe(false);
+  });
+
+  it("checkout validates input and maps 1Click errors", async () => {
+    const t = setup();
+    const { cookie } = await t.signIn();
+    expect((await t.json("/billing/checkout", {}, { cookie })).status).toBe(400);
+    expect((await t.json("/billing/checkout", { originAsset: "nep141:not-listed.near" }, { cookie })).status).toBe(400);
+    t.oneclick.on = (_m, url) => (url.pathname.endsWith("/quote") ? new Response(JSON.stringify({ message: "refundTo is not valid" }), { status: 400 }) : undefined);
+    const bad = await t.json("/billing/checkout", { originAsset: "nep141:arb.omft.near", refundTo: "0x0000000000000000000000000000000000000bad" }, { cookie });
+    expect(bad.status).toBe(422);
+    expect((await bad.json()).error).toMatch(/refundTo is not valid/);
+    t.oneclick.on = (_m, url) => (url.pathname.endsWith("/quote") ? new Response("{}", { status: 503 }) : undefined);
+    expect((await t.json("/billing/checkout", { originAsset: BASE_USDC }, { cookie })).status).toBe(503);
+  });
+
+  it("an origin-chain refund address switches refundType to ORIGIN_CHAIN", async () => {
+    const t = setup();
+    const { cookie } = await t.signIn();
+    await t.json("/billing/checkout", { originAsset: "nep141:arb.omft.near", refundTo: "0x2527D02599Ba641c19FEa793cD0F167589a0f10D" }, { cookie });
+    expect(t.oneclick.calls.find((c) => c.url.endsWith("/quote"))!.body).toMatchObject({ refundTo: "0x2527D02599Ba641c19FEa793cD0F167589a0f10D", refundType: "ORIGIN_CHAIN" });
+  });
+
+  it("GET /billing/tokens lists the live (recorded) 1Click tokens, popular first", async () => {
+    const t = setup();
+    const { cookie } = await t.signIn();
+    const r = await (await t.req("/billing/tokens", { cookie })).json();
+    expect(r.mode).toBe("dry");
+    expect(r.settlement).toMatchObject({ symbol: "USDC", blockchain: "near" });
+    expect(r.tokens.length).toBeGreaterThan(100);
+    expect(r.tokens[0]).toMatchObject({ symbol: "USDC", blockchain: "near", popular: true });
+    await t.req("/billing/tokens", { cookie });
+    expect(t.oneclick.calls.filter((c) => c.url.endsWith("/tokens"))).toHaveLength(1); // cached
+  });
+
+  it("the checkout page loads for a signed-in non-subscriber and shows the preview banner in dry mode", async () => {
+    const t = setup();
+    expect((await t.req("/members/checkout")).status).toBe(302);
+    const { cookie } = await t.signIn();
+    const res = await t.req("/members/checkout", { cookie });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Preview: payments not enabled yet");
+    expect(html).toContain('data-mode="dry"');
+    expect(html).toContain("/js/checkout.js");
+    const live = setup({ INTENTS_MODE: "live", SETTLEMENT_RECIPIENT: "treasury.nearbi.near" });
+    const c2 = (await live.signIn()).cookie;
+    expect(await (await live.req("/members/checkout", { cookie: c2 })).text()).not.toContain("Preview: payments not enabled yet");
   });
 
   it("confirm requires the admin token", async () => {
     const t = setup();
     const { cookie } = await t.signIn();
-    const co = await (await t.json("/billing/checkout", {}, { cookie })).json();
+    const co = await (await t.json("/billing/checkout", { originAsset: BASE_USDC }, { cookie })).json();
     for (const auth of [undefined, "Bearer wrong", "test-admin-token"]) {
       const res = await t.json("/billing/confirm", { paymentId: co.paymentId, txHash: "x" }, { headers: auth ? { authorization: auth } : {} });
       expect(res.status).toBe(403);
@@ -196,6 +255,36 @@ describe("billing over HTTP", () => {
     const again = await t.json("/billing/confirm", { paymentId: co.paymentId, txHash: "tx-a" }, { headers: { authorization: "Bearer test-admin-token" } });
     expect(await again.json()).toMatchObject({ alreadyPaid: true, currentPeriodEnd: "2026-12-02T00:00:00.000Z" });
     expect((await (await t.req("/api/me", { cookie })).json()).subscription).toEqual({ status: "active", active: true, currentPeriodEnd: "2026-12-02T00:00:00.000Z" });
+  });
+});
+
+describe("live 1Click flow over HTTP (synthetic deposit + status built from recorded fixtures)", () => {
+  it("checkout -> deposit address + QR -> poll -> SUCCESS -> subscription active, once", async () => {
+    const t = setup({ INTENTS_MODE: "live", SETTLEMENT_RECIPIENT: "treasury.nearbi.near" });
+    const { cookie } = await t.signIn();
+    const co = await (await t.json("/billing/checkout", { originAsset: BASE_USDC }, { cookie })).json();
+    expect(co).toMatchObject({ mode: "live", status: "pending" });
+    expect(co.depositAddress).toBeTruthy();
+    expect(co.qrSvg).toContain("<svg");
+
+    const poll = async () => {
+      t.advance(10);
+      return (await t.req(`/billing/status/${co.paymentId}`, { cookie })).json();
+    };
+    expect((await poll()).status).toBe("pending");
+    t.oneclick.statuses.set(co.depositAddress, statusBody("PROCESSING", t.oneclick.issued.get(co.depositAddress)!));
+    expect((await poll()).status).toBe("processing");
+    t.oneclick.statuses.set(co.depositAddress, statusBody("SUCCESS", t.oneclick.issued.get(co.depositAddress)!));
+    expect((await poll()).status).toBe("paid");
+    const me1 = (await (await t.req("/api/me", { cookie })).json()).subscription;
+    expect(me1).toMatchObject({ status: "active", active: true });
+    await poll();
+    expect((await (await t.req("/api/me", { cookie })).json()).subscription).toEqual(me1);
+
+    // someone else can't read it
+    const other = await t.signIn("mallory.near");
+    expect((await t.req(`/billing/status/${co.paymentId}`, { cookie: other.cookie })).status).toBe(404);
+    expect((await t.req(`/billing/status/not-a-uuid`, { cookie })).status).toBe(404);
   });
 });
 

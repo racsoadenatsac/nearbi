@@ -21,16 +21,19 @@ import {
   UpdateCommand,
   type DynamoDBDocumentClient,
 } from "@aws-sdk/lib-dynamodb";
-import type {
-  AccountRecord,
-  ApplyPaymentInput,
-  ApplyPaymentResult,
-  PaymentRecord,
-  RegistryTokenRecord,
-  ReportRecord,
-  Repository,
-  StoredChallenge,
-  SubscriptionRecord,
+import {
+  PAYABLE_STATUSES,
+  type AccountRecord,
+  type ApplyPaymentInput,
+  type ApplyPaymentResult,
+  type PaymentRecord,
+  type PaymentStatus,
+  type PaymentStatusPatch,
+  type RegistryTokenRecord,
+  type ReportRecord,
+  type Repository,
+  type StoredChallenge,
+  type SubscriptionRecord,
 } from "../ports/repository";
 
 export const keys = {
@@ -140,17 +143,31 @@ export class DynamoRepository implements Repository {
     const r = await this.db.send(new GetCommand({ TableName: this.table, Key: keys.payment(id), ConsistentRead: true }));
     const p = r.Item;
     if (!p) return null;
+    const n = <T>(v: T | undefined): T | null => (v === undefined ? null : v);
     return {
       id: p.id,
       accountId: p.accountId,
       amountUsd: p.amountUsd,
       token: p.token,
-      depositAddress: p.depositAddress,
+      depositAddress: n(p.depositAddress),
       status: p.status,
-      txHash: p.txHash ?? null,
+      txHash: n(p.txHash),
       createdAt: p.createdAt,
-      paidAt: p.paidAt ?? null,
+      paidAt: n(p.paidAt),
       quoteJson: p.quoteJson,
+      mode: n(p.mode),
+      quoteId: n(p.quoteId),
+      depositMemo: n(p.depositMemo),
+      destinationAsset: n(p.destinationAsset),
+      recipient: n(p.recipient),
+      amountIn: n(p.amountIn),
+      amountInFormatted: n(p.amountInFormatted),
+      minAmountIn: n(p.minAmountIn),
+      amountOut: n(p.amountOut),
+      deadline: n(p.deadline),
+      intentsStatus: n(p.intentsStatus),
+      checkedAt: n(p.checkedAt),
+      settlementTx: n(p.settlementTx),
     };
   }
 
@@ -179,9 +196,9 @@ export class DynamoRepository implements Repository {
                 TableName: this.table,
                 Key: keys.payment(i.paymentId),
                 UpdateExpression: "SET #st = :paid, txHash = :tx, paidAt = :now",
-                ConditionExpression: "#st = :pending",
+                ConditionExpression: `#st IN (${PAYABLE_STATUSES.map((_, k) => `:open${k}`).join(", ")})`,
                 ExpressionAttributeNames: { "#st": "status" },
-                ExpressionAttributeValues: { ":paid": "paid", ":pending": "pending", ":tx": i.txHash, ":now": i.nowSec },
+                ExpressionAttributeValues: { ":paid": "paid", ":tx": i.txHash, ":now": i.nowSec, ...openValues() },
               },
             },
             {
@@ -212,6 +229,34 @@ export class DynamoRepository implements Repository {
       if (codes[0] === "ConditionalCheckFailed") return { ok: false, reason: "not_pending" };
       if (codes[1] === "ConditionalCheckFailed") return { ok: false, reason: "tx_used" };
       if (codes[2] === "ConditionalCheckFailed" || codes.includes("TransactionConflict")) return { ok: false, reason: "conflict" };
+      throw e;
+    }
+  }
+
+  async updatePaymentStatus(id: string, from: readonly PaymentStatus[], patch: PaymentStatusPatch): Promise<boolean> {
+    if ((patch.status as string) === "paid") throw new Error("use applyPayment to mark a payment paid");
+    if (!from.length) return false;
+    const values: Record<string, unknown> = { ":st": patch.status, ":is": patch.intentsStatus, ":ck": patch.checkedAt };
+    from.forEach((f, k) => (values[`:from${k}`] = f));
+    let set = "SET #st = :st, intentsStatus = :is, checkedAt = :ck";
+    if (patch.settlementTx !== undefined) {
+      set += ", settlementTx = :stx";
+      values[":stx"] = patch.settlementTx;
+    }
+    try {
+      await this.db.send(
+        new UpdateCommand({
+          TableName: this.table,
+          Key: keys.payment(id),
+          UpdateExpression: set,
+          ConditionExpression: `attribute_exists(PK) AND #st IN (${from.map((_, k) => `:from${k}`).join(", ")})`,
+          ExpressionAttributeNames: { "#st": "status" },
+          ExpressionAttributeValues: values,
+        }),
+      );
+      return true;
+    } catch (e) {
+      if ((e as { name?: string }).name === "ConditionalCheckFailedException") return false;
       throw e;
     }
   }
@@ -313,3 +358,7 @@ export const tableDefinition = (TableName: string) => ({
     { AttributeName: "SK", KeyType: "RANGE" as const },
   ],
 });
+
+function openValues(): Record<string, string> {
+  return Object.fromEntries(PAYABLE_STATUSES.map((s, k) => [`:open${k}`, s]));
+}

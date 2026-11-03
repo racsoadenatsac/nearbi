@@ -1,13 +1,16 @@
 // Test harness: the real Hono app with in-memory storage/content, a fake chain and a controllable clock.
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { stubQuoteDeposit } from "../../src/adapters/intents";
 import { MemoryContentStore } from "../../src/adapters/memory-content";
 import { MemoryRepository } from "../../src/adapters/memory-repository";
 import { createApp } from "../../src/app";
 import { SEED_REPORTS } from "../../src/catalog";
 import { loadConfig, type Config } from "../../src/config";
 import { base64Decode } from "../../src/core/encoding";
+import { IntentsAdapter, OneClickClient } from "../../src/intents";
 import { generateTestKey } from "./keys";
+import { fakeOneClick } from "./oneclick";
+
+export const BASE_USDC = "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near";
 
 export const T0 = Math.floor(Date.parse("2026-11-02T00:00:00Z") / 1000);
 export const ORIGIN = "https://nearbi.ai";
@@ -19,12 +22,17 @@ export function setup(env: Record<string, string> = {}) {
   const repo = new MemoryRepository({ reports: SEED_REPORTS });
   const content = new MemoryContentStore("https://content.test", () => clock);
   const ownedKeys = new Map<string, string>(); // publicKey -> accountId: our fake chain state
+  const oneclick = fakeOneClick(); // recorded 1Click fixtures, no network
+  const intents = new IntentsAdapter(new OneClickClient({ fetch: oneclick.fetch, sleep: async () => {} }), {
+    settlementAsset: config.intents.settlementAsset,
+    nowMs: () => clock * 1000,
+  });
   const app = createApp({
     config,
     repo,
     content,
     now: () => clock,
-    quoteDeposit: stubQuoteDeposit,
+    intents,
     keyCheck: async (accountId, publicKey) =>
       ownedKeys.get(publicKey) === accountId ? { ok: true, permission: "FullAccess" } : { ok: false, reason: "UNKNOWN_ACCESS_KEY" },
   });
@@ -47,10 +55,10 @@ export function setup(env: Record<string, string> = {}) {
   }
 
   async function subscribe(cookie: string, tx = "tx-" + Math.random()) {
-    const co = await (await json("/billing/checkout", {}, { cookie })).json();
+    const co = await (await json("/billing/checkout", { originAsset: BASE_USDC }, { cookie })).json();
     const conf = await json("/billing/confirm", { paymentId: co.paymentId, txHash: tx }, { headers: { authorization: "Bearer test-admin-token" } });
     return { co, conf };
   }
 
-  return { app, config, repo, content, req, json, signIn, subscribe, advance: (s: number) => (clock += s), ownedKeys };
+  return { app, config, repo, content, req, json, signIn, subscribe, advance: (s: number) => (clock += s), now: () => clock, ownedKeys, oneclick, intents };
 }
