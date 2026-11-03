@@ -1,0 +1,144 @@
+{
+  "network": "testnet",
+  "agent": "nearbi-agent.testnet",
+  "splitter": "splitter.nearbi-agent.testnet",
+  "treasury": "treasury.nearbi-agent.testnet",
+  "contributors": "contributors.nearbi-agent.testnet",
+  "token": "usdc-mock.nearbi-agent.testnet",
+  "token_decimals": 6,
+  "split_bps_contributors_at_init": 1000,
+  "splitter_code_hash": "2hVSpdD7oPbfVwUmm2VBQTdxmskfs7DFSfN2dLVBUUF4",
+  "token_code_hash": "2mMB4BWM1M2bfRyPgWuwovdHDhAx7JBzt4wLUkNASfHr",
+  "splitter_wasm_sha256": "193b1516326f09dafd3d6d1364cf085891ea4a021335184e3a83bad4f2b1fc13",
+  "token_wasm_sha256": "1a380d783c16f3f3c9460707254b0cd0e6d366a079584c99cfc663391548ec01",
+  "build_commit": "5ce01bb4ecb191c5ec2406e7a66f49e78821b242",
+  "agent_function_call_key": {
+    "public_key": "ed25519:8s7VkyEA9AQyEAS8Ct1WjHRD6ShMf5Cku3zdktcz5HPJ",
+    "receiver_id": "splitter.nearbi-agent.testnet",
+    "method_names": [
+      "record_cost",
+      "anchor_report"
+    ],
+    "allowance": "0.25 NEAR"
+  },
+  "txs": [
+    {
+      "step": "create",
+      "account": "splitter.nearbi-agent.testnet",
+      "tx": "3Upx58gamWeZh4qoCYfRWUEK7ay4uFW3D7npd3bX5wi4",
+      "explorer": "https://testnet.nearblocks.io/txns/3Upx58gamWeZh4qoCYfRWUEK7ay4uFW3D7npd3bX5wi4"
+    },
+    {
+      "step": "create",
+      "account": "usdc-mock.nearbi-agent.testnet",
+      "tx": "HYyPkraECZyj7ronBkraTpEqBkeZD3qyznbgMPQs6P33",
+      "explorer": "https://testnet.nearblocks.io/txns/HYyPkraECZyj7ronBkraTpEqBkeZD3qyznbgMPQs6P33"
+    },
+    {
+      "step": "create",
+      "account": "treasury.nearbi-agent.testnet",
+      "tx": "B5NKxjRL5hSQEBfXae5BeWasgKLJXosf1eFjwF85dr9T",
+      "explorer": "https://testnet.nearblocks.io/txns/B5NKxjRL5hSQEBfXae5BeWasgKLJXosf1eFjwF85dr9T"
+    },
+    {
+      "step": "create",
+      "account": "contributors.nearbi-agent.testnet",
+      "tx": "9NZTJTPtmHYGfk4L5PpZQhbnZxfb25pZgSvFempjDB6f",
+      "explorer": "https://testnet.nearblocks.io/txns/9NZTJTPtmHYGfk4L5PpZQhbnZxfb25pZgSvFempjDB6f"
+    },
+    {
+      "step": "deploy",
+      "account": "usdc-mock.nearbi-agent.testnet",
+      "tx": "4Pi9g2Rvid8YAuUEcgTZiMSLMuPATNWsDREhAToKFth5",
+      "explorer": "https://testnet.nearblocks.io/txns/4Pi9g2Rvid8YAuUEcgTZiMSLMuPATNWsDREhAToKFth5"
+    },
+    {
+      "step": "deploy",
+      "account": "splitter.nearbi-agent.testnet",
+      "tx": "5b44RFY2CqN9AsdvKHyRMpk2f6UeTzsd5bW7kSune54T",
+      "explorer": "https://testnet.nearblocks.io/txns/5b44RFY2CqN9AsdvKHyRMpk2f6UeTzsd5bW7kSune54T"
+    },
+    {
+      "step": "storage",
+      "account": "splitter.nearbi-agent.testnet",
+      "tx": "DUXvJUppEadXZ5RSqpwqJX859ihdhkDSLqNNgRVcG5wZ",
+      "explorer": "https://testnet.nearblocks.io/txns/DUXvJUppEadXZ5RSqpwqJX859ihdhkDSLqNNgRVcG5wZ"
+    },
+    {
+      "step": "storage",
+      "account": "treasury.nearbi-agent.testnet",
+      "tx": "BzbsQPpB64nWmadpPDA6juRacDUyVYbSZ6VAVisX8Wat",
+      "explorer": "https://testnet.nearblocks.io/txns/BzbsQPpB64nWmadpPDA6juRacDUyVYbSZ6VAVisX8Wat"
+    },
+    {
+      "step": "storage",
+      "account": "contributors.nearbi-agent.testnet",
+      "tx": "2mwKNj8oshsxJuaAhLNhA3qwdRnZidPteW1BiyA2crPQ",
+      "explorer": "https://testnet.nearblocks.io/txns/2mwKNj8oshsxJuaAhLNhA3qwdRnZidPteW1BiyA2crPQ"
+    },
+    {
+      "step": "add-fc-key",
+      "account": "splitter.nearbi-agent.testnet",
+      "tx": "CGksMFW2XJhwZncUrY8fzZKNoAx3htk3umcGZHiccb6J",
+      "explorer": "https://testnet.nearblocks.io/txns/CGksMFW2XJhwZncUrY8fzZKNoAx3htk3umcGZHiccb6J"
+    }
+  ],
+  "forwarder": {
+    "contract": "forwarder.nearbi-agent.testnet",
+    "owner": "nearbi-agent.testnet",
+    "splitter": "splitter.nearbi-agent.testnet",
+    "token": "usdc-mock.nearbi-agent.testnet",
+    "agent": "forwarder.nearbi-agent.testnet",
+    "change_delay_sec_at_init": 0,
+    "oneclick_simulator": "oneclick-sim.nearbi-agent.testnet",
+    "code_hash": "Ht4N9MPmr7KRpgQDTYLkv4piR4TQ4R7LSZGnMwxo38Go",
+    "wasm_sha256": "facf6a98de68c631616c83018eb4fc3d4be54cae002345f63ac367c002bca0a0",
+    "build_commit": "47ee7e47f498cf09d71f485a29b3207c675d8e70",
+    "agent_function_call_key": {
+      "public_key": "ed25519:4e7uzpp3u8U3aFwEb5HtRWfCLhQU8QWeSQyNradfASQp",
+      "receiver_id": "forwarder.nearbi-agent.testnet",
+      "method_names": [
+        "forward"
+      ],
+      "allowance": "0.5 NEAR"
+    },
+    "txs": [
+      {
+        "step": "create",
+        "account": "forwarder.nearbi-agent.testnet",
+        "tx": "Aeo41QVKkYb2KmAv7EF3pjvspiuBffzXm6CEXJPMkM53",
+        "explorer": "https://testnet.nearblocks.io/txns/Aeo41QVKkYb2KmAv7EF3pjvspiuBffzXm6CEXJPMkM53"
+      },
+      {
+        "step": "create",
+        "account": "oneclick-sim.nearbi-agent.testnet",
+        "tx": "9TRueDfd7ce6NR96gxZ3mPTE4u3PesixwuBqc63wJ97n",
+        "explorer": "https://testnet.nearblocks.io/txns/9TRueDfd7ce6NR96gxZ3mPTE4u3PesixwuBqc63wJ97n"
+      },
+      {
+        "step": "deploy",
+        "account": "forwarder.nearbi-agent.testnet",
+        "tx": "4RJB4V1zTZn67QUgxK9u39LaxumQCowTMbY6KVqFuzVB",
+        "explorer": "https://testnet.nearblocks.io/txns/4RJB4V1zTZn67QUgxK9u39LaxumQCowTMbY6KVqFuzVB"
+      },
+      {
+        "step": "storage",
+        "account": "forwarder.nearbi-agent.testnet",
+        "tx": "Bxc2GMMP6zdDNQFAN5AQbPUA3fsaTPQVThxtXGwaFJZS",
+        "explorer": "https://testnet.nearblocks.io/txns/Bxc2GMMP6zdDNQFAN5AQbPUA3fsaTPQVThxtXGwaFJZS"
+      },
+      {
+        "step": "storage",
+        "account": "oneclick-sim.nearbi-agent.testnet",
+        "tx": "8KDCsGJGBKRBLKd4MxVh7sQt2t9rFsbPzZa1khJ6iUPo",
+        "explorer": "https://testnet.nearblocks.io/txns/8KDCsGJGBKRBLKd4MxVh7sQt2t9rFsbPzZa1khJ6iUPo"
+      },
+      {
+        "step": "add-fc-key",
+        "account": "forwarder.nearbi-agent.testnet",
+        "tx": "Cc7RB6iTFc8kDLSFaASTFWdRq8sqLWQqM3uum9cSorKD",
+        "explorer": "https://testnet.nearblocks.io/txns/Cc7RB6iTFc8kDLSFaASTFWdRq8sqLWQqM3uum9cSorKD"
+      }
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+# Host functions a NEAR mainnet contract must NOT import while mainnet runs protocol 86.
+# Source: nearcore 2.14.0 runtime/near-vm-runner/src/imports.rs (per-function config flags)
+# and the live mainnet EXPERIMENTAL_protocol_config wasm_config (2026-11-03, protocol 86):
+#   universal_accounts=false, sha3_host_fns=false, ml_dsa_verify_host_fn=false
+#   (gas_key_host_fns=true since 85, global_contract_host_fns=true since 78 -> allowed)
+# A deploy that imports any of these fails with "Link Error: unknown or invalid import".
+# universal_accounts: protocol 88
+universal_state_init_to_account_id
+promise_batch_action_universal_state_init
+# sha3_host_fns: protocol 87
+sha3_256
+sha3_384
+sha3_512
+# ml_dsa_verify_host_fn: protocol 87
+ml_dsa_verify
+# never on a public network
+sandbox_debug_log
+sleep_nanos
+burn_gas

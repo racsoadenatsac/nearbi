@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["contracts/splitter", "contracts/forwarder", "contracts/mock-ft", "integration-tests"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/racsoadenatsac/rs-payments"
+
+[workspace.dependencies]
+near-sdk = "=5.29.1"
+near-contract-standards = "=5.29.1"
+
+[profile.release]
+codegen-units = 1
+opt-level = "z"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true

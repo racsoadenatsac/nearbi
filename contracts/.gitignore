@@ -1,0 +1,25 @@
+# secrets: never commit
+.env
+.env.*
+*.key
+*credentials*.json
+*service-account*.json
+secrets/
+# build/runtime
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+.ipynb_checkpoints/
+.DS_Store
+cache/
+# rust / near
+target/
+res/*.wasm.tmp
+.tools/
+.cargo-cache/
+# near keys: never in the repo (they live in ~/.near-credentials, see README)
+*.json.key
+near-credentials/
+deploy/state/*.local.*
+target-repro/

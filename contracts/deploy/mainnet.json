@@ -1,0 +1,187 @@
+{
+  "network": "mainnet",
+  "protocol_version_at_deploy": 86,
+  "deployed_at": "2026-11-03T17:01Z",
+  "owner": "nearbi.near",
+  "treasury": "nearbi.near",
+  "contributors": "contributors.nearbi.near",
+  "token": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+  "token_name": "USDC (Circle, native NEAR, 6 decimals)",
+  "build_commit": "c56bb7202e35fe79e9236a2a2a21a3fa6ad993a6",
+  "toolchain": {
+    "near-sdk": "5.29.1",
+    "near-sys": "0.2.14",
+    "cargo-near": "0.22.0",
+    "rust": "1.97.1",
+    "image": "sourcescan/cargo-near:0.22.0-rust-1.97.1@sha256:7467038bdddc86484b73b416eeadce926ff59013e128e53dec5a19e1cb4b2234"
+  },
+  "splitter": {
+    "contract": "splitter.nearbi.near",
+    "code_hash": "BuT33o2VKMCx1rhxfZSYSsL5jWVfFjZNsv5xGSMV7YQB",
+    "wasm_sha256": "a204827262d123224b6a286d34921ef7348ee58f100a9d5dc37b9b76d20b648c",
+    "version": "0.1.0",
+    "init": {
+      "owner": "nearbi.near",
+      "treasury": "nearbi.near",
+      "contributors": "contributors.nearbi.near",
+      "split_bps_contributors": 1000,
+      "accepted_tokens": [
+        "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
+      ]
+    },
+    "full_access_keys": [],
+    "agent_function_call_key": {
+      "public_key": "ed25519:HFbATpvL7pcDahRX6SFsRA4JSjUA1fGS9bDhEGnRDRZS",
+      "receiver_id": "splitter.nearbi.near",
+      "method_names": [
+        "record_cost",
+        "anchor_report"
+      ],
+      "allowance": "0.25 NEAR",
+      "custody": "macOS Keychain nearbi-mainnet-fc-splitter.nearbi.near"
+    }
+  },
+  "forwarder": {
+    "contract": "forwarder.nearbi.near",
+    "code_hash": "7fvcJC7FEwcM4oz4E1UWQ8EuPfh2P8vvVw6GBGLpaEK6",
+    "wasm_sha256": "631ecec5011e039d55075e05b4726da7895ac96627a476452809f904ee998ea5",
+    "version": "0.2.0",
+    "init": {
+      "owner": "nearbi.near",
+      "splitter": "splitter.nearbi.near",
+      "token": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
+      "agent": "forwarder.nearbi.near",
+      "change_delay_sec": 86400
+    },
+    "full_access_keys": [],
+    "agent_function_call_key": {
+      "public_key": "ed25519:5xFkgAW74jxwq8FFJPR14hfnKfM3q2HxXkJ4BwwsQwSi",
+      "receiver_id": "forwarder.nearbi.near",
+      "method_names": [
+        "forward"
+      ],
+      "allowance": "0.5 NEAR",
+      "custody": "macOS Keychain nearbi-mainnet-fc-forwarder.nearbi.near"
+    }
+  },
+  "usdc_storage_registered": [
+    "splitter.nearbi.near",
+    "forwarder.nearbi.near",
+    "contributors.nearbi.near",
+    "nearbi.near"
+  ],
+  "txs": [
+    {
+      "step": "create",
+      "account": "contributors.nearbi.near",
+      "tx": "H3BFnc4Qa3cPukSVVCMpjbsnQxvNmfVFwQQSvuEPMGKz",
+      "explorer": "https://nearblocks.io/txns/H3BFnc4Qa3cPukSVVCMpjbsnQxvNmfVFwQQSvuEPMGKz",
+      "result": "ok"
+    },
+    {
+      "step": "create",
+      "account": "splitter.nearbi.near",
+      "tx": "7XugLeAwFQUM7szUdyVvakNkwgpL2yfi6Wg4G3h8pR8e",
+      "explorer": "https://nearblocks.io/txns/7XugLeAwFQUM7szUdyVvakNkwgpL2yfi6Wg4G3h8pR8e",
+      "result": "ok"
+    },
+    {
+      "step": "deploy-init (near-sdk 5.30 WASM)",
+      "account": "splitter.nearbi.near",
+      "tx": "3QoNsD9Wfuw6Q4qpUK79FRJT4NkL9uxz7eXADU6tAV9u",
+      "explorer": "https://nearblocks.io/txns/3QoNsD9Wfuw6Q4qpUK79FRJT4NkL9uxz7eXADU6tAV9u",
+      "result": "failed, rolled back: Link Error unknown or invalid import (protocol-88 host fn)"
+    },
+    {
+      "step": "deploy-init (100 Tgas init)",
+      "account": "splitter.nearbi.near",
+      "tx": "3apoJELRBxjajcxHV3SFWGd3dtsKUmjpUUxzy8vaTwhD",
+      "explorer": "https://nearblocks.io/txns/3apoJELRBxjajcxHV3SFWGd3dtsKUmjpUUxzy8vaTwhD",
+      "result": "failed, rolled back: LackBalanceForState 0.0259448 NEAR (prepaid gas reserved)"
+    },
+    {
+      "step": "topup",
+      "account": "splitter.nearbi.near",
+      "tx": "GTL196ceyLhvty77XWvNwBpc1qL8VboiUvw9n8NMzADA",
+      "explorer": "https://nearblocks.io/txns/GTL196ceyLhvty77XWvNwBpc1qL8VboiUvw9n8NMzADA",
+      "result": "ok"
+    },
+    {
+      "step": "deploy-init",
+      "account": "splitter.nearbi.near",
+      "tx": "8tp7qUMgGu9X7zbW5Q2ZunofECaQdRw6xiK3gPW3267P",
+      "explorer": "https://nearblocks.io/txns/8tp7qUMgGu9X7zbW5Q2ZunofECaQdRw6xiK3gPW3267P",
+      "result": "ok"
+    },
+    {
+      "step": "create",
+      "account": "forwarder.nearbi.near",
+      "tx": "5BAzXReKHrkURVtr7UwgHcsrT6rorwtZcGooNdhWyTYC",
+      "explorer": "https://nearblocks.io/txns/5BAzXReKHrkURVtr7UwgHcsrT6rorwtZcGooNdhWyTYC",
+      "result": "ok"
+    },
+    {
+      "step": "deploy-init",
+      "account": "forwarder.nearbi.near",
+      "tx": "G9yN22f3ZgkYZgc9QziqN39pLoZSfGd4LK6nLtWwX8QJ",
+      "explorer": "https://nearblocks.io/txns/G9yN22f3ZgkYZgc9QziqN39pLoZSfGd4LK6nLtWwX8QJ",
+      "result": "ok"
+    },
+    {
+      "step": "storage",
+      "account": "splitter.nearbi.near",
+      "tx": "5DER8A87sSDsevEKaCUTRy4pFz8PPudCFjacFoW3K2xS",
+      "explorer": "https://nearblocks.io/txns/5DER8A87sSDsevEKaCUTRy4pFz8PPudCFjacFoW3K2xS",
+      "result": "ok"
+    },
+    {
+      "step": "storage",
+      "account": "forwarder.nearbi.near",
+      "tx": "6PW1r9jUyq1A6qf3i8oG8ZVWpQKCXNRQM6wbgYEhLGYA",
+      "explorer": "https://nearblocks.io/txns/6PW1r9jUyq1A6qf3i8oG8ZVWpQKCXNRQM6wbgYEhLGYA",
+      "result": "ok"
+    },
+    {
+      "step": "storage",
+      "account": "contributors.nearbi.near",
+      "tx": "WaAnHvijrxpU5iD7WiPcBZ4v8ZevmRuubMMWqsxgtXA",
+      "explorer": "https://nearblocks.io/txns/WaAnHvijrxpU5iD7WiPcBZ4v8ZevmRuubMMWqsxgtXA",
+      "result": "ok"
+    },
+    {
+      "step": "storage",
+      "account": "nearbi.near",
+      "tx": "CK9Zv5ivAcuuciR1VStPvANgTUbFY7F25wf6SXH6h1Pa",
+      "explorer": "https://nearblocks.io/txns/CK9Zv5ivAcuuciR1VStPvANgTUbFY7F25wf6SXH6h1Pa",
+      "result": "ok"
+    },
+    {
+      "step": "add-fc-key",
+      "account": "splitter.nearbi.near",
+      "tx": "9eygX6kVFojdq6pb8xwsFV3atPGdLYwCD8eVNwXFBMn8",
+      "explorer": "https://nearblocks.io/txns/9eygX6kVFojdq6pb8xwsFV3atPGdLYwCD8eVNwXFBMn8",
+      "result": "ok"
+    },
+    {
+      "step": "add-fc-key",
+      "account": "forwarder.nearbi.near",
+      "tx": "GhQDCzbdUeEJDm1ruFTEMd1ooCHuyYUTshtxiDctVnW3",
+      "explorer": "https://nearblocks.io/txns/GhQDCzbdUeEJDm1ruFTEMd1ooCHuyYUTshtxiDctVnW3",
+      "result": "ok"
+    },
+    {
+      "step": "delete-full-access-key",
+      "account": "splitter.nearbi.near",
+      "tx": "HQCu8EwZJe1vk7nyn2k8W2k3Mhmz5WqUG9NYhws2c7aT",
+      "explorer": "https://nearblocks.io/txns/HQCu8EwZJe1vk7nyn2k8W2k3Mhmz5WqUG9NYhws2c7aT",
+      "result": "ok"
+    },
+    {
+      "step": "delete-full-access-key",
+      "account": "forwarder.nearbi.near",
+      "tx": "5ybv1Spjbveq9FV6CD4KHVPxaxbw2dw3huVeuLcBzyQb",
+      "explorer": "https://nearblocks.io/txns/5ybv1Spjbveq9FV6CD4KHVPxaxbw2dw3huVeuLcBzyQb",
+      "result": "ok"
+    }
+  ]
+}
