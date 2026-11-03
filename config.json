@@ -1,0 +1,11 @@
+{
+  "network": "testnet",
+  "network_badge": "TESTNET (mock USDC, no real value)",
+  "splitter": "splitter.nearbi-agent.testnet",
+  "rpc": ["https://rpc.testnet.near.org", "https://archival-rpc.testnet.near.org"],
+  "fastnear_tx_api": "https://tx.test.fastnear.com",
+  "explorer_tx": "https://testnet.nearblocks.io/txns/",
+  "explorer_account": "https://testnet.nearblocks.io/address/",
+  "site_url": "https://nearbi.ai/ledger/",
+  "usd_decimals": 6
+}

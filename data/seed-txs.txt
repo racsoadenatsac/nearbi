@@ -1,0 +1,4 @@
+# Optional extra tx hashes touching splitter.nearbi-agent.testnet, one per line (# comments allowed).
+# Unioned with the FastNEAR account index and the hashes already in data/ledger.jsonl.
+# Sales from rs-payments docs/demo-run-2026-11-03T0057Z.txt:
+7cAyURgzFpXEsB9UqdeP7Lf5FxD3unJaFfXsNAugNwcR
