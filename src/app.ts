@@ -12,12 +12,14 @@ import { sha256, timingSafeEqual, utf8 } from "./core/encoding";
 import { decide, parseReportPath, reportObjectKey, requiredAccess } from "./core/gating";
 import { clearSessionCookie, SESSION_COOKIE, SESSION_TTL_SECONDS, sessionCookie, signSession, verifySession } from "./core/session";
 import { newChallenge, verifySignIn, type KeyCheckFn } from "./core/signin";
+import { deliveredReportSlug, isOneOff, isProductId, validateBrief, type Product } from "./core/products";
 import { subscriptionState, type SubscriptionState } from "./core/subscription";
 import { IntentsAdapter, OneClickClient } from "./intents";
 import { checkoutPage, containerPage, loginPage, membersPage, messagePage } from "./pages";
 import type { ContentStore } from "./ports/content";
 import type { Repository } from "./ports/repository";
 import { CheckoutError, confirmPayment, createCheckout, listPaymentTokens, pollPaymentStatus, type BillingDeps } from "./services/billing";
+import { orderJson, updateOrderAdmin } from "./services/orders";
 import { issueRegistryToken } from "./services/registry";
 
 export interface AppDeps {
@@ -88,12 +90,22 @@ export function createApp(deps: AppDeps) {
     const path = new URL(c.req.url).pathname;
     const d = decide(requiredAccess(path, config.freeReportSlugs), c.get("accountId"), c.get("sub"));
     if (d.allow) return next();
+    // A delivered one-off order opens the report its delivery link points at, without a subscription.
+    if (d.reason === "subscribe" && (await hasDeliveredReport(c.get("accountId")!, path))) return next();
     if (isApi(path)) {
       return d.reason === "login" ? c.json({ error: "sign in required" }, 401) : c.json({ error: "active subscription required" }, 402);
     }
-    if (d.reason === "login") return c.redirect(`/login?next=${encodeURIComponent(path)}`, 302);
+    // Keep the query string (e.g. /members/checkout?product=quick_answer) through sign-in.
+    if (d.reason === "login") return c.redirect(`/login?next=${encodeURIComponent(path + new URL(c.req.url).search)}`, 302);
     return c.redirect(`/members?subscribe=1`, 302);
   });
+
+  async function hasDeliveredReport(accountId: string, path: string): Promise<boolean> {
+    const r = parseReportPath(path);
+    if (!r) return false;
+    const orders = await repo.listOrders(accountId);
+    return orders.some((o) => o.status === "delivered" && deliveredReportSlug(o.deliveryUrl, config.appOrigins) === r.slug);
+  }
 
   // ---------------------------------------------------------------- auth
   app.get("/auth/challenge", async (c) => {
@@ -132,22 +144,29 @@ export function createApp(deps: AppDeps) {
         accountId: c.get("accountId"),
         subscription: sub ? { ...sub, currentPeriodEnd: sub.currentPeriodEnd ? new Date(sub.currentPeriodEnd * 1000).toISOString() : null } : null,
         priceUsd: config.monthlyPriceUsd,
+        products: Object.fromEntries(Object.values(config.products).map((p) => [p.id, { name: p.name, priceUsd: p.priceUsd, kind: p.kind }])),
       },
       200,
       { "cache-control": "no-store" },
     );
   });
 
+  /** ?product= / body.product -> catalog entry. Missing: subscription. Unknown: null. */
+  const resolveProduct = (v: unknown): Product | null => (v === undefined || v === null || v === "" ? config.products.subscription : isProductId(v) ? config.products[v] : null);
+
   // ---------------------------------------------------------------- billing
   // Tokens the user can pay with: the live 1Click list (cached per execution environment).
   app.get("/billing/tokens", async (c) => {
+    const product = resolveProduct(c.req.query("product"));
+    if (!product) return c.json({ error: "unknown product" }, 400);
     try {
       const tokens = await listPaymentTokens(intents);
       const settlement = await intents.findToken(config.intents.settlementAsset);
       return c.json(
         {
           mode: config.intents.mode,
-          priceUsd: config.monthlyPriceUsd,
+          product: product.id,
+          priceUsd: product.priceUsd,
           settlement: settlement ? { assetId: settlement.assetId, symbol: settlement.symbol, blockchain: settlement.blockchain } : null,
           tokens,
         },
@@ -161,13 +180,23 @@ export function createApp(deps: AppDeps) {
   });
 
   app.post("/billing/checkout", async (c) => {
-    const body = (await c.req.json().catch(() => ({}))) as { originAsset?: unknown; refundTo?: unknown };
+    // Any amount/price field in the body is ignored: the price comes from the server-side catalog only.
+    const body = (await c.req.json().catch(() => ({}))) as { originAsset?: unknown; refundTo?: unknown; product?: unknown; brief?: unknown };
+    const product = resolveProduct(body.product);
+    if (!product) return c.json({ error: "unknown product" }, 400);
     if (typeof body.originAsset !== "string" || !body.originAsset) return c.json({ error: "originAsset required (pick a token)" }, 400);
     if (body.refundTo !== undefined && body.refundTo !== "" && typeof body.refundTo !== "string") return c.json({ error: "refundTo must be a string" }, 400);
+    let brief = null;
+    if (isOneOff(product.id)) {
+      const b = validateBrief(product.id, body.brief);
+      if (!b.ok) return c.json({ error: b.error }, 400);
+      brief = b.brief;
+    }
     try {
       const co = await createCheckout(billing, {
         accountId: c.get("accountId")!,
-        amountUsd: config.monthlyPriceUsd,
+        product,
+        brief,
         nowSec: now(),
         originAsset: body.originAsset,
         refundTo: typeof body.refundTo === "string" && body.refundTo.trim() ? body.refundTo : undefined,
@@ -198,7 +227,29 @@ export function createApp(deps: AppDeps) {
     }
     const r = await confirmPayment(repo, body.paymentId, body.txHash, now());
     if (!r.ok) return c.json({ error: r.error }, r.status);
-    return c.json({ ...r, currentPeriodEnd: new Date(r.currentPeriodEnd * 1000).toISOString() });
+    return c.json({ ...r, currentPeriodEnd: r.currentPeriodEnd === null ? null : new Date(r.currentPeriodEnd * 1000).toISOString() });
+  });
+
+  // The signed-in account's one-off orders (also rendered on /members).
+  app.get("/billing/orders", async (c) => {
+    const orders = await repo.listOrders(c.get("accountId")!);
+    return c.json({ orders: orders.map(orderJson) }, 200, { "cache-control": "no-store" });
+  });
+
+  // Admin / agent: orders awaiting delivery (status paid or in_progress), oldest first. Used by bin/list-orders --api.
+  app.get("/billing/admin/orders", async (c) => {
+    if (!(await constantTimeBearer(c.req.header("authorization"), config.adminToken))) return c.json({ error: "forbidden" }, 403);
+    const orders = await repo.listOpenOrders(500);
+    return c.json({ orders: orders.map(orderJson) }, 200, { "cache-control": "no-store" });
+  });
+
+  // Admin / agent: move an order along (paid -> in_progress -> delivered) and set its delivery link.
+  app.post("/billing/admin/orders/:id", async (c) => {
+    if (!(await constantTimeBearer(c.req.header("authorization"), config.adminToken))) return c.json({ error: "forbidden" }, 403);
+    const body = await c.req.json().catch(() => ({}));
+    const r = await updateOrderAdmin(repo, c.req.param("id"), body, now());
+    if (!r.ok) return c.json({ error: r.error }, r.status);
+    return c.json({ ok: true, order: orderJson(r.order) }, 200, { "cache-control": "no-store" });
   });
 
   // ---------------------------------------------------------------- registry
@@ -226,6 +277,8 @@ export function createApp(deps: AppDeps) {
         sub: c.get("sub")!,
         priceUsd: config.monthlyPriceUsd,
         reports: await repo.listReports(),
+        orders: await repo.listOrders(c.get("accountId")!),
+        products: config.products,
         paymentsLive: config.intents.mode === "live",
       }),
       200,
@@ -233,13 +286,23 @@ export function createApp(deps: AppDeps) {
     ),
   );
 
-  app.get("/members/checkout", (c) =>
-    c.html(
-      checkoutPage({ accountId: c.get("accountId")!, sub: c.get("sub")!, priceUsd: config.monthlyPriceUsd, mode: config.intents.mode }),
+  app.get("/members/checkout", (c) => {
+    const product = resolveProduct(c.req.query("product"));
+    if (!product) {
+      const [html, status] = messagePage(
+        "Unknown product",
+        'We sell a <a href="/members/checkout?product=quick_answer">Quick Answer</a>, a <a href="/members/checkout?product=deep_dive">Deep Dive</a> and the <a href="/members/checkout">subscription</a>.',
+        c.get("accountId"),
+        400,
+      );
+      return c.html(html, status as 400);
+    }
+    return c.html(
+      checkoutPage({ accountId: c.get("accountId")!, sub: c.get("sub")!, product, priceUsd: config.monthlyPriceUsd, mode: config.intents.mode }),
       200,
       { "cache-control": "no-store" },
-    ),
-  );
+    );
+  });
 
   app.get("/members/container", (c) =>
     c.html(containerPage({ accountId: c.get("accountId")!, sub: c.get("sub")!, registryHost: config.registryHost }), 200, {
