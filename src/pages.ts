@@ -96,8 +96,8 @@ const PRODUCT_NAME: Record<string, string> = { quick_answer: "Quick Answer", dee
 function ordersSection(orders: OrderRecord[], products?: ProductCatalog): string {
   const qa = products?.quick_answer.priceUsd ?? 29;
   const dd = products?.deep_dive.priceUsd ?? 499;
-  const order = `<p class="small"><a class="btn" href="/members/checkout?product=quick_answer">Order a Quick Answer: $${esc(qa)}</a>
-  <a class="btn" href="/members/checkout?product=deep_dive">Order a Deep Dive: $${esc(dd)}</a></p>`;
+  const order = `<p><a class="btn pri" href="/members/checkout?product=quick_answer">Order a Quick Answer: $${esc(qa)}</a>
+  <a class="btn pri" href="/members/checkout?product=deep_dive">Order a Deep Dive: $${esc(dd)}</a></p>`;
   if (!orders.length) return `<h2 class="sec">Your orders</h2>\n<div class="panel" id="orders"><p class="muted">No orders yet.</p>${order}</div>`;
   const rows = orders
     .map((o) => {
