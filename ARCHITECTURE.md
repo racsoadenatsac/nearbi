@@ -23,7 +23,7 @@ Status: APPROVED by the operator, 2026-11-02. Pricing, split and accounts are st
 | `rs-docs` | This file and the ADRs |
 | `rs-tooling` | Fleet scripts |
 
-Submission: the judges need ONE public repo. We'll publish an umbrella repo, `research-shop`, that pulls in the others as git submodules (ADR-002).
+Submission: the judges need ONE public repo. It is the monorepo `nearbi`, which imports each submitted repo with `git subtree` and keeps its full history (ADR-003, superseding the submodule umbrella of ADR-002).
 
 ## 3. Key design decisions
 
