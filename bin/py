@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run Python 3.12 from the rs-repro image (no host Python/node needed), repo mounted at /ledger.
+# Usage: bin/py src/<script>.py [args]     Override the image with RS_LEDGER_IMAGE=rs-repro:<tag>.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+IMAGE="${RS_LEDGER_IMAGE:-rs-repro:0.3.3}"
+exec docker run --rm -i -v "$ROOT":/ledger -w /ledger -u "$(id -u):$(id -g)" -e HOME=/tmp \
+  -e LEDGER_RETRIES -e LEDGER_CUTOFF_BLOCKS --entrypoint python3 "$IMAGE" -I "$@"
