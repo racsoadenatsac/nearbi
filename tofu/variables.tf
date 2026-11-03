@@ -82,3 +82,39 @@ variable "api_throttle_burst" {
   type    = number
   default = 40
 }
+
+# ---------------------------------------------------------------- NEAR Intents (1Click) payments
+variable "intents_mode" {
+  description = <<-EOT
+    INTENTS_MODE for the app. "dry": real 1Click DRY quotes, no deposit address, nothing payable, preview
+    banner. "live": real deposit addresses; the app refuses to start unless settlement_recipient is a
+    mainnet NEAR account. See ../nearbi-app README "Payments".
+  EOT
+  type        = string
+  default     = "dry"
+  validation {
+    condition     = contains(["dry", "live"], var.intents_mode)
+    error_message = "intents_mode must be \"dry\" or \"live\"."
+  }
+}
+
+variable "settlement_asset" {
+  description = "SETTLEMENT_ASSET: 1Click asset id revenue settles in. Default: native USDC on NEAR."
+  type        = string
+  default     = "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1"
+}
+
+variable "settlement_recipient" {
+  description = <<-EOT
+    SETTLEMENT_RECIPIENT: mainnet NEAR account that receives revenue. Leave empty in dry mode: dry quotes
+    then use an inert placeholder (the testnet splitter, splitter.nearbi-agent.testnet, is rejected by
+    1Click and is not usable here). Required for intents_mode = "live" (operator decision, not set yet).
+  EOT
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.intents_mode == "dry" || can(regex("^([a-z0-9_-]+\\.)*near$|^[0-9a-f]{64}$", var.settlement_recipient))
+    error_message = "intents_mode = \"live\" needs settlement_recipient set to a mainnet NEAR account (*.near or 64-hex implicit)."
+  }
+}
+

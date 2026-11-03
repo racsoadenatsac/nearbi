@@ -109,6 +109,10 @@ resource "aws_lambda_function" "app" {
       AUTH_RECIPIENT    = var.domain
       REGISTRY_HOST     = "registry.${var.domain}"
       FREE_REPORT_SLUGS = join(",", local.free_report_slugs)
+      INTENTS_MODE      = var.intents_mode
+      SETTLEMENT_ASSET  = var.settlement_asset
+      }, var.settlement_recipient == "" ? {} : {
+      SETTLEMENT_RECIPIENT = var.settlement_recipient
     })
   }
 
