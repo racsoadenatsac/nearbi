@@ -1,28 +1,37 @@
 # rs-ledger
 
 Public ledger for NearBI: every sale, payout, cost and report anchor emitted by the revenue splitter
-contract, hash-chained, reconciled against the contract, published at **https://nearbi.ai/ledger/**.
+contract (and, on mainnet, every forward by the settlement forwarder), hash-chained, reconciled against the
+contracts, published per network:
+
+| Network | Contracts | Published at | Data |
+|---|---|---|---|
+| **mainnet** (default, live, real USDC) | `splitter.nearbi.near` + `forwarder.nearbi.near`, token Circle USDC `17208628…6133a1` | **https://nearbi.ai/ledger/** | `data/mainnet/` |
+| testnet (demo, mock USDC) | `splitter.nearbi-agent.testnet` | https://nearbi.ai/ledger/testnet/ | `data/testnet/` |
 
 Part of the NEAR Hackathon one-agent research shop (Track 04: "log every sale, cost and payout to a
 public ledger page"). See `rs-docs/ARCHITECTURE.md` and `rs-payments/README.md` for the contract.
 
-> Network: **TESTNET (mock USDC, no real value)**. Contract `splitter.nearbi-agent.testnet`, token
-> `usdc-mock.nearbi-agent.testnet` (6 decimals).
+> v0.2.0: mainnet is the primary ledger. The testnet ledger keeps its original 13-event chain unchanged
+> (splitter events only; its forwarder demo is not added, because inserting those rows would rewrite the
+> published, append-only history).
 
 ## Layout
 
 ```
-bin/build-ledger    pull events -> normalize -> hash-chain -> reconcile -> render out/ledger/
+bin/build-ledger    pull events -> normalize -> hash-chain -> reconcile -> render out/<network>/ledger/  (--network)
 bin/verify-ledger   recheck a ledger file (hash chain, split math, totals; --rpc re-fetches from NEAR RPC)
-bin/publish         build + verify + upload to s3://nearbi-site/ledger/ + invalidate /ledger/*
+bin/publish         build + verify + upload (mainnet: s3://nearbi-site/ledger/ excluding testnet/*;
+                    testnet: s3://nearbi-site/ledger/testnet/) + invalidate
 bin/py              Python 3.12 from the rs-repro Docker image (no host Python/node needed)
 bin/check-secrets.sh  pre-push secret scan (worktree + full history)
 src/build_ledger.py   the builder (stdlib only)
 src/verify_ledger.py  the verifier (stdlib only, Python 3.8+); also published next to the ledger
 templates/index.html  page template (site.css, nav, footer of nearbi.ai; tiny vanilla JS)
-config.json           contract, RPC endpoints, explorer, badge
-data/ledger.jsonl     last published ledger (committed; the append-only reference)
-data/seed-txs.txt     optional extra tx hashes (one per line), unioned with the indexer's list
+config.json           per network: contracts, token, RPC endpoints, FastNEAR, explorer, badge, URL, S3 prefix
+data/<net>/ledger.jsonl  last published ledger (committed; the append-only reference)
+data/<net>/seed-txs.txt  optional extra tx hashes (one per line), unioned with the indexer's list
+data/cache/<net>/     RPC cache (final txs, blocks, ft_metadata; gitignored)
 ```
 
 ## Event source (and why)
@@ -49,6 +58,26 @@ height and timestamp, and the FastNEAR copy must agree byte for byte (logs, bloc
 `EVENT_JSON` logs of standard `nearbi_splitter` from **successful receipts executed by the splitter**
 are ledger events (a failed receipt's logs are not state). New sales are found automatically, so the
 ledger needs no manual list.
+
+## Mainnet: forwarder events and extra reconciliation
+
+On mainnet, discovery lists the txs of both `splitter.nearbi.near` and `forwarder.nearbi.near` (FastNEAR
+`tx.main.fastnear.com`), data comes from `rpc.mainnet.fastnear.com` (archival fallback
+`archival-rpc.mainnet.fastnear.com`), and the ledger takes `nearbi_splitter` events from successful splitter
+receipts **and** `nearbi_forwarder` events (`init`, `forward_started`, `forwarded`, `forward_failed`,
+`received`, `config_change`, `change_proposed/accepted/cancelled`) from successful forwarder receipts, in one
+hash chain. Each row carries its `standard`. Extra checks at the same block `H`:
+
+- `forwarded` events (count, sum) == forwarder `get_config()` `forwarded_count` / `forwarded_total`
+- orders whose last forwarder event is `forward_started`/`forward_failed` == `get_config().open_orders`
+- every `forwarded {order_id, amount}` has a splitter `sale` with the same order id and amount and payer
+  `forwarder.nearbi.near`, and vice versa
+- the forwarder still points at this splitter and USDC (paused flag and any pending timelocked change are shown)
+- the split in effect comes from the splitter's own **successful** `init` call (the failed deploy attempts
+  also carry an `init` action and are skipped)
+
+With zero sales the page still renders: "0 sales", an explicit `get_stats()` empty check, the splitter and
+forwarder configuration, and the forwarder's `init` event.
 
 ## Ledger format
 
@@ -95,7 +124,8 @@ bin/build-ledger                 # -> out/ledger/{index.html, ledger.jsonl, ledg
 bin/verify-ledger                # offline check of data/ledger.jsonl
 bin/verify-ledger https://nearbi.ai/ledger/ledger.jsonl --rpc
 bin/py tests/test_ledger.py
-AWS_PROFILE=nearbi bin/publish   # build + verify + upload + invalidate; prints live status codes
+AWS_PROFILE=nearbi bin/publish                     # mainnet -> /ledger/
+AWS_PROFILE=nearbi bin/publish --network testnet   # testnet -> /ledger/testnet/
 ```
 
 Docker image: `rs-repro:0.3.3` (Python 3.12), override with `RS_LEDGER_IMAGE`.
@@ -106,8 +136,10 @@ There is no scheduler in this repo; the agent calls publish after anything that 
 (a confirmed sale, a `record_cost`, an `anchor_report`):
 
 ```
-cd ~/projects/research-shop/rs-ledger && AWS_PROFILE=nearbi bin/publish
+cd ~/projects/research-shop/rs-ledger && AWS_PROFILE=nearbi bin/publish      # mainnet (sales, forwards, costs)
 ```
+
+(testnet only changes if someone runs the testnet demo again: `bin/publish --network testnet`.)
 
 - run it after the sale's tx is final (`demo.sh` and the agent already wait for `FINAL`); the cutoff
   and retries cover indexer lag, so a publish right after a sale may need up to ~1-2 minutes
@@ -128,10 +160,14 @@ cd ~/projects/research-shop/rs-ledger && AWS_PROFILE=nearbi bin/publish
 
 ## Limits
 
-- Testnet only, mock USDC. The ledger is as complete as FastNEAR's index plus the seed list; the
+- The ledger is as complete as FastNEAR's index plus the seed list; the
   reconciliation proves sales/payout totals, but a missing `cost` or `report_anchor` event would not
   change `get_stats()` (those events carry no contract state). The append-only check catches a
   late-discovered older event (the build fails rather than rewriting history).
 - `rpc.testnet.near.org` is rate limited; a full `--rpc` verification takes about a minute.
 - The page is a snapshot; its "live check" asks the RPC from the visitor's browser and reports if the
   contract has moved on since the last publish.
+- Mainnet relies on the FastNEAR mainnet tx index for discovery; an event it misses is still caught by the
+  totals/forwarder reconciliation for sales and forwards (the build fails), not for `cost`/`report_anchor`.
+- `bin/publish` treats a live `ledger.jsonl` from another network as no reference (this is how `/ledger/`
+  switched from testnet to mainnet in v0.2.0; the old testnet file moved to `/ledger/testnet/` unchanged).

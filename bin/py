@@ -5,4 +5,4 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${RS_LEDGER_IMAGE:-rs-repro:0.3.3}"
 exec docker run --rm -i -v "$ROOT":/ledger -w /ledger -u "$(id -u):$(id -g)" -e HOME=/tmp \
-  -e LEDGER_RETRIES -e LEDGER_CUTOFF_BLOCKS --entrypoint python3 "$IMAGE" -I "$@"
+  -e LEDGER_RETRIES -e LEDGER_CUTOFF_BLOCKS -e LEDGER_NETWORK --entrypoint python3 "$IMAGE" -I "$@"

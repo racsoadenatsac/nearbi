@@ -2,14 +2,17 @@
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Public ledger: every sale, cost and payout · NearBI</title>
-<meta name="description" content="NearBI's public ledger: every sale, payout, cost and report anchor emitted by the splitter contract, hash-chained and reconciled against the contract's own stats. Testnet, mock USDC.">
+<meta name="description" content="NearBI's public ledger: every sale, payout, cost and report anchor emitted by the splitter contract, hash-chained and reconciled against the contract's own stats. ${meta_desc}">
 <meta property="og:title" content="NearBI public ledger">
-<meta property="og:description" content="Every sale, payout, cost and report anchor, onchain, hash-chained and reconciled. Testnet (mock USDC, no real value).">
+<meta property="og:description" content="Every sale, payout, cost and report anchor, onchain, hash-chained and reconciled. ${meta_desc}">
 <link rel="stylesheet" href="/assets/site.css">
 <style>
   .lg h1 { font-size:40px; line-height:1.1; margin:.1em 0 .25em; letter-spacing:-.02em }
   .lg h2 { font-size:22px; margin:2.2em 0 .6em; padding-bottom:.25em; border-bottom:2px solid var(--acc) }
   .lg .net { display:inline-block; background:#fdecc8; color:#7a4b00; border:1px solid #e0a800; font-weight:800; font-size:13px; letter-spacing:.05em; padding:4px 12px; border-radius:99px }
+  .lg .net.main { background:#d6f5e8; color:#05603f; border-color:#2e9d6f }
+  .lg .othernet { margin-left:12px; font-size:14px }
+  .lg .k-forwarded, .lg .k-forward_started { background:#e6f7ef; color:#05603f } .lg .k-forward_failed { background:#fdecea; color:#7b1f16 }
   .lg .meta { color:var(--muted); font-size:14px; margin:.4em 0 0 }
   .lg .metrics { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin:22px 0 }
   .lg .m { background:#fff; border:1px solid #e3e2da; border-radius:10px; padding:14px 16px }
@@ -44,9 +47,9 @@
 </head><body>
 <header class="nav"><a class="brand" href="/">NearBI</a><a href="/#reports">Reports</a><a href="/ledger/">Ledger</a><a href="mailto:hello@nearbi.ai?subject=Report%20request">Request a report</a></header>
 <main class="page"><div class="wrap lg">
-  <span class="net">${badge}</span>
+  <span class="${net_class}">${badge}</span><span class="othernet">${network_nav}</span>
   <h1>Public ledger</h1>
-  <p class="sub" style="margin-bottom:6px">Every sale, payout, cost and report anchor NearBI makes is an event emitted by the revenue splitter contract ${splitter}. This page lists all of them, each linked to its transaction, and checks the totals against the contract's own counters.</p>
+  <p class="sub" style="margin-bottom:6px">Every sale, payout, cost and report anchor NearBI makes is an event emitted by the revenue splitter contract ${splitter}.${forwarder_intro} This page lists all of them, each linked to its transaction, and checks the totals against the contract's own counters.</p>
   <p class="meta">Last updated ${updated} · as of block ${block} · ${nevents} events · chain head <code>${head}</code></p>
 
   <div class="metrics">
@@ -72,10 +75,10 @@
     <tr><th>token</th><th class="num">sales</th><th class="num">total_received</th><th class="num">contributors_amount</th><th class="num">treasury_amount</th><th class="num">pending_failed</th></tr>
     ${live_rows}
   </table></div>
-  <p class="meta">Raw integer units (mock USDC has 6 decimals).</p>
+  <p class="meta">${units_note}</p>
 
   <h2>Every event, newest first</h2>
-  <div class="filters" id="filters"><button class="on" data-k="">all</button><button data-k="sale">sale</button><button data-k="payout">payout</button><button data-k="cost">cost</button><button data-k="report_anchor">report_anchor</button></div>
+  <div class="filters" id="filters"><button class="on" data-k="">all</button><button data-k="sale">sale</button><button data-k="payout">payout</button><button data-k="cost">cost</button><button data-k="report_anchor">report_anchor</button><button data-k="forward">forward</button></div>
   <div class="scroll"><table id="events">
     <tr><th>time (UTC)</th><th>event</th><th class="num">amount</th><th>details</th><th>transaction</th><th>raw event</th></tr>
     ${rows}
@@ -91,6 +94,7 @@
     <dt>accepted tokens</dt><dd>${tokens}</dd>
     <dt>paused</dt><dd>${paused}</dd>
   </dl>
+  ${forwarder_section}
 
   <h2>Verify it yourself</h2>
   <p class="dl"><a href="ledger.jsonl" download>ledger.jsonl</a><a href="ledger.json">ledger.json</a><a href="verify_ledger.py" download>verify_ledger.py</a></p>
@@ -102,7 +106,7 @@ python3 verify_ledger.py ledger.jsonl --rpc   # + re-fetch every event and block
   <p>Or ask the contract directly:</p>
 <pre>curl -s ${rpc} -H 'content-type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"query","params":{"request_type":"call_function","finality":"final","account_id":"${splitter_id}","method_name":"get_stats","args_base64":"e30="}}' \
   | python3 -c 'import sys,json; print(bytes(json.load(sys.stdin)["result"]["result"]).decode())'</pre>
-  <p class="meta">This is a testnet deployment paid in a mock USDC token with no real value. Amounts in the contract are integers; the decimal figures here are display only.</p>
+  <p class="meta">${footnote}</p>
 </div></main>
 <footer class="foot">© 2026 NearBI · An autonomous research agent built at NEAR HACKATHON · #NEARHackathon</footer>
 <script>
@@ -113,7 +117,7 @@ python3 verify_ledger.py ledger.jsonl --rpc   # + re-fetch every event and block
     [].forEach.call(f.children, function (b) { b.className = b === e.target ? "on" : ""; });
     [].forEach.call(document.querySelectorAll("#events tr[data-kind]"), function (r) {
       var rk = r.getAttribute("data-kind");
-      r.style.display = !k || rk === k || (k === "payout" && rk.indexOf("payout") === 0) ? "" : "none";
+      r.style.display = !k || rk.indexOf(k) === 0 ? "" : "none";
     });
   });
   var el = document.getElementById("live");

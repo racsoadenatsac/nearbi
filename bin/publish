@@ -1,63 +1,90 @@
 #!/usr/bin/env bash
-# Build, reconcile and publish the public ledger to https://nearbi.ai/ledger/.
+# Build, reconcile and publish a public ledger.
 #
-#   AWS_PROFILE=nearbi bin/publish            # build + upload + invalidate /ledger/*
-#   bin/publish --dry-run                     # build + show what would be uploaded
+#   AWS_PROFILE=nearbi bin/publish                      # mainnet -> https://nearbi.ai/ledger/
+#   AWS_PROFILE=nearbi bin/publish --network testnet    # testnet -> https://nearbi.ai/ledger/testnet/
+#   bin/publish [--network …] --dry-run                 # build + show what would be uploaded
 #
 # Order of operations (nothing is uploaded unless every step passes):
 #   1. AWS identity check; an expired SSO session exits 3 with "SSO expired" (never logs in)
-#   2. download the live ledger.jsonl; it must stay a prefix of the new one (append-only)
+#   2. download the live ledger.jsonl of this network; it must stay a prefix of the new one (append-only).
+#      A live file from another network (ledger.json "network" differs, e.g. the old testnet ledger that
+#      used to live at /ledger/) is not a reference and is replaced.
 #   3. bin/build-ledger (reconciliation must pass) and bin/verify-ledger on the output
-#   4. aws s3 sync out/ledger/ -> s3://<bucket>/ledger/ (--delete, only under ledger/)
-#   5. CloudFront invalidation of /ledger/*, then a 200 check on the live page
+#   4. upload out/<network>/ledger/ -> s3://<bucket>/<prefix> (sync --delete stays inside the prefix and,
+#      for mainnet, excludes testnet/*)
+#   5. CloudFront invalidation, then 200 checks on the live page
 #
 # Exit codes: 0 published, 1 build/reconcile/verify failed, 2 upload failed, 3 SSO expired.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-DRY=0; [ "${1:-}" = "--dry-run" ] && DRY=1
+DRY=0; NET="$(python3 -c 'import json;print(json.load(open("config.json"))["default_network"])')"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY=1 ;;
+    --network) NET="$2"; shift ;;
+    --network=*) NET="${1#*=}" ;;
+    *) echo "unknown argument $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+cfg() { python3 -c 'import json,sys; c=json.load(open("config.json"))["networks"][sys.argv[1]]; print(c.get(sys.argv[2]) or "")' "$NET" "$1"; }
+SITE="$(cfg site_url)"; PREFIX="$(cfg s3_prefix)"; EXCLUDE="$(cfg s3_exclude)"
+[ -n "$SITE" ] && [ -n "$PREFIX" ] || { echo "network $NET not in config.json" >&2; exit 1; }
 export AWS_PROFILE="${AWS_PROFILE:-nearbi}"
 BUCKET="${NEARBI_SITE_BUCKET:-nearbi-site}"
 DIST="${NEARBI_CF_DIST:-E2UZ7XHTGD4UEU}"
-SITE="https://nearbi.ai/ledger/"
+OUTD="out/$NET/ledger"
+echo "network $NET -> $SITE (s3://$BUCKET/$PREFIX)"
 
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
   echo "SSO expired (aws sts get-caller-identity failed for profile $AWS_PROFILE); not publishing" >&2
   exit 3
 fi
 
-mkdir -p out
-PREV=data/ledger.jsonl
-code=$(curl -s -o out/live-ledger.jsonl -w '%{http_code}' "${SITE}ledger.jsonl" || true)
-if [ "$code" = 200 ] && [ -s out/live-ledger.jsonl ]; then
-  live_n=$(wc -l < out/live-ledger.jsonl); local_n=$( [ -f "$PREV" ] && wc -l < "$PREV" || echo 0)
-  # the longer of (live, local) is the reference; build checks it is a prefix of the rebuild
-  if [ "$live_n" -ge "$local_n" ]; then PREV=out/live-ledger.jsonl; fi
-  echo "append-only reference: $PREV ($(wc -l < "$PREV" | tr -d ' ') lines; live had $live_n)"
+mkdir -p "out/$NET"
+PREV="data/$NET/ledger.jsonl"
+code=$(curl -s -o "out/$NET/live-ledger.jsonl" -w '%{http_code}' "${SITE}ledger.jsonl" || true)
+live_net=$(curl -s "${SITE}ledger.json" | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("network",""))
+except Exception: print("")' || true)
+if [ "$code" = 200 ] && [ -s "out/$NET/live-ledger.jsonl" ]; then
+  if [ "$live_net" != "$NET" ]; then
+    echo "live ${SITE}ledger.jsonl belongs to network '${live_net:-unknown}', not $NET: not an append-only reference (it will be replaced)"
+  else
+    live_n=$(wc -l < "out/$NET/live-ledger.jsonl"); local_n=$( [ -f "$PREV" ] && wc -l < "$PREV" || echo 0)
+    # the longer of (live, local) is the reference; build checks it is a prefix of the rebuild
+    if [ "$live_n" -ge "$local_n" ]; then PREV="out/$NET/live-ledger.jsonl"; fi
+  fi
 fi
+[ -f "$PREV" ] && echo "append-only reference: $PREV ($(wc -l < "$PREV" | tr -d ' ') lines)" || echo "append-only reference: none (first publish of $NET)"
+PREV_ARGS=(); [ -f "$PREV" ] && PREV_ARGS=(--prev "$PREV")
 
-bin/build-ledger --prev "$PREV" || { echo "build/reconcile failed; nothing published" >&2; exit 1; }
-bin/verify-ledger out/ledger/ledger.jsonl || { echo "verify failed; nothing published" >&2; exit 1; }
+bin/build-ledger --network "$NET" ${PREV_ARGS[@]+"${PREV_ARGS[@]}"} || { echo "build/reconcile failed; nothing published" >&2; exit 1; }
+bin/verify-ledger "$OUTD/ledger.jsonl" --network "$NET" || { echo "verify failed; nothing published" >&2; exit 1; }
 
+EX=(); [ -n "$EXCLUDE" ] && EX=(--exclude "$EXCLUDE")
 if [ "$DRY" = 1 ]; then
-  aws s3 sync out/ledger/ "s3://$BUCKET/ledger/" --delete --dryrun
+  aws s3 sync "$OUTD/" "s3://$BUCKET/$PREFIX" --delete ${EX[@]+"${EX[@]}"} --dryrun
   exit 0
 fi
 
 CC="public, max-age=60, must-revalidate"
-up() { aws s3 cp "out/ledger/$1" "s3://$BUCKET/ledger/$1" --cache-control "$CC" --content-type "$2" --only-show-errors; }
+up() { aws s3 cp "$OUTD/$1" "s3://$BUCKET/$PREFIX$1" --cache-control "$CC" --content-type "$2" --only-show-errors; }
 {
   up ledger.jsonl "application/x-ndjson; charset=utf-8" &&
   up ledger.json "application/json; charset=utf-8" &&
   up verify_ledger.py "text/x-python; charset=utf-8" &&
   up index.html "text/html; charset=utf-8" &&
-  aws s3 sync out/ledger/ "s3://$BUCKET/ledger/" --delete --size-only --only-show-errors
+  aws s3 sync "$OUTD/" "s3://$BUCKET/$PREFIX" --delete --size-only ${EX[@]+"${EX[@]}"} --only-show-errors
 } || { echo "upload failed" >&2; exit 2; }
-inv=$(aws cloudfront create-invalidation --distribution-id "$DIST" --paths "/ledger/*" "/ledger" \
+path="/${PREFIX%/}"
+inv=$(aws cloudfront create-invalidation --distribution-id "$DIST" --paths "$path/*" "$path" \
   --query 'Invalidation.Id' --output text) || { echo "invalidation failed" >&2; exit 2; }
 echo "invalidation $inv"
 aws cloudfront wait invalidation-completed --distribution-id "$DIST" --id "$inv" || true
-for p in "" ledger.jsonl ledger.json; do
+for p in "" ledger.jsonl ledger.json verify_ledger.py; do
   printf '%s %s\n' "$(curl -s -o /dev/null -w '%{http_code}' "$SITE$p")" "$SITE$p"
 done
-echo "published $(wc -l < out/ledger/ledger.jsonl | tr -d ' ') events, head $(tail -1 out/ledger/ledger.jsonl | python3 -c 'import sys,json;print(json.loads(sys.stdin.read() or "{}").get("line_hash","-"))')"
+echo "published $NET: $(wc -l < "$OUTD/ledger.jsonl" | tr -d ' ') events, head $(tail -1 "$OUTD/ledger.jsonl" | python3 -c 'import sys,json;print(json.loads(sys.stdin.read() or "{}").get("line_hash","-"))')"

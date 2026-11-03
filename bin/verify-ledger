@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Recheck a ledger file: hash chain, split math, totals; --rpc re-fetches every event from NEAR RPC.
-#   bin/verify-ledger [ledger.jsonl|https://nearbi.ai/ledger/ledger.jsonl] [--rpc]
+#   bin/verify-ledger [ledger.jsonl|https://nearbi.ai/ledger/ledger.jsonl|…/ledger/testnet/ledger.jsonl] [--rpc] [--network mainnet|testnet]
 set -euo pipefail
 cd "$(dirname "$0")/.."
-src="${1:-data/ledger.jsonl}"; shift || true
+src="${1:-data/mainnet/ledger.jsonl}"; shift || true
 if [[ "$src" == http* ]]; then
   mkdir -p out/verify; curl -fsSL "$src" -o out/verify/ledger.jsonl; src=out/verify/ledger.jsonl
 fi

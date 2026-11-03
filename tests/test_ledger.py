@@ -69,12 +69,28 @@ class T(unittest.TestCase):
         b = dict(lines[0], data=d, raw=ev("sale", d))
         self.assertTrue(any("split" in e for e in V.check_rows([b])))
 
-    def test_published_snapshot_verifies(self):
-        p = ROOT / "data" / "ledger.jsonl"
-        if p.exists():
-            lines = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
-            self.assertEqual(V.check_chain(lines)[0], [])
-            self.assertEqual(V.check_rows(lines), [])
+    def test_published_snapshots_verify(self):
+        for net in ("testnet", "mainnet"):
+            p = ROOT / "data" / net / "ledger.jsonl"
+            if p.exists():
+                lines = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+                self.assertEqual(V.check_chain(lines)[0], [], net)
+                self.assertEqual(V.check_rows(lines), [], net)
+                if lines:
+                    self.assertEqual(V.infer_network(lines), net)
+
+    def test_forwarder_events_dont_move_splitter_totals_and_mainnet_explorer(self):
+        fwd = {"order_id": "o1", "amount": "49000000"}
+        raw = "EVENT_JSON:" + json.dumps({"standard": "nearbi_forwarder", "version": "1.0.0", "event": "forwarded", "data": [fwd]})
+        b = {"seq": 0, "kind": "forwarded", "standard": "nearbi_forwarder", "data": fwd, "raw": raw, "amounts": {"amount": "49000000"},
+             "order_id": "o1", "token": None, "tx_hash": "TX", "receipt_id": "R", "log_index": 0,
+             "explorer": "https://nearblocks.io/txns/TX"}
+        ln = V.seal(b, V.GENESIS)
+        self.assertEqual(V.infer_network([ln]), "mainnet")
+        self.assertEqual(V.check_rows([ln]), [])
+        self.assertEqual(V.totals([ln]), ({}, {}))
+        self.assertTrue(V.check_rows([dict(ln, standard="nearbi_splitter")]), "standard must match the raw event")
+        self.assertTrue(V.check_rows([ln], explorer=V.EXPLORER), "testnet explorer link on a mainnet row is rejected")
 
 
 if __name__ == "__main__":
