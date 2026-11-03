@@ -75,7 +75,9 @@ export function membersPage(p: {
   <a class="btn pri" id="subscribe" href="/members/checkout">${esc(subscribeLabel)}</a>
   ${sub.active ? `<a class="btn" href="/members/container">Container access</a>` : ""}
   <p class="muted small">Pay in any token through NEAR Intents; it settles as USDC on NEAR. Access starts when the payment is confirmed.${
-    p.paymentsLive ? "" : " <b>Payments are in preview and not enabled yet.</b>"
+    p.paymentsLive
+      ? ' Payments settle as USDC on NEAR into an onchain revenue splitter; see the <a href="/ledger/">public ledger</a>.'
+      : " <b>Payments are in preview and not enabled yet.</b>"
   }</p>
 </div>
 <h2 class="sec">Reports</h2>
@@ -89,7 +91,9 @@ export function checkoutPage(p: { accountId: string; sub: SubscriptionState; pri
     p.mode === "dry"
       ? `<div class="stub-warning" id="preview-banner" role="alert"><b>Preview: payments not enabled yet.</b> Quotes below are real NEAR Intents
   prices (DRY quotes), but no deposit address is issued, so there is nothing to pay. Do not send funds anywhere.</div>`
-      : "";
+      : `<div class="live-note" id="live-note"><b>Live payments.</b> Payments settle as USDC on NEAR into an onchain revenue splitter;
+  see the <a href="/ledger/">public ledger</a>. NEAR Intents delivers the USDC to <code>forwarder.nearbi.near</code>, a contract that
+  can only pass it on into <code>splitter.nearbi.near</code>, which pays 10% to contributors and 90% to the NearBI treasury.</div>`;
   return layout(
     "Subscribe",
     `<h1>Subscribe: $${esc(p.priceUsd)}/month</h1>

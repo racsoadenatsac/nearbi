@@ -232,7 +232,12 @@ describe("billing over HTTP", () => {
     expect(html).toContain("/js/checkout.js");
     const live = setup({ INTENTS_MODE: "live", SETTLEMENT_RECIPIENT: "treasury.nearbi.near" });
     const c2 = (await live.signIn()).cookie;
-    expect(await (await live.req("/members/checkout", { cookie: c2 })).text()).not.toContain("Preview: payments not enabled yet");
+    const liveHtml = await (await live.req("/members/checkout", { cookie: c2 })).text();
+    expect(liveHtml).not.toContain("Preview: payments not enabled yet");
+    expect(liveHtml).toContain("Payments settle as USDC on NEAR into an onchain revenue splitter");
+    expect(liveHtml).toContain('href="/ledger/"');
+    expect(liveHtml).toContain('data-mode="live"');
+    expect(html).not.toContain("live-note");
   });
 
   it("confirm requires the admin token", async () => {
