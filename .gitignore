@@ -22,3 +22,4 @@ res/*.wasm.tmp
 *.json.key
 near-credentials/
 deploy/state/*.local.*
+target-repro/
