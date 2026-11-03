@@ -107,7 +107,7 @@ step "agent key tries set_split(5000) -> must be rejected"
 if fc_call set_split '{"split_bps_contributors":5000}' 2>/dev/null; then
   echo "    !!! set_split with the function-call key SUCCEEDED -- key scope is wrong" >&2; exit 1
 else
-  echo "    rejected: $(printf '%s\n' "$NEAR_OUT" | grep -oiE 'MethodNameMismatch[^,]*|method name[^.]*|DepositWithFunctionCall|not allowed[^.]*' | head -1)"
+  echo "    rejected: $(printf '%s\n' "$NEAR_OUT" | grep -oiE "Transaction method name <[a-z_]+> isn't allowed by the access key|MethodNameMismatch" | head -1)"
 fi
 
 step "stats"; view "$SPLITTER" get_stats '{}' | python3 -m json.tool | sed 's/^/    /'
