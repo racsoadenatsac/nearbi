@@ -3,7 +3,7 @@ import { MemoryRepository } from "../../src/adapters/memory-repository";
 import { loadIntentsConfig } from "../../src/config";
 import { IntentsAdapter, OneClickClient, USDC_ON_NEAR } from "../../src/intents";
 import type { Repository } from "../../src/ports/repository";
-import { CheckoutError, confirmPayment, createCheckout, pollPaymentStatus, type BillingDeps } from "../../src/services/billing";
+import { CheckoutError, confirmPayment, createCheckout, LATE_SUCCESS_WINDOW, pollPaymentStatus, sweepOpenPayments, type BillingDeps } from "../../src/services/billing";
 import { fakeOneClick, statusBody } from "../helpers/oneclick";
 
 const ts = (iso: string) => Math.floor(Date.parse(iso) / 1000);
@@ -274,3 +274,110 @@ describe("mode switch (loadIntentsConfig)", () => {
   it("reads the optional JWT from ONECLICK_JWT", () => expect(loadIntentsConfig({ ONECLICK_JWT: "j" }).jwt).toBe("j"));
 });
 
+
+describe("background sweep (EventBridge Scheduler -> sweepOpenPayments)", () => {
+  it("confirms a SUCCESS nobody is watching, queues it for forwarding with the settled amount, then closes it", async () => {
+    const { d, repo, co, f } = await withPending();
+    expect((await repo.listOpenPayments(10)).map((x) => x.paymentId)).toEqual([co.paymentId]);
+
+    let r = await sweepOpenPayments(d, now + 60);
+    expect(r).toMatchObject({ open: 1, checked: 1, closed: 0, paid: 0, errors: 0 });
+    expect((await repo.getPayment(co.paymentId))?.status).toBe("pending");
+
+    setStatus(f, co.depositAddress!, "SUCCESS", { amountOut: "49000123" });
+    r = await sweepOpenPayments(d, now + 120);
+    expect(r).toMatchObject({ open: 1, checked: 1, closed: 1, paid: 1 });
+    expect(await repo.getPayment(co.paymentId)).toMatchObject({ status: "paid", settledAmountOut: "49000123", forwardedTx: null });
+    expect((await repo.getSubscription("alice.near"))?.status).toBe("active");
+    expect(await repo.listForwardQueue(10)).toEqual([
+      {
+        paymentId: co.paymentId,
+        amount: "49000123",
+        recipient: "treasury.nearbi.near",
+        destinationAsset: USDC_ON_NEAR,
+        depositAddress: co.depositAddress,
+        settlementTx: "DestTxSynthetic1111111111111111111111111111",
+        enqueuedAt: now + 120,
+      },
+    ]);
+    expect(await repo.listOpenPayments(10)).toEqual([]);
+
+    // the page poller seeing it afterwards changes nothing
+    await pollPaymentStatus(d, co.paymentId, "alice.near", now + 200);
+    expect((await repo.getSubscription("alice.near"))?.currentPeriodEnd).toBe(ts("2026-12-02T00:02:00Z"));
+    expect(await repo.listForwardQueue(10)).toHaveLength(1);
+  });
+
+  it("sweep and page poll racing on SUCCESS extend once and queue once", async () => {
+    const { d, repo, co, f } = await withPending();
+    setStatus(f, co.depositAddress!, "SUCCESS");
+    await Promise.all([sweepOpenPayments(d, now + 60), pollPaymentStatus(d, co.paymentId, "alice.near", now + 60), sweepOpenPayments(d, now + 60)]);
+    expect((await repo.getSubscription("alice.near"))?.currentPeriodEnd).toBe(ts("2026-12-02T00:01:00Z"));
+    expect(await repo.listForwardQueue(10)).toHaveLength(1);
+  });
+
+  it("refunded / failed close without queueing; expired stays watched for the late-success window", async () => {
+    const a = await withPending();
+    setStatus(a.f, a.co.depositAddress!, "REFUNDED");
+    expect(await sweepOpenPayments(a.d, now + 60)).toMatchObject({ closed: 1, paid: 0 });
+    expect(await a.repo.listForwardQueue(10)).toEqual([]);
+
+    const b = await withPending();
+    const deadline = (await b.repo.getPayment(b.co.paymentId))!.deadline!;
+    await sweepOpenPayments(b.d, deadline + 16 * 60);
+    expect((await b.repo.getPayment(b.co.paymentId))?.status).toBe("expired");
+    expect(await b.repo.listOpenPayments(10)).toHaveLength(1); // still watched
+    setStatus(b.f, b.co.depositAddress!, "SUCCESS");
+    expect(await sweepOpenPayments(b.d, deadline + 3600)).toMatchObject({ paid: 1, closed: 1 }); // late SUCCESS honoured
+
+    const c = await withPending();
+    const dl = (await c.repo.getPayment(c.co.paymentId))!.deadline!;
+    await sweepOpenPayments(c.d, dl + 16 * 60);
+    expect(await sweepOpenPayments(c.d, dl + LATE_SUCCESS_WINDOW + 1)).toMatchObject({ closed: 1, paid: 0 });
+    expect(await c.repo.listOpenPayments(10)).toEqual([]);
+  });
+
+  it("SUCCESS without a reported amountOut is queued with amount null (the agent must not guess)", async () => {
+    const { d, repo, co, f } = await withPending();
+    const body = statusBody("SUCCESS", f.issued.get(co.depositAddress!)!);
+    delete body.swapDetails.amountOut;
+    f.statuses.set(co.depositAddress!, body);
+    await sweepOpenPayments(d, now + 60);
+    expect((await repo.listForwardQueue(10))[0]?.amount).toBeNull();
+    expect((await repo.getPayment(co.paymentId))?.status).toBe("paid");
+  });
+
+  it("a mismatching 1Click payload is neither confirmed nor queued", async () => {
+    const { d, repo, co, f } = await withPending();
+    const body = statusBody("SUCCESS", f.issued.get(co.depositAddress!)!);
+    body.quoteResponse.quoteRequest.recipient = "attacker.near";
+    f.statuses.set(co.depositAddress!, body);
+    await sweepOpenPayments(d, now + 60);
+    expect((await repo.getPayment(co.paymentId))?.status).toBe("pending");
+    expect(await repo.listForwardQueue(10)).toEqual([]);
+    expect(await repo.listOpenPayments(10)).toHaveLength(1);
+  });
+
+  it("ft_transfer_call delivery (straight into the splitter) is never queued for forwarding", async () => {
+    const { d, repo, co, f } = await withPending({ ...LIVE, SETTLEMENT_DELIVERY: "ft_transfer_call", SETTLEMENT_ACCEPT_NO_REFUND: "yes" });
+    setStatus(f, co.depositAddress!, "SUCCESS");
+    await sweepOpenPayments(d, now + 60);
+    expect((await repo.getPayment(co.paymentId))?.status).toBe("paid");
+    expect(await repo.listForwardQueue(10)).toEqual([]);
+  });
+
+  it("stops at the time budget and reports truncated; one bad payment doesn't stop the rest", async () => {
+    const x = deps();
+    for (let i = 0; i < 3; i++) await createCheckout(x.d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC });
+    let t = 0;
+    const r = await sweepOpenPayments(x.d, now + 60, { budgetMs: 15, clock: () => (t += 10) });
+    expect(r).toMatchObject({ open: 3, truncated: true });
+    expect(r.checked).toBeLessThan(3);
+
+    const orig = x.repo.getPayment.bind(x.repo);
+    let calls = 0;
+    x.repo.getPayment = async (id: string) => (++calls === 1 ? Promise.reject(new Error("boom")) : orig(id));
+    const r2 = await sweepOpenPayments(x.d, now + 120);
+    expect(r2).toMatchObject({ open: 3, errors: 1, checked: 2 });
+  });
+});

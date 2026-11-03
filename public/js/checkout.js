@@ -72,6 +72,7 @@ function render(v) {
       <dt>Quote id</dt><dd class="small muted"><code>${esc(v.quoteId ?? "")}</code> · payment <code>${esc(v.paymentId)}</code></dd>
     </dl>
     ${v.qrSvg ? `<div class="qr" aria-label="QR code of the deposit address">${v.qrSvg}</div>` : ""}
+    ${!preview && !TERMINAL.has(v.status) ? `<p class="muted small">You can close this page: the payment is also checked in the background every minute, and your subscription starts once NEAR Intents reports it complete.</p>` : ""}
     ${v.status === "paid" ? `<p><a class="btn pri" href="/members">Go to your reports</a></p>` : ""}`;
   $("#copy")?.addEventListener("click", () => navigator.clipboard?.writeText(v.depositAddress));
   countdown(TERMINAL.has(v.status) ? null : v.deadline);

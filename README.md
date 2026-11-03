@@ -7,9 +7,11 @@ site (`./public`) is plain static files in S3 behind the same CloudFront distrib
 
 Part of the NEAR Hackathon one-agent research shop. See `rs-docs/ARCHITECTURE.md`.
 
-> Status: deployed at https://nearbi.ai through `../nearbi-infra` (OpenTofu). Payments run in
-> **`INTENTS_MODE=dry`**: checkout shows real NEAR Intents prices, but no deposit address is issued, so
-> nothing can be paid yet. See [Payments](#payments-near-intents-1click) for what live mode needs.
+> Status (v0.4.0): deployed at https://nearbi.ai through `../nearbi-infra` (OpenTofu). Payments are
+> **LIVE on NEAR mainnet** (`INTENTS_MODE=live`): checkout issues real 1Click deposit addresses, revenue
+> settles as USDC on NEAR to `forwarder.nearbi.near` (plain `ft_transfer`), the forwarding agent
+> (`rs-agent bin/forwarder-runner`) passes each order into `splitter.nearbi.near`, and every sale is on
+> the public ledger (https://nearbi.ai/ledger/). See [Payments](#payments-near-intents-1click).
 
 ## What is real and what is stubbed
 
@@ -20,8 +22,9 @@ Part of the NEAR Hackathon one-agent research shop. See `rs-docs/ARCHITECTURE.md
 | NEAR RPC `view_access_key` check (full-access keys only) | **Real** code; tests use a mocked `fetch` |
 | Session cookie (HMAC-SHA256, HttpOnly/Secure/SameSite=Lax, 7 days) | **Real** |
 | Subscription period math (calendar month, clamping, stacking) | **Real** |
-| Checkout: **NEAR Intents 1Click quote** | **Real** (`src/intents/`): live token list, EXACT_OUTPUT quotes for the price in the settlement asset. `INTENTS_MODE=dry` (deployed) uses DRY quotes: real prices, no deposit address, "Preview: payments not enabled yet" banner |
-| Payment status | **Real** code: `GET /billing/status/:id` polls 1Click and extends the subscription once on `SUCCESS`. Exercised offline only (live statuses can't exist without a real deposit) |
+| Checkout: **NEAR Intents 1Click quote** | **Real** (`src/intents/`): live token list, EXACT_OUTPUT quotes for the price in the settlement asset. Deployed with `INTENTS_MODE=live` (real deposit addresses, recipient `forwarder.nearbi.near`). `dry` uses DRY quotes and shows a "Preview" banner |
+| Payment status | **Real** code: `GET /billing/status/:id` (checkout page, every 10 s) and the **scheduled sweep** (EventBridge Scheduler → same Lambda, every minute) poll 1Click and extend the subscription once on `SUCCESS`. Exercised offline; the first real payment is the operator's |
+| Forwarding into the splitter | **Real**, outside this app: a 1Click `SUCCESS` is written to the `FWDQ` queue; `rs-agent bin/forwarder-runner` (operator's Mac, Keychain key) calls `forward(order_id, amount)` and marks the payment `forwardedTx` |
 | Payment confirmation override | **Manual**: `POST /billing/confirm` with `ADMIN_TOKEN` |
 | Gating (public / session / subscriber) | **Real** |
 | Private content: HTML proxied from S3, everything else via presigned S3 GET | **Real** code; presigning is tested offline, S3 reads with a fake client |
@@ -49,7 +52,8 @@ src/
                    amounts (BigInt), settlement rules, 1Click status -> payment state
   services/        billing (tokens/checkout/status/confirm), registry (issue/validate): core + Repository
   app.ts           Hono app; all dependencies injected
-  lambda.ts        AWS Lambda entry (hono/aws-lambda), wires DynamoDB + S3
+  lambda.ts        AWS Lambda entry (hono/aws-lambda), wires DynamoDB + S3; routes scheduler events to scheduled.ts
+  scheduled.ts     EventBridge Scheduler tasks ({"nearbiTask":"sweep-payments"} -> background payment sweep)
   dev.ts           local dev server (in-memory storage, serves ./public)
   seed.ts          seed the report catalog into DynamoDB (operator-run)
   config.ts, catalog.ts, pages.ts
@@ -179,7 +183,9 @@ One table, on-demand billing. Key schema: `PK` (S, partition) + `SK` (S, sort). 
 | Account | `ACCT#<accountId>` | `PROFILE` | `createdAt` (`if_not_exists`), `lastLoginAt` | Update on every login |
 | Subscription | `ACCT#<accountId>` | `SUB` | `status`, `currentPeriodEnd`, `lastPaymentTx`, `updatedAt` | Get (consistent) on every gated request |
 | Current registry token | `ACCT#<accountId>` | `RTOKEN` | `tokenHash` | pointer used to revoke the previous token |
-| Payment | `PAY#<paymentId>` | `PAYMENT` | `accountId`, `amountUsd`, `token`, `depositAddress`, `status`, `txHash`, `createdAt`, `paidAt`, `quoteJson`, `mode`, `quoteId`, `depositMemo`, `destinationAsset`, `recipient`, `amountIn`, `amountInFormatted`, `minAmountIn`, `amountOut`, `deadline`, `intentsStatus`, `checkedAt`, `settlementTx` | Put on checkout, Get + conditional Update on status poll, Get on confirm. Stub-era items read back with the 1Click fields null |
+| Payment | `PAY#<paymentId>` | `PAYMENT` | `accountId`, `amountUsd`, `token`, `depositAddress`, `status`, `txHash`, `createdAt`, `paidAt`, `quoteJson`, `mode`, `quoteId`, `depositMemo`, `destinationAsset`, `recipient`, `amountIn`, `amountInFormatted`, `minAmountIn`, `amountOut`, `deadline`, `intentsStatus`, `checkedAt`, `settlementTx`, `settledAmountOut`, `forwardedTx` (+ `forwardedAt`, `forwardedAmount`, written by the forwarding agent) | Put on checkout, Get + conditional Update on status poll, Get on confirm. Stub-era items read back with the 1Click fields null |
+| Open live payment | `OPENPAY` | `PAY#<paymentId>` | `paymentId`, `createdAt`, `deadline` | Put with the live payment (same `TransactWriteItems`); Query `PK = OPENPAY` by the scheduled sweep; Delete when paid/refunded/failed, or 24 h past the deadline when expired |
+| Forward queue | `FWDQ` | `PAY#<paymentId>` | `paymentId`, `amount` (settled `amountOut`, base units, or null), `recipient`, `destinationAsset`, `depositAddress`, `settlementTx`, `enqueuedAt` | Put (`attribute_not_exists`) on 1Click `SUCCESS`, **before** the subscription is extended; read and deleted by the forwarding agent (`rs-agent`) after `forward` is final onchain |
 | Tx-hash claim | `TX#<txHash>` | `TX` | `paymentId`, `accountId` | makes a tx hash usable once |
 | Registry token | `RTOK#<sha256(token)>` | `RTOKEN` | `accountId`, `expiresAt`, `revoked`, `createdAt`, `ttl` (= expiry + 90 days) | Get by hash on validation |
 | Catalog entry | `CATALOG` | `REPORT#<slug>` | `slug`, `title`, `summary`, `publishedAt`, `isFree`, `pdfFile` | Query `PK = CATALOG` for the members page |
@@ -341,10 +347,44 @@ customer; the order id is the only link. Live mode requires `SETTLEMENT_ACCEPT_N
    real test payment).
 4. Optional: get a partner JWT and store it as the `ONECLICK_JWT` secret.
 5. Build the forwarder (for `transfer`) and a scheduled poller (EventBridge → status check for pending
-   payments), since today only an open checkout page polls; a user who closes the tab is confirmed on
-   their next visit to the page or by the admin override.
+   payments). **Done in v0.4.0**: the sweep below, and `rs-agent bin/forwarder-runner`.
 6. Set `INTENTS_MODE=live` + `SETTLEMENT_RECIPIENT`; the Lambda won't start if the recipient isn't a
    mainnet account. Make one small real payment and follow it on explorer.near-intents.org.
+   **Done 2026-11-03** (recipient `forwarder.nearbi.near`, delivery `transfer`); the first real payment is
+   the operator's.
+
+### Live configuration (since v0.4.0)
+
+| Setting | Value |
+|---|---|
+| `INTENTS_MODE` | `live` |
+| `SETTLEMENT_RECIPIENT` | `forwarder.nearbi.near` (rs-payments forwarder v0.2.0; can only send into `splitter.nearbi.near`) |
+| `SETTLEMENT_ASSET` | `nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1` (Circle USDC, 6 decimals) |
+| `SETTLEMENT_DELIVERY` | `transfer` (plain `ft_transfer`, refundable by the Verifier if it fails) |
+| Split | `splitter.nearbi.near`: 10 % `contributors.nearbi.near`, 90 % `nearbi.near` |
+
+The checkout and members pages say, in live mode: "Payments settle as USDC on NEAR into an onchain revenue
+splitter; see the public ledger", and name the forwarder and splitter accounts.
+
+### Background confirmation (scheduled sweep)
+
+EventBridge Scheduler (`nearbi-payment-sweep`, `rate(1 minute)`, in `../nearbi-infra/tofu/scheduler.tf`)
+invokes the same Lambda with the fixed input `{"nearbiTask":"sweep-payments"}`. `src/lambda.ts` routes that
+shape (no `requestContext`, so no HTTP request can produce it) to `sweepOpenPayments()`:
+
+- Query `PK = OPENPAY` (every live payment is indexed there atomically with its creation), then per payment
+  the same `refreshPayment()` the checkout page uses: 1Click `/status`, quote match, status mapping,
+  once-only `confirmPayment()`. Running it concurrently with the page poller is safe.
+- On `SUCCESS` with `SETTLEMENT_DELIVERY=transfer`: store `settledAmountOut` (1Click `swapDetails.amountOut`)
+  and put the payment on the `FWDQ` forward queue **before** extending the subscription.
+- The index entry is removed once the payment is `paid` / `refunded` / `failed`, or 24 h after the deadline
+  for `expired` ones (a late `SUCCESS` inside that window still confirms; later only via the page or the
+  admin override).
+- 7 s time budget per run (Lambda timeout 10 s), at most 100 payments; the rest is picked up next minute.
+- Each run logs one JSON line: `{"task":"sweep-payments","mode":"live","open":…,"checked":…,"closed":…,"paid":…,"errors":…,"truncated":…}`.
+
+The admin override (`POST /billing/confirm`) does **not** queue a forward (it has no settled amount);
+forward such a payment by hand with `rs-agent bin/forwarder-runner --order <paymentId> --amount <base units>`.
 
 ## Deploy: AWS resources
 
