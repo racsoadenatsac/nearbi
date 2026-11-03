@@ -5,14 +5,15 @@
 #   * private_key / secret_key / seed phrase fields
 #   * AWS access keys / secret keys and the CloudFront x-origin-verify value
 #   * 12/15/18/21/24-word runs where every word is in the BIP-39 English list
-# Exits 1 on any hit.
+# Exits 1 on any hit. Usage: bin/check-secrets.sh [repo-dir]  (default: this repo)
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SELF="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "${1:-$SELF}" && pwd)"   # optional: scan another repo
 cd "$ROOT"
-WL="$ROOT/.tools/bip39-english.txt"
+WL="$SELF/.tools/bip39-english.txt"
 WL_SHA=2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda
 if [ ! -f "$WL" ]; then
-  mkdir -p "$ROOT/.tools"
+  mkdir -p "$SELF/.tools"
   curl -fsSL -o "$WL.tmp" https://raw.githubusercontent.com/bitcoin/bips/master/bip-0039/english.txt \
     && echo "$WL_SHA  $WL.tmp" | shasum -a 256 -c - >/dev/null && mv "$WL.tmp" "$WL" \
     || { rm -f "$WL.tmp"; echo "warning: BIP-39 wordlist unavailable; seed-phrase word check skipped" >&2; }
