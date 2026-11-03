@@ -1,0 +1,2 @@
+nep245,ev,logs,ex
+91447,271293,271293,"EVENT_JSON:{""standard"":""nep245"",""version"":""1.0.0"",""event"":""mt_transfer"",""data"":[{""old_owner_id"":""6247d9c671ca6a80cf2c75e26edb8cd75ebf00fcd3c56c39107d6ca20c9cfb29"",""new_owner_id"":""7066024d3f20f94de601c003163367873cca78507eeca4df66d9be645f197f05"",""token_ids"":[""nep141:tron.omft.near""],""amounts"":[""64""]}"

@@ -1,0 +1,114 @@
+{
+  "stage": {
+    "s1_tx_accounts": {
+      "sql_sha256": "972b365f10230bb3d78ef07379122bf45ffb236de2b5b9748c84f95af3a9c338",
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 149538772221,
+      "bytes_billed": 149539520512,
+      "rows": 84898409,
+      "executed_at": "2026-11-02T22:33:23+00:00"
+    },
+    "s2_receipt_roles": {
+      "sql_sha256": "b54a0fd46bbbfae4d026a377adc2998f3c4bfc5aacd7e4a677515a03a9899219",
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 395911746589,
+      "bytes_billed": 395911888896,
+      "rows": 877315189,
+      "executed_at": "2026-11-02T22:33:58+00:00"
+    },
+    "s3_intents_token_flows": {
+      "sql_sha256": "8b84eb2990d645a7e7f7233864b3e8655dc998a662fe636ef634d8e10355e8b8",
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 168521376885,
+      "bytes_billed": 168521891840,
+      "rows": 33187,
+      "executed_at": "2026-11-02T22:34:03+00:00"
+    },
+    "s4_nep245_sample": {
+      "sql_sha256": "90b140e5399019d623b0cad84efd3003f828befdea415e2effdaab45c8450b9b",
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 88455378373,
+      "bytes_billed": 88455774208,
+      "rows": 934270,
+      "executed_at": "2026-11-02T22:34:10+00:00"
+    },
+    "s5_relayed_gapfill": {
+      "sql_sha256": "97573f84bf1a9490422b88a3f94458263d4b62e8e231dd99bd6da30ac26f59ab",
+      "window": [
+        "2024-10-28",
+        "2025-03-02"
+      ],
+      "bytes_processed": 163827113380,
+      "bytes_billed": 163827417088,
+      "rows": 216573342,
+      "executed_at": "2026-11-02T22:41:56+00:00"
+    }
+  },
+  "generated_at": "2026-11-02T22:46:50+00:00",
+  "dataset": "bigquery-public-data.crypto_near_mainnet_us",
+  "queries": {
+    "q1_weekly_usage": {
+      "sql_sha256": "9407d75aa2c15ca5d91c8d192e1ab4f46d94103d2eb4db043bd36f2046f87ee8",
+      "result_sha256": "d9d7733890d6bbdbcb95fcb68ea83b1cb717a76b0b51185cb1af613eaf7c0071",
+      "rows": 701,
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 76896582200
+    },
+    "q2_intents_flows": {
+      "sql_sha256": "04d2596d9bf7a823f801589b352639e55e046a9618ffe67cc11e21bfb99372e6",
+      "result_sha256": "12aee07ffb4f39abfb85470dd6648d37eb1f650fcd1f148f335d1e17c6a8418c",
+      "rows": 1526,
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 3865341
+    },
+    "q3_nep245_sample": {
+      "sql_sha256": "7e0e479e98790fe785038de923258b35f8d755d0bbf658713a1ab05745e9d877",
+      "result_sha256": "2911bcced94a5ab039a95550e812eba7758ae58c8b0e395d6baf7586f021c5e5",
+      "rows": 25,
+      "window": [
+        "2024-10-28",
+        "2026-10-25"
+      ],
+      "bytes_processed": 80591168
+    }
+  },
+  "fetches": {
+    "near_usdt_weekly": {
+      "spec_sha256": "52621f30a58cfac9507b0ba17ac1702be97157e37e2832646d6166806e3960b0",
+      "source": "https://api.binance.com/api/v3/klines?symbol=NEARUSDT&interval=1w&startTime=1730073600000&endTime=1792972799999&limit=1000",
+      "sha256": "14d079c20d763aef73afa445e49834cb0f43cf6c682ccd8ab7a2025c6d3746f5",
+      "bytes": 18300,
+      "fetched_at": "2026-11-02T22:37:35+00:00"
+    }
+  },
+  "derived": {
+    "analysis_sha256": "77dbd92d7ca073f4474be904f4c16304e5443006599fb67821c4da31d864359e",
+    "files": {
+      "a_chains.csv": "43fbe3ddc9187078a324dc8f885634d75641898b2648a171b91750f7fdc8f3b8",
+      "a_facts.csv": "89fd6c6619ca5c5d5f1e2a4ffcdfb2bc091180f45000fcae209a762e9173ca51",
+      "a_families.csv": "1184e4faf27c47185b4b01139058b2b0e1e8d655376214188522f1910acaa6f2",
+      "a_nep245.csv": "83077dee866a0b370079efdc6e0eb100a137633b29dc86c54fdcf6d8eb5843d9",
+      "a_oos.csv": "7931d697d02a8e06da7c1f14fbf522f237951b3f0a489f548a50d155d6bb305c",
+      "a_weekly.csv": "16fd7375dfc927c355f5bc53aa9cbc41e6acaf57e47fcc77d254c76bc751462b",
+      "a_xcorr.csv": "e7857106ee4f3efb109ec02b5892404a398706f11e1d3be640f8a5e7d2b441fa"
+    }
+  }
+}

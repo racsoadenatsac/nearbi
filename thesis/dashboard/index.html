@@ -1,0 +1,1174 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NEAR thesis: is Intents volume a leading indicator of real usage?</title>
+<link rel="stylesheet" href="site.css">
+<style>
+.chart img { width:100%; border-radius:8px; border:1px solid #e3e2da; background:#fff }
+.chart .say { color:var(--ink); font-size:16px; margin:12px 0 8px }
+details { margin:6px 0 } summary { cursor:pointer; color:var(--muted); font-size:14px }
+details pre { max-height:420px; font-size:12px }
+.stack { display:grid; gap:22px }
+table { border-collapse:collapse; font-size:14px } td { padding:4px 12px 4px 0 }
+</style>
+</head><body>
+<div class="hero">
+  <header class="nav" style="padding-left:20px;padding-right:20px"><a class="brand" href="#" style="color:#eef3ec">NearBI</a><a href="#charts" style="color:#b9c7bd">Charts</a><a href="#repro" style="color:#b9c7bd">Reproduce</a></header>
+  <div class="in">
+    <h1>Is NEAR Intents volume a <em>leading indicator</em> of real usage?</h1>
+    <p>We tested it on 104 weeks of on-chain data. Neither Intents activity nor the NEAR price leads real-user growth. Intents grew while NEAR's own user base shrank: it measures a different population.</p>
+  </div>
+</div>
+<section id="charts"><div class="wrap stack">
+<div class="card chart"><img src="../charts/c1_real_users_by_family.png" alt="Real users (signers plus relayed end users, minus accounts with 1,000+ actions a week) were dominated by one app: KaiChing sub-accounts were 82.9% of all account-weeks and disappeared in April 2026; outside KaiChing, weekly real users fell from 3,699,019 to 284,872 (92.3% lower)."><p class="say">Real users (signers plus relayed end users, minus accounts with 1,000+ actions a week) were dominated by one app: KaiChing sub-accounts were 82.9% of all account-weeks and disappeared in April 2026; outside KaiChing, weekly real users fell from 3,699,019 to 284,872 (92.3% lower).</p><details><summary><code>stage/s1_tx_accounts.sql</code></summary><pre>-- name: s1_tx_accounts  (HEAVY, run once)
+-- One row per (ISO week, signing account): how many transactions it signed that
+-- week, how many of them went straight to intents.near, and on how many days it was active.
+-- Columns read: block_date, signer_account_id, receiver_account_id (no args/payloads).
+-- window: 2024-10-28 .. 2026-10-25 = 104 full ISO weeks (Monday .. Sunday)
+CREATE OR REPLACE TABLE `{stage}.s1_tx_accounts` AS
+SELECT
+  DATE_TRUNC(block_date, ISOWEEK)            AS week,
+  signer_account_id                          AS account_id,
+  COUNT(*)                                   AS n_tx,
+  COUNTIF(receiver_account_id = &#x27;intents.near&#x27;) AS n_tx_to_intents,
+  COUNT(DISTINCT block_date)                 AS active_days
+FROM `bigquery-public-data.crypto_near_mainnet_us.transactions`
+WHERE block_date BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+GROUP BY week, account_id
+</pre></details><details><summary><code>stage/s2_receipt_roles.sql</code></summary><pre>-- name: s2_receipt_roles  (HEAVY, run once)
+-- From receipt-level actions, two things in a single scan:
+--   role &#x27;relayed_user&#x27;   : DELEGATE_ACTION rows (is_delegate_action = TRUE). On NEAR a
+--                           meta-transaction&#x27;s delegate receipt is addressed to the end
+--                           user (receiver); signer/predecessor are the relayer. So the
+--                           relayed end user is receipt_receiver_account_id.
+--   role &#x27;intents_action&#x27; : every action executed on intents.near (all callers: solvers,
+--                           relayers, users, token contracts forwarding deposits).
+-- Columns read: block_date, is_delegate_action, receipt_receiver_account_id.
+-- window: 2024-10-28 .. 2026-10-25 = 104 full ISO weeks
+CREATE OR REPLACE TABLE `{stage}.s2_receipt_roles` AS
+SELECT
+  DATE_TRUNC(block_date, ISOWEEK) AS week,
+  IF(is_delegate_action, &#x27;relayed_user&#x27;, &#x27;intents_action&#x27;) AS role,
+  receipt_receiver_account_id     AS account_id,
+  COUNT(*)                        AS n_actions,
+  COUNT(DISTINCT block_date)      AS active_days
+FROM `bigquery-public-data.crypto_near_mainnet_us.receipt_actions`
+WHERE block_date BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+  AND (is_delegate_action OR receipt_receiver_account_id = &#x27;intents.near&#x27;)
+GROUP BY week, role, account_id
+</pre></details><details><summary><code>stage/s5_relayed_gapfill.sql</code></summary><pre>-- name: s5_relayed_gapfill  (HEAVY, run once)
+-- Data-quality fix found by probe p7: before late February 2025 the public dataset has
+-- DELEGATE_ACTION rows whose is_delegate_action flag is FALSE (on 2025-01-15 every one of
+-- them; on 2025-03-15 flag and action_kind agree exactly). s2 keys on the flag, so it
+-- misses relayed users in the early weeks. This table re-derives relayed end users from
+-- action_kind = &#x27;DELEGATE_ACTION&#x27; for the first 18 ISO weeks (through the week in which the
+-- flag starts). q1 takes relayed users from s5 for weeks &lt;= 2025-02-24 and from s2 after,
+-- so no week is counted from both tables.
+-- Columns read: block_date, action_kind, receipt_receiver_account_id.
+-- window: 2024-10-28 .. 2025-03-02 (18 ISO weeks)
+CREATE OR REPLACE TABLE `{stage}.s5_relayed_gapfill` AS
+SELECT
+  DATE_TRUNC(block_date, ISOWEEK) AS week,
+  receipt_receiver_account_id     AS account_id,
+  COUNT(*)                        AS n_actions,
+  COUNT(DISTINCT block_date)      AS active_days
+FROM `bigquery-public-data.crypto_near_mainnet_us.receipt_actions`
+WHERE block_date BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2025-03-02&#x27;
+  AND action_kind = &#x27;DELEGATE_ACTION&#x27;
+GROUP BY week, account_id
+</pre></details><details><summary><code>queries/q1_weekly_usage.sql</code></summary><pre>-- name: q1_weekly_usage
+-- question: Per ISO week, how many accounts used NEAR, split by account family, and how
+--           many of them look like real users rather than automation?
+-- reads: {stage}.s1_tx_accounts (tx signers), {stage}.s2_receipt_roles (relayed end users
+--        + actions on intents.near) and {stage}.s5_relayed_gapfill (relayed end users for
+--        the weeks before the dataset&#x27;s is_delegate_action flag is populated). s2 is ~60 GB,
+--        so it is read ONCE, here.
+-- relayed source: s5 (action_kind = DELEGATE_ACTION) for weeks &lt;= 2025-02-24, s2 (flag)
+--        from 2025-03-03; flagged_relayed_week shows what the flag alone would give.
+-- definitions (per week, per account):
+--   signer        signed &gt;= 1 transaction
+--   relayed       was the end user of &gt;= 1 meta-transaction (DELEGATE_ACTION receiver)
+--   users_any     signer OR relayed (distinct accounts; an account counted once)
+--   heavy         &gt;= 1000 signed tx + relayed actions in the week (relayers, solvers, bots)
+--   users_real    users_any minus heavy
+--   users_engaged users_real active on &gt;= 2 distinct days of the week
+--   new_users     users_real whose first appearance in the 104-week window is this week
+--   retained      users_real that were also active (signer or relayed) the previous week
+-- family: account-name pattern (implicit 64-hex, EVM-style 0x, *.tg = HOT, *.sweat = Sweat,
+--         *.users.kaiching = KaiChing app sub-accounts (largest relayed suffix, probe p6),
+--         other *.near, other). Families partition accounts, so totals = sum over families.
+-- fp_*: order-independent content fingerprints of the stage rows read (detects drift).
+-- window: 2024-10-28 .. 2026-10-25 (104 ISO weeks)
+WITH tx AS (
+  SELECT week, account_id, n_tx, n_tx_to_intents, active_days,
+         FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%d|%d|%d&#x27;, week, account_id, n_tx, n_tx_to_intents, active_days)) AS fp
+  FROM `{stage}.s1_tx_accounts`
+  WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+), s2 AS (
+  SELECT week, role, account_id, n_actions, active_days,
+         FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%s|%d|%d&#x27;, week, role, account_id, n_actions, active_days)) AS fp
+  FROM `{stage}.s2_receipt_roles`
+  WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+), s5 AS (
+  SELECT week, account_id, n_actions, active_days,
+         FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%d|%d&#x27;, week, account_id, n_actions, active_days)) AS fp
+  FROM `{stage}.s5_relayed_gapfill`
+  WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2025-02-24&#x27;
+), intents AS (
+  SELECT week,
+         SUM(IF(role = &#x27;intents_action&#x27;, n_actions, 0)) AS intents_actions,
+         COUNTIF(role = &#x27;relayed_user&#x27;)                 AS flagged_relayed,
+         BIT_XOR(fp)                                    AS fp_s2
+  FROM s2 GROUP BY week
+), rel AS (
+  SELECT week, account_id, n_actions, active_days, fp FROM s2
+  WHERE role = &#x27;relayed_user&#x27; AND week &gt;= &#x27;2025-03-03&#x27;
+  UNION ALL
+  SELECT week, account_id, n_actions, active_days, fp FROM s5
+), acct AS (
+  SELECT
+    week,
+    COALESCE(tx.account_id, rel.account_id)               AS account_id,
+    tx.account_id IS NOT NULL                             AS is_signer,
+    rel.account_id IS NOT NULL                            AS is_relayed,
+    IFNULL(tx.n_tx, 0)                                    AS n_tx,
+    IFNULL(tx.n_tx_to_intents, 0)                         AS n_tx_to_intents,
+    IFNULL(rel.n_actions, 0)                              AS n_relayed,
+    GREATEST(IFNULL(tx.active_days, 0), IFNULL(rel.active_days, 0)) AS days,
+    tx.fp AS fp_tx, rel.fp AS fp_rel
+  FROM tx FULL OUTER JOIN rel USING (week, account_id)
+), first_seen AS (
+  SELECT account_id, MIN(week) AS first_week FROM acct
+  WHERE n_tx + n_relayed &lt; 1000 GROUP BY account_id
+), labeled AS (
+  SELECT a.*, f.first_week,
+    LAG(a.week) OVER (PARTITION BY a.account_id ORDER BY a.week) = DATE_SUB(a.week, INTERVAL 7 DAY) AS was_active_prev,
+    a.n_tx + a.n_relayed &gt;= 1000 AS heavy,
+    CASE
+      WHEN REGEXP_CONTAINS(a.account_id, r&#x27;^[0-9a-f]{64}$&#x27;) THEN &#x27;implicit&#x27;
+      WHEN STARTS_WITH(a.account_id, &#x27;0x&#x27;)                 THEN &#x27;evm_0x&#x27;
+      WHEN ENDS_WITH(a.account_id, &#x27;.tg&#x27;)                  THEN &#x27;hot_tg&#x27;
+      WHEN ENDS_WITH(a.account_id, &#x27;.sweat&#x27;)               THEN &#x27;sweat&#x27;
+      WHEN REGEXP_CONTAINS(a.account_id, r&#x27;\.users\.(preprod-)?kaiching(\.near)?$&#x27;) THEN &#x27;kaiching&#x27;
+      WHEN ENDS_WITH(a.account_id, &#x27;.near&#x27;)                THEN &#x27;named_near&#x27;
+      ELSE &#x27;other&#x27;
+    END AS family
+  FROM acct a LEFT JOIN first_seen f USING (account_id)
+)
+SELECT
+  l.week,
+  l.family,
+  COUNT(*)                                                    AS users_any,
+  COUNTIF(is_signer)                                          AS signers,
+  COUNTIF(is_relayed)                                         AS relayed_users,
+  COUNTIF(is_signer AND is_relayed)                           AS signer_and_relayed,
+  COUNTIF(heavy)                                              AS heavy_accounts,
+  COUNTIF(NOT heavy)                                          AS users_real,
+  COUNTIF(NOT heavy AND days &gt;= 2)                            AS users_engaged,
+  COUNTIF(NOT heavy AND first_week = l.week)                  AS new_users,
+  COUNTIF(NOT heavy AND IFNULL(was_active_prev, FALSE))       AS retained,
+  SUM(n_tx)                                                   AS tx_signed,
+  SUM(n_relayed)                                              AS relayed_actions,
+  COUNTIF(n_tx_to_intents &gt; 0)                                AS intents_tx_signers,
+  COUNTIF(n_tx_to_intents &gt; 0 AND NOT heavy)                  AS intents_tx_signers_real,
+  SUM(n_tx_to_intents)                                        AS intents_tx,
+  ANY_VALUE(i.intents_actions)                                AS intents_actions_week,
+  ANY_VALUE(i.flagged_relayed)                                AS flagged_relayed_week,
+  BIT_XOR(fp_tx)                                              AS fp_tx,
+  BIT_XOR(fp_rel)                                             AS fp_rel,
+  ANY_VALUE(i.fp_s2)                                          AS fp_s2_week
+FROM labeled l LEFT JOIN intents i USING (week)
+GROUP BY l.week, l.family
+</pre></details></div><div class="card chart"><img src="../charts/c2_levels.png" alt="Intents cross-chain token movements rose from about 489 a week (first quarter) to 255,117 (last quarter) while non-KaiChing users shrank; in levels the two are negatively correlated (-0.77, n = 103 weeks), so they are not measuring the same thing."><p class="say">Intents cross-chain token movements rose from about 489 a week (first quarter) to 255,117 (last quarter) while non-KaiChing users shrank; in levels the two are negatively correlated (-0.77, n = 103 weeks), so they are not measuring the same thing.</p><details><summary><code>stage/s3_intents_token_flows.sql</code></summary><pre>-- name: s3_intents_token_flows  (HEAVY, run once)
+-- Fungible-token (NEP-141) balance changes of the intents.near account, per week.
+-- Cross-chain assets on NEAR Intents are the PoA-bridge tokens *.omft.near (one per
+-- source-chain asset). ft_events is clustered on contract_account_id, so the scan is
+-- pruned with STARTS_WITH on the chain prefixes seen in a 24-day sample, then filtered
+-- exactly with ENDS_WITH(&#x27;.omft.near&#x27;). Prefixes not in the list are missed (see THESIS.md).
+-- direction: &#x27;in&#x27; = intents.near balance increased, &#x27;out&#x27; = decreased (burn = bridge-out).
+-- Amounts are raw integer token units (no decimals, no prices).
+-- window: 2024-10-28 .. 2026-10-25 = 104 full ISO weeks
+CREATE OR REPLACE TABLE `{stage}.s3_intents_token_flows` AS
+SELECT
+  DATE_TRUNC(block_date, ISOWEEK)                          AS week,
+  contract_account_id                                      AS token,
+  cause,
+  IF(STARTS_WITH(delta_amount, &#x27;-&#x27;), &#x27;out&#x27;, &#x27;in&#x27;)          AS direction,
+  involved_account_id                                      AS counterparty,
+  COUNT(*)                                                 AS n_events,
+  SUM(ABS(CAST(delta_amount AS BIGNUMERIC)))               AS raw_amount
+FROM `bigquery-public-data.crypto_near_mainnet_us.ft_events`
+WHERE block_date BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+  AND affected_account_id = &#x27;intents.near&#x27;
+  AND ENDS_WITH(contract_account_id, &#x27;.omft.near&#x27;)
+  AND (   STARTS_WITH(contract_account_id, &#x27;eth&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;base&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;sol&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;gnosis&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;arb&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;hood&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;sui&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;aptos&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;aleo&#x27;)  OR STARTS_WITH(contract_account_id, &#x27;tron&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;bera&#x27;)  OR STARTS_WITH(contract_account_id, &#x27;plasma&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;zec&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;btc&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;xrp&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;ltc&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;qtc&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;doge&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;bch&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;cardano&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;starknet&#x27;) OR STARTS_WITH(contract_account_id, &#x27;dash&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;bsc&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;avax&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;pol&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;op&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;ton&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;stellar&#x27;))
+GROUP BY week, token, cause, direction, counterparty
+</pre></details><details><summary><code>queries/q2_intents_flows.sql</code></summary><pre>-- name: q2_intents_flows
+-- question: Per ISO week, how many cross-chain (PoA-bridge *.omft.near) token movements
+--           touched intents.near, in which direction, and from how many counterparties?
+-- reads: {stage}.s3_intents_token_flows (tiny). chain = asset prefix before &#x27;-&#x27; or &#x27;.&#x27;
+--        (eth, sol, btc, tron, ...). Burns (cause ft_burn) are withdrawals back to the
+--        source chain. Amounts stay in raw token units (no decimals, no prices).
+-- window: 2024-10-28 .. 2026-10-25
+SELECT
+  week,
+  REGEXP_EXTRACT(token, r&#x27;^([a-z0-9]+)&#x27;)                  AS chain,
+  COUNT(DISTINCT token)                                   AS tokens,
+  SUM(IF(direction = &#x27;in&#x27;, n_events, 0))                  AS events_in,
+  SUM(IF(direction = &#x27;out&#x27;, n_events, 0))                 AS events_out,
+  SUM(IF(cause = &#x27;ft_burn&#x27;, n_events, 0))                 AS events_burn,
+  COUNT(DISTINCT IF(direction = &#x27;in&#x27;, counterparty, NULL)) AS counterparties_in,
+  BIT_XOR(FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%s|%s|%s|%d|%t&#x27;, week, token, cause, direction,
+          IFNULL(counterparty, &#x27;&#x27;), n_events, raw_amount)))  AS fp
+FROM `{stage}.s3_intents_token_flows`
+WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+GROUP BY week, chain
+</pre></details><details><summary><code>queries/q1_weekly_usage.sql</code></summary><pre>-- name: q1_weekly_usage
+-- question: Per ISO week, how many accounts used NEAR, split by account family, and how
+--           many of them look like real users rather than automation?
+-- reads: {stage}.s1_tx_accounts (tx signers), {stage}.s2_receipt_roles (relayed end users
+--        + actions on intents.near) and {stage}.s5_relayed_gapfill (relayed end users for
+--        the weeks before the dataset&#x27;s is_delegate_action flag is populated). s2 is ~60 GB,
+--        so it is read ONCE, here.
+-- relayed source: s5 (action_kind = DELEGATE_ACTION) for weeks &lt;= 2025-02-24, s2 (flag)
+--        from 2025-03-03; flagged_relayed_week shows what the flag alone would give.
+-- definitions (per week, per account):
+--   signer        signed &gt;= 1 transaction
+--   relayed       was the end user of &gt;= 1 meta-transaction (DELEGATE_ACTION receiver)
+--   users_any     signer OR relayed (distinct accounts; an account counted once)
+--   heavy         &gt;= 1000 signed tx + relayed actions in the week (relayers, solvers, bots)
+--   users_real    users_any minus heavy
+--   users_engaged users_real active on &gt;= 2 distinct days of the week
+--   new_users     users_real whose first appearance in the 104-week window is this week
+--   retained      users_real that were also active (signer or relayed) the previous week
+-- family: account-name pattern (implicit 64-hex, EVM-style 0x, *.tg = HOT, *.sweat = Sweat,
+--         *.users.kaiching = KaiChing app sub-accounts (largest relayed suffix, probe p6),
+--         other *.near, other). Families partition accounts, so totals = sum over families.
+-- fp_*: order-independent content fingerprints of the stage rows read (detects drift).
+-- window: 2024-10-28 .. 2026-10-25 (104 ISO weeks)
+WITH tx AS (
+  SELECT week, account_id, n_tx, n_tx_to_intents, active_days,
+         FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%d|%d|%d&#x27;, week, account_id, n_tx, n_tx_to_intents, active_days)) AS fp
+  FROM `{stage}.s1_tx_accounts`
+  WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+), s2 AS (
+  SELECT week, role, account_id, n_actions, active_days,
+         FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%s|%d|%d&#x27;, week, role, account_id, n_actions, active_days)) AS fp
+  FROM `{stage}.s2_receipt_roles`
+  WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+), s5 AS (
+  SELECT week, account_id, n_actions, active_days,
+         FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%d|%d&#x27;, week, account_id, n_actions, active_days)) AS fp
+  FROM `{stage}.s5_relayed_gapfill`
+  WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2025-02-24&#x27;
+), intents AS (
+  SELECT week,
+         SUM(IF(role = &#x27;intents_action&#x27;, n_actions, 0)) AS intents_actions,
+         COUNTIF(role = &#x27;relayed_user&#x27;)                 AS flagged_relayed,
+         BIT_XOR(fp)                                    AS fp_s2
+  FROM s2 GROUP BY week
+), rel AS (
+  SELECT week, account_id, n_actions, active_days, fp FROM s2
+  WHERE role = &#x27;relayed_user&#x27; AND week &gt;= &#x27;2025-03-03&#x27;
+  UNION ALL
+  SELECT week, account_id, n_actions, active_days, fp FROM s5
+), acct AS (
+  SELECT
+    week,
+    COALESCE(tx.account_id, rel.account_id)               AS account_id,
+    tx.account_id IS NOT NULL                             AS is_signer,
+    rel.account_id IS NOT NULL                            AS is_relayed,
+    IFNULL(tx.n_tx, 0)                                    AS n_tx,
+    IFNULL(tx.n_tx_to_intents, 0)                         AS n_tx_to_intents,
+    IFNULL(rel.n_actions, 0)                              AS n_relayed,
+    GREATEST(IFNULL(tx.active_days, 0), IFNULL(rel.active_days, 0)) AS days,
+    tx.fp AS fp_tx, rel.fp AS fp_rel
+  FROM tx FULL OUTER JOIN rel USING (week, account_id)
+), first_seen AS (
+  SELECT account_id, MIN(week) AS first_week FROM acct
+  WHERE n_tx + n_relayed &lt; 1000 GROUP BY account_id
+), labeled AS (
+  SELECT a.*, f.first_week,
+    LAG(a.week) OVER (PARTITION BY a.account_id ORDER BY a.week) = DATE_SUB(a.week, INTERVAL 7 DAY) AS was_active_prev,
+    a.n_tx + a.n_relayed &gt;= 1000 AS heavy,
+    CASE
+      WHEN REGEXP_CONTAINS(a.account_id, r&#x27;^[0-9a-f]{64}$&#x27;) THEN &#x27;implicit&#x27;
+      WHEN STARTS_WITH(a.account_id, &#x27;0x&#x27;)                 THEN &#x27;evm_0x&#x27;
+      WHEN ENDS_WITH(a.account_id, &#x27;.tg&#x27;)                  THEN &#x27;hot_tg&#x27;
+      WHEN ENDS_WITH(a.account_id, &#x27;.sweat&#x27;)               THEN &#x27;sweat&#x27;
+      WHEN REGEXP_CONTAINS(a.account_id, r&#x27;\.users\.(preprod-)?kaiching(\.near)?$&#x27;) THEN &#x27;kaiching&#x27;
+      WHEN ENDS_WITH(a.account_id, &#x27;.near&#x27;)                THEN &#x27;named_near&#x27;
+      ELSE &#x27;other&#x27;
+    END AS family
+  FROM acct a LEFT JOIN first_seen f USING (account_id)
+)
+SELECT
+  l.week,
+  l.family,
+  COUNT(*)                                                    AS users_any,
+  COUNTIF(is_signer)                                          AS signers,
+  COUNTIF(is_relayed)                                         AS relayed_users,
+  COUNTIF(is_signer AND is_relayed)                           AS signer_and_relayed,
+  COUNTIF(heavy)                                              AS heavy_accounts,
+  COUNTIF(NOT heavy)                                          AS users_real,
+  COUNTIF(NOT heavy AND days &gt;= 2)                            AS users_engaged,
+  COUNTIF(NOT heavy AND first_week = l.week)                  AS new_users,
+  COUNTIF(NOT heavy AND IFNULL(was_active_prev, FALSE))       AS retained,
+  SUM(n_tx)                                                   AS tx_signed,
+  SUM(n_relayed)                                              AS relayed_actions,
+  COUNTIF(n_tx_to_intents &gt; 0)                                AS intents_tx_signers,
+  COUNTIF(n_tx_to_intents &gt; 0 AND NOT heavy)                  AS intents_tx_signers_real,
+  SUM(n_tx_to_intents)                                        AS intents_tx,
+  ANY_VALUE(i.intents_actions)                                AS intents_actions_week,
+  ANY_VALUE(i.flagged_relayed)                                AS flagged_relayed_week,
+  BIT_XOR(fp_tx)                                              AS fp_tx,
+  BIT_XOR(fp_rel)                                             AS fp_rel,
+  ANY_VALUE(i.fp_s2)                                          AS fp_s2_week
+FROM labeled l LEFT JOIN intents i USING (week)
+GROUP BY l.week, l.family
+</pre></details><details><summary><code>fetch/near_usdt_weekly.json</code></summary><pre>{
+  &quot;description&quot;: &quot;NEAR/USDT weekly candles (Monday 00:00 UTC open = ISO week), 104 closed weeks 2024-10-28 .. 2026-10-25. Binance public klines API, no key. Fallback: CoinGecko public market_chart/range (daily NEAR/USD; weekly close = last daily price of each ISO week). The source actually used is recorded in manifest.json.&quot;,
+  &quot;sources&quot;: [
+    {&quot;label&quot;: &quot;binance&quot;, &quot;url&quot;: &quot;https://api.binance.com/api/v3/klines?symbol=NEARUSDT&amp;interval=1w&amp;startTime=1730073600000&amp;endTime=1792972799999&amp;limit=1000&quot;},
+    {&quot;label&quot;: &quot;binance-data&quot;, &quot;url&quot;: &quot;https://data-api.binance.vision/api/v3/klines?symbol=NEARUSDT&amp;interval=1w&amp;startTime=1730073600000&amp;endTime=1792972799999&amp;limit=1000&quot;},
+    {&quot;label&quot;: &quot;coingecko&quot;, &quot;url&quot;: &quot;https://api.coingecko.com/api/v3/coins/near/market_chart/range?vs_currency=usd&amp;from=1730073600&amp;to=1792972800&quot;}
+  ]
+}
+</pre></details></div><div class="card chart"><img src="../charts/c3_xcorr.png" alt="Week-to-week growth in Intents activity or in the NEAR price does not predict growth in real users 1–8 weeks later: 7 of 144 lead correlations clear the 95% band, about the 7.2 you would expect from noise alone."><p class="say">Week-to-week growth in Intents activity or in the NEAR price does not predict growth in real users 1–8 weeks later: 7 of 144 lead correlations clear the 95% band, about the 7.2 you would expect from noise alone.</p><details><summary><code>analysis.py</code></summary><pre>&quot;&quot;&quot;Thesis model: is NEAR Intents cross-chain activity a better leading indicator of real
+network usage than the NEAR price?
+
+Run by `run.py analyze` (and re-run by `verify-cached`) inside the rs-repro image with
+ROOT (the pack) and OUT (where derived CSVs go). Inputs are only results/q*.csv (weekly
+aggregates from BigQuery) and raw/near_usdt_weekly.json (public price series). Pure
+pandas/numpy, no randomness, fixed rounding -&gt; byte-identical outputs.
+
+Outputs (OUT/):
+  a_weekly.csv     the 104-week panel: levels and weekly log growth of every series
+  a_xcorr.csv      lead/lag cross-correlations, lags -8..+8, with n and a 95% band
+  a_oos.csv        out-of-sample test: AR(1) baseline vs AR(1) + lagged indicator
+  a_families.csv   real users by account family, per week (for the stacked chart)
+  a_chains.csv     cross-chain events by source chain, whole window
+  a_nep245.csv     sampled-day NEP-245 ledger accounts next to same-week Intents signers
+  a_facts.csv      every number quoted in THESIS.md / the dashboard, as displayed
+&quot;&quot;&quot;
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+ROOT = Path(globals().get(&quot;ROOT&quot;, Path(__file__).resolve().parent))
+OUT = Path(globals().get(&quot;OUT&quot;, ROOT / &quot;results&quot;))
+R = ROOT / &quot;results&quot;
+
+# ---- parameters (also declared in THESIS.md front matter) ---------------------------
+WEEKS = 104                 # 2024-10-28 .. 2026-10-25
+LAGS = range(-8, 9)         # k &gt; 0: indicator leads usage by k weeks
+FIT_END = &quot;2026-02-22&quot;      # first 69 weeks (~16 months) fit, last 35 weeks (~8 months) test
+BREAK = 0.5                 # |weekly log growth| above this marks a regime-break week
+Z95 = 1.96
+
+# ---- load ----------------------------------------------------------------------------
+q1 = pd.read_csv(R / &quot;q1_weekly_usage.csv&quot;)
+q2 = pd.read_csv(R / &quot;q2_intents_flows.csv&quot;)
+q3 = pd.read_csv(R / &quot;q3_nep245_sample.csv&quot;)
+kl = json.loads((ROOT / &quot;raw&quot; / &quot;near_usdt_weekly.json&quot;).read_text())
+
+if isinstance(kl, list):        # Binance klines: [open_ms, open, high, low, close, ...]
+    price = pd.DataFrame({&quot;week&quot;: pd.to_datetime([k[0] for k in kl], unit=&quot;ms&quot;).strftime(&quot;%Y-%m-%d&quot;),
+                          &quot;price_close&quot;: [float(k[4]) for k in kl]})
+else:                           # CoinGecko fallback: {&quot;prices&quot;: [[ms, usd], ...]} daily
+    p = pd.DataFrame(kl[&quot;prices&quot;], columns=[&quot;ms&quot;, &quot;usd&quot;])
+    p[&quot;day&quot;] = pd.to_datetime(p.ms, unit=&quot;ms&quot;)
+    p[&quot;week&quot;] = (p.day - pd.to_timedelta(p.day.dt.weekday, unit=&quot;D&quot;)).dt.strftime(&quot;%Y-%m-%d&quot;)
+    price = p.sort_values(&quot;ms&quot;).groupby(&quot;week&quot;, as_index=False).usd.last().rename(columns={&quot;usd&quot;: &quot;price_close&quot;})
+
+usage_cols = [&quot;users_any&quot;, &quot;signers&quot;, &quot;relayed_users&quot;, &quot;heavy_accounts&quot;, &quot;users_real&quot;, &quot;users_engaged&quot;,
+              &quot;new_users&quot;, &quot;retained&quot;, &quot;tx_signed&quot;, &quot;relayed_actions&quot;, &quot;intents_tx_signers&quot;,
+              &quot;intents_tx_signers_real&quot;, &quot;intents_tx&quot;]
+w = q1.groupby(&quot;week&quot;)[usage_cols].sum()
+w[&quot;intents_actions&quot;] = q1.groupby(&quot;week&quot;).intents_actions_week.first()
+core = q1[q1.family != &quot;kaiching&quot;].groupby(&quot;week&quot;)[[&quot;users_real&quot;, &quot;users_engaged&quot;]].sum()
+w[&quot;users_core&quot;] = core.users_real          # real users excluding KaiChing app sub-accounts
+w[&quot;engaged_core&quot;] = core.users_engaged
+xc = q2.groupby(&quot;week&quot;)[[&quot;events_in&quot;, &quot;events_out&quot;, &quot;events_burn&quot;]].sum()
+w = w.join(xc, how=&quot;left&quot;).fillna({&quot;events_in&quot;: 0, &quot;events_out&quot;: 0, &quot;events_burn&quot;: 0})
+w[&quot;xchain_events&quot;] = w.events_in + w.events_out
+w = w.join(price.set_index(&quot;week&quot;), how=&quot;left&quot;).reset_index()
+assert len(w) == WEEKS and w.price_close.notna().all(), &quot;panel must cover all 104 weeks&quot;
+w = w.sort_values(&quot;week&quot;).reset_index(drop=True)
+
+
+def glog(s):
+    s = s.where(s &gt; 0)
+    return np.log(s).diff()
+
+
+SERIES = {  # name -&gt; (column, label)
+    &quot;users_real&quot;: (&quot;users_real&quot;, &quot;Real users (signers + relayed, minus heavy)&quot;),
+    &quot;users_core&quot;: (&quot;users_core&quot;, &quot;Real users excluding KaiChing sub-accounts&quot;),
+    &quot;users_engaged&quot;: (&quot;users_engaged&quot;, &quot;Engaged real users (&gt;= 2 active days)&quot;),
+    &quot;xchain_events&quot;: (&quot;xchain_events&quot;, &quot;Intents cross-chain token movements&quot;),
+    &quot;intents_actions&quot;: (&quot;intents_actions&quot;, &quot;Actions executed on intents.near&quot;),
+    &quot;price_close&quot;: (&quot;price_close&quot;, &quot;NEAR/USDT weekly close&quot;),
+}
+for name, (col, _) in SERIES.items():
+    w[f&quot;g_{name}&quot;] = glog(w[col]).round(6)
+TARGETS = (&quot;users_real&quot;, &quot;users_core&quot;, &quot;users_engaged&quot;)
+for t in TARGETS:  # regime breaks are flagged per usage series, from that series&#x27; own growth
+    w[f&quot;break_{t}&quot;] = (w[f&quot;g_{t}&quot;].abs() &gt; BREAK).astype(int)
+w[&quot;break_week&quot;] = w.break_users_real
+w[&quot;sample&quot;] = np.where(w.week &lt;= FIT_END, &quot;fit&quot;, &quot;test&quot;)
+
+
+# ---- lead/lag cross-correlation --------------------------------------------------------
+def xcorr(x, y, k):
+    &quot;&quot;&quot;corr(x[t-k], y[t]); k &gt; 0 means x leads y.&quot;&quot;&quot;
+    a = pd.concat([x.shift(k), y], axis=1).dropna()
+    n = len(a)
+    if n &lt; 10:
+        return np.nan, np.nan, n
+    # Spearman = Pearson on average ranks (no scipy in the image)
+    rx, ry = a.iloc[:, 0].rank(), a.iloc[:, 1].rank()
+    return a.iloc[:, 0].corr(a.iloc[:, 1]), rx.corr(ry), n
+
+
+rows = []
+for target in (&quot;users_real&quot;, &quot;users_core&quot;, &quot;users_engaged&quot;):
+    for ind in (&quot;xchain_events&quot;, &quot;intents_actions&quot;, &quot;price_close&quot;):
+        for drop_breaks in (0, 1):
+            y = w[f&quot;g_{target}&quot;].where(w[f&quot;break_{target}&quot;] == 0) if drop_breaks else w[f&quot;g_{target}&quot;]
+            for k in LAGS:
+                r, rho, n = xcorr(w[f&quot;g_{ind}&quot;], y, k)
+                rows.append({&quot;target&quot;: target, &quot;indicator&quot;: ind, &quot;drop_breaks&quot;: drop_breaks, &quot;lag&quot;: k,
+                             &quot;n&quot;: n, &quot;pearson&quot;: round(r, 2), &quot;spearman&quot;: round(rho, 2),
+                             &quot;band95&quot;: round(Z95 / np.sqrt(n), 2),
+                             &quot;significant&quot;: int(abs(r) &gt; Z95 / np.sqrt(n))})
+xc = pd.DataFrame(rows)
+
+
+# ---- out-of-sample test ----------------------------------------------------------------
+def ols(X, y):
+    X1 = np.column_stack([np.ones(len(X)), X])
+    beta, *_ = np.linalg.lstsq(X1, y, rcond=None)
+    return beta
+
+
+def predict(beta, X):
+    return np.column_stack([np.ones(len(X)), X]) @ beta
+
+
+oos = []
+for target in (&quot;users_real&quot;, &quot;users_core&quot;, &quot;users_engaged&quot;):
+    for ind in (&quot;xchain_events&quot;, &quot;intents_actions&quot;, &quot;price_close&quot;):
+        for drop_breaks in (0, 1):
+            d = pd.DataFrame({&quot;week&quot;: w.week, &quot;y&quot;: w[f&quot;g_{target}&quot;], &quot;y1&quot;: w[f&quot;g_{target}&quot;].shift(1),
+                              &quot;brk&quot;: w[f&quot;break_{target}&quot;], &quot;x&quot;: w[f&quot;g_{ind}&quot;]})
+            if drop_breaks:
+                d = d[(d.brk == 0) &amp; (d.brk.shift(1).fillna(0) == 0)]
+            fit = d[d.week &lt;= FIT_END]
+            # lag chosen on the fit sample only: best |corr| among leads 1..8
+            cands = []
+            for k in range(1, 9):
+                f = pd.DataFrame({&quot;y&quot;: fit.y, &quot;x&quot;: d.x.shift(k).reindex(fit.index)}).dropna()
+                cands.append((abs(f.x.corr(f.y)), k))
+            best_k = max(cands)[1]
+            d = d.assign(xk=w[f&quot;g_{ind}&quot;].shift(best_k).reindex(d.index)).dropna()
+            fit, test = d[d.week &lt;= FIT_END], d[d.week &gt; FIT_END]
+            b0 = ols(fit[[&quot;y1&quot;]].values, fit.y.values)
+            b1 = ols(fit[[&quot;y1&quot;, &quot;xk&quot;]].values, fit.y.values)
+            e0 = test.y.values - predict(b0, test[[&quot;y1&quot;]].values)
+            e1 = test.y.values - predict(b1, test[[&quot;y1&quot;, &quot;xk&quot;]].values)
+            rm0, rm1 = np.sqrt(np.mean(e0 ** 2)), np.sqrt(np.mean(e1 ** 2))
+            oos.append({&quot;target&quot;: target, &quot;indicator&quot;: ind, &quot;drop_breaks&quot;: drop_breaks, &quot;lag&quot;: best_k,
+                        &quot;n_fit&quot;: len(fit), &quot;n_test&quot;: len(test), &quot;coef_x&quot;: round(b1[2], 3),
+                        &quot;rmse_ar1&quot;: round(rm0, 4), &quot;rmse_with_x&quot;: round(rm1, 4),
+                        &quot;rmse_ratio&quot;: round(rm1 / rm0, 3),
+                        &quot;improves&quot;: int(rm1 &lt; rm0)})
+oos = pd.DataFrame(oos)
+
+# ---- families, chains, NEP-245 ------------------------------------------------------------
+fam = q1.pivot(index=&quot;week&quot;, columns=&quot;family&quot;, values=&quot;users_real&quot;).fillna(0).astype(int).reset_index()
+chains = (q2.groupby(&quot;chain&quot;)[[&quot;events_in&quot;, &quot;events_out&quot;, &quot;events_burn&quot;]].sum()
+          .assign(events=lambda t: t.events_in + t.events_out).sort_values([&quot;events&quot;, &quot;chain&quot;], ascending=[False, True])
+          .reset_index())
+chains[&quot;share_pct&quot;] = (100 * chains.events / chains.events.sum()).round(1)
+q3 = q3.copy()
+q3[&quot;week&quot;] = (pd.to_datetime(q3.block_date) - pd.to_timedelta(pd.to_datetime(q3.block_date).dt.weekday, unit=&quot;D&quot;)).dt.strftime(&quot;%Y-%m-%d&quot;)
+nep = q3.merge(w[[&quot;week&quot;, &quot;intents_tx_signers_real&quot;, &quot;users_real&quot;, &quot;users_core&quot;]], on=&quot;week&quot;, how=&quot;left&quot;)
+nep[&quot;ledger_per_tx_signer&quot;] = (nep.ledger_accounts / nep.intents_tx_signers_real).round(1)
+nep = nep[[&quot;block_date&quot;, &quot;week&quot;, &quot;ledger_accounts&quot;, &quot;transfer_accounts&quot;, &quot;mint_accounts&quot;, &quot;burn_accounts&quot;,
+           &quot;transfer_items&quot;, &quot;intents_tx_signers_real&quot;, &quot;users_real&quot;, &quot;users_core&quot;, &quot;ledger_per_tx_signer&quot;]]
+
+# ---- facts quoted in prose ----------------------------------------------------------------
+F = {}
+
+
+def fact(key, value):
+    F[key] = value
+
+
+def row(week):
+    return w[w.week == week].iloc[0]
+
+
+first, last = w.iloc[0], w.iloc[-1]
+peak = w.loc[w.users_real.idxmax()]
+fact(&quot;weeks&quot;, len(w))
+fact(&quot;n_fit_weeks&quot;, int((w.week &lt;= FIT_END).sum()))
+fact(&quot;n_test_weeks&quot;, int((w.week &gt; FIT_END).sum()))
+fact(&quot;users_real_first&quot;, int(first.users_real)); fact(&quot;users_real_last&quot;, int(last.users_real))
+fact(&quot;users_real_peak&quot;, int(peak.users_real)); fact(&quot;users_real_peak_week&quot;, peak.week)
+fact(&quot;users_real_fall_x_from_peak&quot;, round(peak.users_real / last.users_real, 1))
+fact(&quot;users_core_first&quot;, int(first.users_core)); fact(&quot;users_core_last&quot;, int(last.users_core))
+fact(&quot;users_core_fall_pct&quot;, round(100 * (1 - last.users_core / first.users_core), 1))
+fact(&quot;signers_first&quot;, int(first.signers)); fact(&quot;signers_last&quot;, int(last.signers))
+fact(&quot;price_first&quot;, round(first.price_close, 3)); fact(&quot;price_last&quot;, round(last.price_close, 3))
+fact(&quot;price_change_pct&quot;, round(100 * (last.price_close / first.price_close - 1), 1))
+fact(&quot;price_min&quot;, round(w.price_close.min(), 3)); fact(&quot;price_min_week&quot;, w.loc[w.price_close.idxmin()].week)
+fact(&quot;price_max&quot;, round(w.price_close.max(), 3)); fact(&quot;price_max_week&quot;, w.loc[w.price_close.idxmax()].week)
+fs = w[w.xchain_events &gt; 0].iloc[0]
+fact(&quot;xchain_first_week&quot;, fs.week)
+x_early = w[(w.week &gt;= &quot;2024-11-04&quot;) &amp; (w.week &lt;= &quot;2025-01-26&quot;)].xchain_events.mean()
+x_late = w[w.week &gt;= &quot;2026-08-03&quot;].xchain_events.mean()
+fact(&quot;xchain_mean_first_quarter&quot;, int(round(x_early))); fact(&quot;xchain_mean_last_quarter&quot;, int(round(x_late)))
+fact(&quot;xchain_growth_x&quot;, round(x_late / x_early, 1))
+u_early = w[(w.week &gt;= &quot;2024-11-04&quot;) &amp; (w.week &lt;= &quot;2025-01-26&quot;)].users_core.mean()
+u_late = w[w.week &gt;= &quot;2026-08-03&quot;].users_core.mean()
+fact(&quot;core_mean_first_quarter&quot;, int(round(u_early))); fact(&quot;core_mean_last_quarter&quot;, int(round(u_late)))
+fact(&quot;xchain_total&quot;, int(w.xchain_events.sum())); fact(&quot;xchain_burn_total&quot;, int(w.events_burn.sum()))
+fact(&quot;xchain_peak&quot;, int(w.xchain_events.max())); fact(&quot;xchain_peak_week&quot;, w.loc[w.xchain_events.idxmax()].week)
+fact(&quot;intents_actions_peak&quot;, int(w.intents_actions.max())); fact(&quot;intents_actions_peak_week&quot;, w.loc[w.intents_actions.idxmax()].week)
+fact(&quot;n_chains&quot;, int(len(chains))); fact(&quot;top_chain&quot;, chains.iloc[0].chain); fact(&quot;top_chain_share_pct&quot;, chains.iloc[0].share_pct)
+fact(&quot;n_break_weeks&quot;, int(w.break_week.sum()))
+for t in TARGETS:
+    fact(f&quot;n_break_weeks|{t}&quot;, int(w[f&quot;break_{t}&quot;].sum()))
+for wk in w[w.break_week == 1].week:
+    fact(f&quot;break_{wk}&quot;, round(float(row(wk).g_users_real), 2))
+# regime artifacts of the KaiChing app (sub-accounts *.users.kaiching)
+kc = q1[q1.family == &quot;kaiching&quot;].set_index(&quot;week&quot;).reindex(w.week).fillna(0)
+for wk in (&quot;2024-10-28&quot;, &quot;2025-02-10&quot;, &quot;2025-02-17&quot;, &quot;2025-02-24&quot;, &quot;2026-03-23&quot;, &quot;2026-03-30&quot;, &quot;2026-04-06&quot;,
+           &quot;2026-09-21&quot;, &quot;2026-09-28&quot;, &quot;2026-10-05&quot;, &quot;2026-10-12&quot;):
+    fact(f&quot;kc_signers_{wk}&quot;, int(kc.loc[wk].signers)); fact(f&quot;kc_relayed_{wk}&quot;, int(kc.loc[wk].relayed_users))
+    fact(f&quot;kc_real_{wk}&quot;, int(kc.loc[wk].users_real))
+fact(&quot;kc_new_2026-09-28&quot;, int(kc.loc[&quot;2026-09-28&quot;].new_users))
+fact(&quot;kc_share_users_real_pct&quot;, round(100 * kc.users_real.sum() / w.users_real.sum(), 1))
+fact(&quot;kc_peak_real&quot;, int(kc.users_real.max())); fact(&quot;kc_peak_week&quot;, kc.users_real.idxmax())
+kc_weeks = kc[kc.users_real &gt; 0]
+fact(&quot;kc_weeks_present&quot;, int(len(kc_weeks)))
+fact(&quot;kc_share_peak_week_pct&quot;, round(100 * kc.loc[kc.users_real.idxmax()].users_real / w.set_index(&quot;week&quot;).loc[kc.users_real.idxmax()].users_real, 1))
+ov = q1[q1.week == &quot;2025-02-24&quot;]
+fact(&quot;overlap_s5_relayed&quot;, int(ov.relayed_users.sum())); fact(&quot;overlap_flag_relayed&quot;, int(ov.flagged_relayed_week.iloc[0]))
+fact(&quot;relayed_first_week&quot;, int(first.relayed_users)); fact(&quot;relayed_share_first_pct&quot;, round(100 * first.relayed_users / first.users_any, 1))
+fact(&quot;users_any_first&quot;, int(first.users_any))
+fact(&quot;signers_2026-09-21&quot;, int(row(&quot;2026-09-21&quot;).signers)); fact(&quot;signers_2026-09-28&quot;, int(row(&quot;2026-09-28&quot;).signers))
+fact(&quot;signers_2026-10-19&quot;, int(row(&quot;2026-10-19&quot;).signers))
+fact(&quot;heavy_median&quot;, int(w.heavy_accounts.median()))
+fact(&quot;engaged_share_last_pct&quot;, round(100 * last.users_engaged / last.users_real, 1))
+# cross-correlation summaries (primary = Pearson, all weeks, k = 1..8 leads)
+for target in (&quot;users_real&quot;, &quot;users_core&quot;, &quot;users_engaged&quot;):
+    for ind in (&quot;xchain_events&quot;, &quot;intents_actions&quot;, &quot;price_close&quot;):
+        for db in (0, 1):
+            s = xc[(xc.target == target) &amp; (xc.indicator == ind) &amp; (xc.drop_breaks == db)]
+            lead = s[s.lag &gt; 0]
+            best = lead.loc[lead.pearson.abs().idxmax()]
+            tag = f&quot;{target}|{ind}|{&#x27;nobreak&#x27; if db else &#x27;all&#x27;}&quot;
+            fact(f&quot;xc_best_lag|{tag}&quot;, int(best.lag)); fact(f&quot;xc_best_r|{tag}&quot;, best.pearson)
+            fact(f&quot;xc_best_n|{tag}&quot;, int(best.n)); fact(f&quot;xc_band|{tag}&quot;, best.band95)
+            fact(f&quot;xc_sig_leads|{tag}&quot;, int(lead.significant.sum()))
+            fact(f&quot;xc_lag0_r|{tag}&quot;, s[s.lag == 0].pearson.iloc[0])
+            fact(f&quot;xc_lag0_n|{tag}&quot;, int(s[s.lag == 0].n.iloc[0])); fact(f&quot;xc_lag0_band|{tag}&quot;, s[s.lag == 0].band95.iloc[0])
+            fact(f&quot;xc_lag0_sig|{tag}&quot;, int(s[s.lag == 0].significant.iloc[0]))
+            fact(f&quot;xc_best_spearman|{tag}&quot;, best.spearman)
+            fact(f&quot;xc_sig_lags_any|{tag}&quot;, int(s.significant.sum()))
+for _, o in oos.iterrows():
+    tag = f&quot;{o.target}|{o.indicator}|{&#x27;nobreak&#x27; if o.drop_breaks else &#x27;all&#x27;}&quot;
+    fact(f&quot;oos_ratio|{tag}&quot;, o.rmse_ratio); fact(f&quot;oos_lag|{tag}&quot;, int(o.lag))
+    fact(f&quot;oos_ntest|{tag}&quot;, int(o.n_test)); fact(f&quot;oos_nfit|{tag}&quot;, int(o.n_fit))
+lead_tests = xc[xc.lag &gt; 0]
+fact(&quot;lead_tests&quot;, int(len(lead_tests)))
+fact(&quot;lead_tests_significant&quot;, int(lead_tests.significant.sum()))
+fact(&quot;lead_tests_expected_by_chance&quot;, round(0.05 * len(lead_tests), 1))
+for ind in (&quot;xchain_events&quot;, &quot;intents_actions&quot;, &quot;price_close&quot;):
+    li = lead_tests[lead_tests.indicator == ind]
+    fact(f&quot;lead_tests|{ind}&quot;, int(len(li))); fact(f&quot;lead_sig|{ind}&quot;, int(li.significant.sum()))
+    fact(f&quot;lead_sig_pos|{ind}&quot;, int(((li.significant == 1) &amp; (li.pearson &gt; 0)).sum()))
+    fact(f&quot;lead_max_abs_r|{ind}&quot;, float(li.pearson.abs().max()))
+fact(&quot;oos_improves_xchain&quot;, int(oos[oos.indicator == &quot;xchain_events&quot;].improves.sum()))
+fact(&quot;oos_improves_actions&quot;, int(oos[oos.indicator == &quot;intents_actions&quot;].improves.sum()))
+fact(&quot;oos_improves_price&quot;, int(oos[oos.indicator == &quot;price_close&quot;].improves.sum()))
+fact(&quot;oos_cases_per_indicator&quot;, int((oos.indicator == &quot;price_close&quot;).sum()))
+fact(&quot;oos_fits&quot;, int(len(oos))); fact(&quot;oos_within_3pct&quot;, int(((oos.rmse_ratio - 1).abs() &lt;= 0.03).sum()))
+fact(&quot;oos_best_gain_xchain_pct&quot;, round(100 * (1 - oos[oos.indicator == &quot;xchain_events&quot;].rmse_ratio.min()), 1))
+fact(&quot;oos_ratio_min&quot;, float(oos.rmse_ratio.min())); fact(&quot;oos_ratio_max&quot;, float(oos.rmse_ratio.max()))
+lvl = w[w.xchain_events &gt; 0]
+fact(&quot;level_corr_xchain_core&quot;, round(np.log(lvl.xchain_events).corr(np.log(lvl.users_core)), 2))
+fact(&quot;level_corr_price_core&quot;, round(np.log(w.price_close).corr(np.log(w.users_core)), 2))
+fact(&quot;level_corr_n_xchain&quot;, int(len(lvl)))
+fact(&quot;nep245_days&quot;, int(len(q3))); fact(&quot;nep245_sample_days_planned&quot;, 26)
+fact(&quot;nep245_ledger_max&quot;, int(nep.ledger_accounts.max())); fact(&quot;nep245_ledger_max_day&quot;, nep.loc[nep.ledger_accounts.idxmax()].block_date)
+fact(&quot;nep245_ledger_last&quot;, int(nep.iloc[-1].ledger_accounts)); fact(&quot;nep245_last_day&quot;, nep.iloc[-1].block_date)
+fact(&quot;nep245_ratio_median&quot;, round(float(nep.ledger_per_tx_signer.median()), 1))
+fact(&quot;intents_tx_signers_real_last&quot;, int(last.intents_tx_signers_real))
+
+facts = pd.DataFrame({&quot;key&quot;: list(F), &quot;value&quot;: [F[k] for k in F]})
+facts[&quot;abs_value&quot;] = [abs(v) if isinstance(v, (int, float, np.integer, np.floating)) else &quot;&quot; for v in facts.value]
+
+# ---- write ------------------------------------------------------------------------------------
+OUT.mkdir(parents=True, exist_ok=True)
+fmt = dict(index=False, lineterminator=&quot;\n&quot;, float_format=&quot;%.10g&quot;)
+keep = [&quot;week&quot;, &quot;sample&quot;, &quot;break_week&quot;, &quot;price_close&quot;, &quot;users_any&quot;, &quot;signers&quot;, &quot;relayed_users&quot;, &quot;heavy_accounts&quot;,
+        &quot;users_real&quot;, &quot;users_core&quot;, &quot;users_engaged&quot;, &quot;engaged_core&quot;, &quot;new_users&quot;, &quot;retained&quot;,
+        &quot;break_users_core&quot;, &quot;break_users_engaged&quot;, &quot;intents_tx_signers_real&quot;,
+        &quot;intents_actions&quot;, &quot;xchain_events&quot;, &quot;events_in&quot;, &quot;events_out&quot;, &quot;events_burn&quot;] + [f&quot;g_{n}&quot; for n in SERIES]
+w[keep].to_csv(OUT / &quot;a_weekly.csv&quot;, **fmt)
+xc.to_csv(OUT / &quot;a_xcorr.csv&quot;, **fmt)
+oos.to_csv(OUT / &quot;a_oos.csv&quot;, **fmt)
+fam.to_csv(OUT / &quot;a_families.csv&quot;, **fmt)
+chains.to_csv(OUT / &quot;a_chains.csv&quot;, **fmt)
+nep.to_csv(OUT / &quot;a_nep245.csv&quot;, **fmt)
+facts.to_csv(OUT / &quot;a_facts.csv&quot;, **fmt)
+print(f&quot;analysis: {len(w)} weeks, {len(xc)} correlations, {len(oos)} out-of-sample fits, {len(facts)} facts&quot;)
+</pre></details><details><summary><code>queries/q1_weekly_usage.sql</code></summary><pre>-- name: q1_weekly_usage
+-- question: Per ISO week, how many accounts used NEAR, split by account family, and how
+--           many of them look like real users rather than automation?
+-- reads: {stage}.s1_tx_accounts (tx signers), {stage}.s2_receipt_roles (relayed end users
+--        + actions on intents.near) and {stage}.s5_relayed_gapfill (relayed end users for
+--        the weeks before the dataset&#x27;s is_delegate_action flag is populated). s2 is ~60 GB,
+--        so it is read ONCE, here.
+-- relayed source: s5 (action_kind = DELEGATE_ACTION) for weeks &lt;= 2025-02-24, s2 (flag)
+--        from 2025-03-03; flagged_relayed_week shows what the flag alone would give.
+-- definitions (per week, per account):
+--   signer        signed &gt;= 1 transaction
+--   relayed       was the end user of &gt;= 1 meta-transaction (DELEGATE_ACTION receiver)
+--   users_any     signer OR relayed (distinct accounts; an account counted once)
+--   heavy         &gt;= 1000 signed tx + relayed actions in the week (relayers, solvers, bots)
+--   users_real    users_any minus heavy
+--   users_engaged users_real active on &gt;= 2 distinct days of the week
+--   new_users     users_real whose first appearance in the 104-week window is this week
+--   retained      users_real that were also active (signer or relayed) the previous week
+-- family: account-name pattern (implicit 64-hex, EVM-style 0x, *.tg = HOT, *.sweat = Sweat,
+--         *.users.kaiching = KaiChing app sub-accounts (largest relayed suffix, probe p6),
+--         other *.near, other). Families partition accounts, so totals = sum over families.
+-- fp_*: order-independent content fingerprints of the stage rows read (detects drift).
+-- window: 2024-10-28 .. 2026-10-25 (104 ISO weeks)
+WITH tx AS (
+  SELECT week, account_id, n_tx, n_tx_to_intents, active_days,
+         FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%d|%d|%d&#x27;, week, account_id, n_tx, n_tx_to_intents, active_days)) AS fp
+  FROM `{stage}.s1_tx_accounts`
+  WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+), s2 AS (
+  SELECT week, role, account_id, n_actions, active_days,
+         FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%s|%d|%d&#x27;, week, role, account_id, n_actions, active_days)) AS fp
+  FROM `{stage}.s2_receipt_roles`
+  WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+), s5 AS (
+  SELECT week, account_id, n_actions, active_days,
+         FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%d|%d&#x27;, week, account_id, n_actions, active_days)) AS fp
+  FROM `{stage}.s5_relayed_gapfill`
+  WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2025-02-24&#x27;
+), intents AS (
+  SELECT week,
+         SUM(IF(role = &#x27;intents_action&#x27;, n_actions, 0)) AS intents_actions,
+         COUNTIF(role = &#x27;relayed_user&#x27;)                 AS flagged_relayed,
+         BIT_XOR(fp)                                    AS fp_s2
+  FROM s2 GROUP BY week
+), rel AS (
+  SELECT week, account_id, n_actions, active_days, fp FROM s2
+  WHERE role = &#x27;relayed_user&#x27; AND week &gt;= &#x27;2025-03-03&#x27;
+  UNION ALL
+  SELECT week, account_id, n_actions, active_days, fp FROM s5
+), acct AS (
+  SELECT
+    week,
+    COALESCE(tx.account_id, rel.account_id)               AS account_id,
+    tx.account_id IS NOT NULL                             AS is_signer,
+    rel.account_id IS NOT NULL                            AS is_relayed,
+    IFNULL(tx.n_tx, 0)                                    AS n_tx,
+    IFNULL(tx.n_tx_to_intents, 0)                         AS n_tx_to_intents,
+    IFNULL(rel.n_actions, 0)                              AS n_relayed,
+    GREATEST(IFNULL(tx.active_days, 0), IFNULL(rel.active_days, 0)) AS days,
+    tx.fp AS fp_tx, rel.fp AS fp_rel
+  FROM tx FULL OUTER JOIN rel USING (week, account_id)
+), first_seen AS (
+  SELECT account_id, MIN(week) AS first_week FROM acct
+  WHERE n_tx + n_relayed &lt; 1000 GROUP BY account_id
+), labeled AS (
+  SELECT a.*, f.first_week,
+    LAG(a.week) OVER (PARTITION BY a.account_id ORDER BY a.week) = DATE_SUB(a.week, INTERVAL 7 DAY) AS was_active_prev,
+    a.n_tx + a.n_relayed &gt;= 1000 AS heavy,
+    CASE
+      WHEN REGEXP_CONTAINS(a.account_id, r&#x27;^[0-9a-f]{64}$&#x27;) THEN &#x27;implicit&#x27;
+      WHEN STARTS_WITH(a.account_id, &#x27;0x&#x27;)                 THEN &#x27;evm_0x&#x27;
+      WHEN ENDS_WITH(a.account_id, &#x27;.tg&#x27;)                  THEN &#x27;hot_tg&#x27;
+      WHEN ENDS_WITH(a.account_id, &#x27;.sweat&#x27;)               THEN &#x27;sweat&#x27;
+      WHEN REGEXP_CONTAINS(a.account_id, r&#x27;\.users\.(preprod-)?kaiching(\.near)?$&#x27;) THEN &#x27;kaiching&#x27;
+      WHEN ENDS_WITH(a.account_id, &#x27;.near&#x27;)                THEN &#x27;named_near&#x27;
+      ELSE &#x27;other&#x27;
+    END AS family
+  FROM acct a LEFT JOIN first_seen f USING (account_id)
+)
+SELECT
+  l.week,
+  l.family,
+  COUNT(*)                                                    AS users_any,
+  COUNTIF(is_signer)                                          AS signers,
+  COUNTIF(is_relayed)                                         AS relayed_users,
+  COUNTIF(is_signer AND is_relayed)                           AS signer_and_relayed,
+  COUNTIF(heavy)                                              AS heavy_accounts,
+  COUNTIF(NOT heavy)                                          AS users_real,
+  COUNTIF(NOT heavy AND days &gt;= 2)                            AS users_engaged,
+  COUNTIF(NOT heavy AND first_week = l.week)                  AS new_users,
+  COUNTIF(NOT heavy AND IFNULL(was_active_prev, FALSE))       AS retained,
+  SUM(n_tx)                                                   AS tx_signed,
+  SUM(n_relayed)                                              AS relayed_actions,
+  COUNTIF(n_tx_to_intents &gt; 0)                                AS intents_tx_signers,
+  COUNTIF(n_tx_to_intents &gt; 0 AND NOT heavy)                  AS intents_tx_signers_real,
+  SUM(n_tx_to_intents)                                        AS intents_tx,
+  ANY_VALUE(i.intents_actions)                                AS intents_actions_week,
+  ANY_VALUE(i.flagged_relayed)                                AS flagged_relayed_week,
+  BIT_XOR(fp_tx)                                              AS fp_tx,
+  BIT_XOR(fp_rel)                                             AS fp_rel,
+  ANY_VALUE(i.fp_s2)                                          AS fp_s2_week
+FROM labeled l LEFT JOIN intents i USING (week)
+GROUP BY l.week, l.family
+</pre></details><details><summary><code>queries/q2_intents_flows.sql</code></summary><pre>-- name: q2_intents_flows
+-- question: Per ISO week, how many cross-chain (PoA-bridge *.omft.near) token movements
+--           touched intents.near, in which direction, and from how many counterparties?
+-- reads: {stage}.s3_intents_token_flows (tiny). chain = asset prefix before &#x27;-&#x27; or &#x27;.&#x27;
+--        (eth, sol, btc, tron, ...). Burns (cause ft_burn) are withdrawals back to the
+--        source chain. Amounts stay in raw token units (no decimals, no prices).
+-- window: 2024-10-28 .. 2026-10-25
+SELECT
+  week,
+  REGEXP_EXTRACT(token, r&#x27;^([a-z0-9]+)&#x27;)                  AS chain,
+  COUNT(DISTINCT token)                                   AS tokens,
+  SUM(IF(direction = &#x27;in&#x27;, n_events, 0))                  AS events_in,
+  SUM(IF(direction = &#x27;out&#x27;, n_events, 0))                 AS events_out,
+  SUM(IF(cause = &#x27;ft_burn&#x27;, n_events, 0))                 AS events_burn,
+  COUNT(DISTINCT IF(direction = &#x27;in&#x27;, counterparty, NULL)) AS counterparties_in,
+  BIT_XOR(FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%s|%s|%s|%d|%t&#x27;, week, token, cause, direction,
+          IFNULL(counterparty, &#x27;&#x27;), n_events, raw_amount)))  AS fp
+FROM `{stage}.s3_intents_token_flows`
+WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+GROUP BY week, chain
+</pre></details></div><div class="card chart"><img src="../charts/c4_out_of_sample.png" alt="Trained on the first 69 weeks and tested on the last 35, adding Intents activity or price to a simple autoregression never helps consistently: forecast error ranges from 6% better to 16% worse (RMSE ratios 0.939 to 1.163), and most cases are within 3%."><p class="say">Trained on the first 69 weeks and tested on the last 35, adding Intents activity or price to a simple autoregression never helps consistently: forecast error ranges from 6% better to 16% worse (RMSE ratios 0.939 to 1.163), and most cases are within 3%.</p><details><summary><code>analysis.py</code></summary><pre>&quot;&quot;&quot;Thesis model: is NEAR Intents cross-chain activity a better leading indicator of real
+network usage than the NEAR price?
+
+Run by `run.py analyze` (and re-run by `verify-cached`) inside the rs-repro image with
+ROOT (the pack) and OUT (where derived CSVs go). Inputs are only results/q*.csv (weekly
+aggregates from BigQuery) and raw/near_usdt_weekly.json (public price series). Pure
+pandas/numpy, no randomness, fixed rounding -&gt; byte-identical outputs.
+
+Outputs (OUT/):
+  a_weekly.csv     the 104-week panel: levels and weekly log growth of every series
+  a_xcorr.csv      lead/lag cross-correlations, lags -8..+8, with n and a 95% band
+  a_oos.csv        out-of-sample test: AR(1) baseline vs AR(1) + lagged indicator
+  a_families.csv   real users by account family, per week (for the stacked chart)
+  a_chains.csv     cross-chain events by source chain, whole window
+  a_nep245.csv     sampled-day NEP-245 ledger accounts next to same-week Intents signers
+  a_facts.csv      every number quoted in THESIS.md / the dashboard, as displayed
+&quot;&quot;&quot;
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+ROOT = Path(globals().get(&quot;ROOT&quot;, Path(__file__).resolve().parent))
+OUT = Path(globals().get(&quot;OUT&quot;, ROOT / &quot;results&quot;))
+R = ROOT / &quot;results&quot;
+
+# ---- parameters (also declared in THESIS.md front matter) ---------------------------
+WEEKS = 104                 # 2024-10-28 .. 2026-10-25
+LAGS = range(-8, 9)         # k &gt; 0: indicator leads usage by k weeks
+FIT_END = &quot;2026-02-22&quot;      # first 69 weeks (~16 months) fit, last 35 weeks (~8 months) test
+BREAK = 0.5                 # |weekly log growth| above this marks a regime-break week
+Z95 = 1.96
+
+# ---- load ----------------------------------------------------------------------------
+q1 = pd.read_csv(R / &quot;q1_weekly_usage.csv&quot;)
+q2 = pd.read_csv(R / &quot;q2_intents_flows.csv&quot;)
+q3 = pd.read_csv(R / &quot;q3_nep245_sample.csv&quot;)
+kl = json.loads((ROOT / &quot;raw&quot; / &quot;near_usdt_weekly.json&quot;).read_text())
+
+if isinstance(kl, list):        # Binance klines: [open_ms, open, high, low, close, ...]
+    price = pd.DataFrame({&quot;week&quot;: pd.to_datetime([k[0] for k in kl], unit=&quot;ms&quot;).strftime(&quot;%Y-%m-%d&quot;),
+                          &quot;price_close&quot;: [float(k[4]) for k in kl]})
+else:                           # CoinGecko fallback: {&quot;prices&quot;: [[ms, usd], ...]} daily
+    p = pd.DataFrame(kl[&quot;prices&quot;], columns=[&quot;ms&quot;, &quot;usd&quot;])
+    p[&quot;day&quot;] = pd.to_datetime(p.ms, unit=&quot;ms&quot;)
+    p[&quot;week&quot;] = (p.day - pd.to_timedelta(p.day.dt.weekday, unit=&quot;D&quot;)).dt.strftime(&quot;%Y-%m-%d&quot;)
+    price = p.sort_values(&quot;ms&quot;).groupby(&quot;week&quot;, as_index=False).usd.last().rename(columns={&quot;usd&quot;: &quot;price_close&quot;})
+
+usage_cols = [&quot;users_any&quot;, &quot;signers&quot;, &quot;relayed_users&quot;, &quot;heavy_accounts&quot;, &quot;users_real&quot;, &quot;users_engaged&quot;,
+              &quot;new_users&quot;, &quot;retained&quot;, &quot;tx_signed&quot;, &quot;relayed_actions&quot;, &quot;intents_tx_signers&quot;,
+              &quot;intents_tx_signers_real&quot;, &quot;intents_tx&quot;]
+w = q1.groupby(&quot;week&quot;)[usage_cols].sum()
+w[&quot;intents_actions&quot;] = q1.groupby(&quot;week&quot;).intents_actions_week.first()
+core = q1[q1.family != &quot;kaiching&quot;].groupby(&quot;week&quot;)[[&quot;users_real&quot;, &quot;users_engaged&quot;]].sum()
+w[&quot;users_core&quot;] = core.users_real          # real users excluding KaiChing app sub-accounts
+w[&quot;engaged_core&quot;] = core.users_engaged
+xc = q2.groupby(&quot;week&quot;)[[&quot;events_in&quot;, &quot;events_out&quot;, &quot;events_burn&quot;]].sum()
+w = w.join(xc, how=&quot;left&quot;).fillna({&quot;events_in&quot;: 0, &quot;events_out&quot;: 0, &quot;events_burn&quot;: 0})
+w[&quot;xchain_events&quot;] = w.events_in + w.events_out
+w = w.join(price.set_index(&quot;week&quot;), how=&quot;left&quot;).reset_index()
+assert len(w) == WEEKS and w.price_close.notna().all(), &quot;panel must cover all 104 weeks&quot;
+w = w.sort_values(&quot;week&quot;).reset_index(drop=True)
+
+
+def glog(s):
+    s = s.where(s &gt; 0)
+    return np.log(s).diff()
+
+
+SERIES = {  # name -&gt; (column, label)
+    &quot;users_real&quot;: (&quot;users_real&quot;, &quot;Real users (signers + relayed, minus heavy)&quot;),
+    &quot;users_core&quot;: (&quot;users_core&quot;, &quot;Real users excluding KaiChing sub-accounts&quot;),
+    &quot;users_engaged&quot;: (&quot;users_engaged&quot;, &quot;Engaged real users (&gt;= 2 active days)&quot;),
+    &quot;xchain_events&quot;: (&quot;xchain_events&quot;, &quot;Intents cross-chain token movements&quot;),
+    &quot;intents_actions&quot;: (&quot;intents_actions&quot;, &quot;Actions executed on intents.near&quot;),
+    &quot;price_close&quot;: (&quot;price_close&quot;, &quot;NEAR/USDT weekly close&quot;),
+}
+for name, (col, _) in SERIES.items():
+    w[f&quot;g_{name}&quot;] = glog(w[col]).round(6)
+TARGETS = (&quot;users_real&quot;, &quot;users_core&quot;, &quot;users_engaged&quot;)
+for t in TARGETS:  # regime breaks are flagged per usage series, from that series&#x27; own growth
+    w[f&quot;break_{t}&quot;] = (w[f&quot;g_{t}&quot;].abs() &gt; BREAK).astype(int)
+w[&quot;break_week&quot;] = w.break_users_real
+w[&quot;sample&quot;] = np.where(w.week &lt;= FIT_END, &quot;fit&quot;, &quot;test&quot;)
+
+
+# ---- lead/lag cross-correlation --------------------------------------------------------
+def xcorr(x, y, k):
+    &quot;&quot;&quot;corr(x[t-k], y[t]); k &gt; 0 means x leads y.&quot;&quot;&quot;
+    a = pd.concat([x.shift(k), y], axis=1).dropna()
+    n = len(a)
+    if n &lt; 10:
+        return np.nan, np.nan, n
+    # Spearman = Pearson on average ranks (no scipy in the image)
+    rx, ry = a.iloc[:, 0].rank(), a.iloc[:, 1].rank()
+    return a.iloc[:, 0].corr(a.iloc[:, 1]), rx.corr(ry), n
+
+
+rows = []
+for target in (&quot;users_real&quot;, &quot;users_core&quot;, &quot;users_engaged&quot;):
+    for ind in (&quot;xchain_events&quot;, &quot;intents_actions&quot;, &quot;price_close&quot;):
+        for drop_breaks in (0, 1):
+            y = w[f&quot;g_{target}&quot;].where(w[f&quot;break_{target}&quot;] == 0) if drop_breaks else w[f&quot;g_{target}&quot;]
+            for k in LAGS:
+                r, rho, n = xcorr(w[f&quot;g_{ind}&quot;], y, k)
+                rows.append({&quot;target&quot;: target, &quot;indicator&quot;: ind, &quot;drop_breaks&quot;: drop_breaks, &quot;lag&quot;: k,
+                             &quot;n&quot;: n, &quot;pearson&quot;: round(r, 2), &quot;spearman&quot;: round(rho, 2),
+                             &quot;band95&quot;: round(Z95 / np.sqrt(n), 2),
+                             &quot;significant&quot;: int(abs(r) &gt; Z95 / np.sqrt(n))})
+xc = pd.DataFrame(rows)
+
+
+# ---- out-of-sample test ----------------------------------------------------------------
+def ols(X, y):
+    X1 = np.column_stack([np.ones(len(X)), X])
+    beta, *_ = np.linalg.lstsq(X1, y, rcond=None)
+    return beta
+
+
+def predict(beta, X):
+    return np.column_stack([np.ones(len(X)), X]) @ beta
+
+
+oos = []
+for target in (&quot;users_real&quot;, &quot;users_core&quot;, &quot;users_engaged&quot;):
+    for ind in (&quot;xchain_events&quot;, &quot;intents_actions&quot;, &quot;price_close&quot;):
+        for drop_breaks in (0, 1):
+            d = pd.DataFrame({&quot;week&quot;: w.week, &quot;y&quot;: w[f&quot;g_{target}&quot;], &quot;y1&quot;: w[f&quot;g_{target}&quot;].shift(1),
+                              &quot;brk&quot;: w[f&quot;break_{target}&quot;], &quot;x&quot;: w[f&quot;g_{ind}&quot;]})
+            if drop_breaks:
+                d = d[(d.brk == 0) &amp; (d.brk.shift(1).fillna(0) == 0)]
+            fit = d[d.week &lt;= FIT_END]
+            # lag chosen on the fit sample only: best |corr| among leads 1..8
+            cands = []
+            for k in range(1, 9):
+                f = pd.DataFrame({&quot;y&quot;: fit.y, &quot;x&quot;: d.x.shift(k).reindex(fit.index)}).dropna()
+                cands.append((abs(f.x.corr(f.y)), k))
+            best_k = max(cands)[1]
+            d = d.assign(xk=w[f&quot;g_{ind}&quot;].shift(best_k).reindex(d.index)).dropna()
+            fit, test = d[d.week &lt;= FIT_END], d[d.week &gt; FIT_END]
+            b0 = ols(fit[[&quot;y1&quot;]].values, fit.y.values)
+            b1 = ols(fit[[&quot;y1&quot;, &quot;xk&quot;]].values, fit.y.values)
+            e0 = test.y.values - predict(b0, test[[&quot;y1&quot;]].values)
+            e1 = test.y.values - predict(b1, test[[&quot;y1&quot;, &quot;xk&quot;]].values)
+            rm0, rm1 = np.sqrt(np.mean(e0 ** 2)), np.sqrt(np.mean(e1 ** 2))
+            oos.append({&quot;target&quot;: target, &quot;indicator&quot;: ind, &quot;drop_breaks&quot;: drop_breaks, &quot;lag&quot;: best_k,
+                        &quot;n_fit&quot;: len(fit), &quot;n_test&quot;: len(test), &quot;coef_x&quot;: round(b1[2], 3),
+                        &quot;rmse_ar1&quot;: round(rm0, 4), &quot;rmse_with_x&quot;: round(rm1, 4),
+                        &quot;rmse_ratio&quot;: round(rm1 / rm0, 3),
+                        &quot;improves&quot;: int(rm1 &lt; rm0)})
+oos = pd.DataFrame(oos)
+
+# ---- families, chains, NEP-245 ------------------------------------------------------------
+fam = q1.pivot(index=&quot;week&quot;, columns=&quot;family&quot;, values=&quot;users_real&quot;).fillna(0).astype(int).reset_index()
+chains = (q2.groupby(&quot;chain&quot;)[[&quot;events_in&quot;, &quot;events_out&quot;, &quot;events_burn&quot;]].sum()
+          .assign(events=lambda t: t.events_in + t.events_out).sort_values([&quot;events&quot;, &quot;chain&quot;], ascending=[False, True])
+          .reset_index())
+chains[&quot;share_pct&quot;] = (100 * chains.events / chains.events.sum()).round(1)
+q3 = q3.copy()
+q3[&quot;week&quot;] = (pd.to_datetime(q3.block_date) - pd.to_timedelta(pd.to_datetime(q3.block_date).dt.weekday, unit=&quot;D&quot;)).dt.strftime(&quot;%Y-%m-%d&quot;)
+nep = q3.merge(w[[&quot;week&quot;, &quot;intents_tx_signers_real&quot;, &quot;users_real&quot;, &quot;users_core&quot;]], on=&quot;week&quot;, how=&quot;left&quot;)
+nep[&quot;ledger_per_tx_signer&quot;] = (nep.ledger_accounts / nep.intents_tx_signers_real).round(1)
+nep = nep[[&quot;block_date&quot;, &quot;week&quot;, &quot;ledger_accounts&quot;, &quot;transfer_accounts&quot;, &quot;mint_accounts&quot;, &quot;burn_accounts&quot;,
+           &quot;transfer_items&quot;, &quot;intents_tx_signers_real&quot;, &quot;users_real&quot;, &quot;users_core&quot;, &quot;ledger_per_tx_signer&quot;]]
+
+# ---- facts quoted in prose ----------------------------------------------------------------
+F = {}
+
+
+def fact(key, value):
+    F[key] = value
+
+
+def row(week):
+    return w[w.week == week].iloc[0]
+
+
+first, last = w.iloc[0], w.iloc[-1]
+peak = w.loc[w.users_real.idxmax()]
+fact(&quot;weeks&quot;, len(w))
+fact(&quot;n_fit_weeks&quot;, int((w.week &lt;= FIT_END).sum()))
+fact(&quot;n_test_weeks&quot;, int((w.week &gt; FIT_END).sum()))
+fact(&quot;users_real_first&quot;, int(first.users_real)); fact(&quot;users_real_last&quot;, int(last.users_real))
+fact(&quot;users_real_peak&quot;, int(peak.users_real)); fact(&quot;users_real_peak_week&quot;, peak.week)
+fact(&quot;users_real_fall_x_from_peak&quot;, round(peak.users_real / last.users_real, 1))
+fact(&quot;users_core_first&quot;, int(first.users_core)); fact(&quot;users_core_last&quot;, int(last.users_core))
+fact(&quot;users_core_fall_pct&quot;, round(100 * (1 - last.users_core / first.users_core), 1))
+fact(&quot;signers_first&quot;, int(first.signers)); fact(&quot;signers_last&quot;, int(last.signers))
+fact(&quot;price_first&quot;, round(first.price_close, 3)); fact(&quot;price_last&quot;, round(last.price_close, 3))
+fact(&quot;price_change_pct&quot;, round(100 * (last.price_close / first.price_close - 1), 1))
+fact(&quot;price_min&quot;, round(w.price_close.min(), 3)); fact(&quot;price_min_week&quot;, w.loc[w.price_close.idxmin()].week)
+fact(&quot;price_max&quot;, round(w.price_close.max(), 3)); fact(&quot;price_max_week&quot;, w.loc[w.price_close.idxmax()].week)
+fs = w[w.xchain_events &gt; 0].iloc[0]
+fact(&quot;xchain_first_week&quot;, fs.week)
+x_early = w[(w.week &gt;= &quot;2024-11-04&quot;) &amp; (w.week &lt;= &quot;2025-01-26&quot;)].xchain_events.mean()
+x_late = w[w.week &gt;= &quot;2026-08-03&quot;].xchain_events.mean()
+fact(&quot;xchain_mean_first_quarter&quot;, int(round(x_early))); fact(&quot;xchain_mean_last_quarter&quot;, int(round(x_late)))
+fact(&quot;xchain_growth_x&quot;, round(x_late / x_early, 1))
+u_early = w[(w.week &gt;= &quot;2024-11-04&quot;) &amp; (w.week &lt;= &quot;2025-01-26&quot;)].users_core.mean()
+u_late = w[w.week &gt;= &quot;2026-08-03&quot;].users_core.mean()
+fact(&quot;core_mean_first_quarter&quot;, int(round(u_early))); fact(&quot;core_mean_last_quarter&quot;, int(round(u_late)))
+fact(&quot;xchain_total&quot;, int(w.xchain_events.sum())); fact(&quot;xchain_burn_total&quot;, int(w.events_burn.sum()))
+fact(&quot;xchain_peak&quot;, int(w.xchain_events.max())); fact(&quot;xchain_peak_week&quot;, w.loc[w.xchain_events.idxmax()].week)
+fact(&quot;intents_actions_peak&quot;, int(w.intents_actions.max())); fact(&quot;intents_actions_peak_week&quot;, w.loc[w.intents_actions.idxmax()].week)
+fact(&quot;n_chains&quot;, int(len(chains))); fact(&quot;top_chain&quot;, chains.iloc[0].chain); fact(&quot;top_chain_share_pct&quot;, chains.iloc[0].share_pct)
+fact(&quot;n_break_weeks&quot;, int(w.break_week.sum()))
+for t in TARGETS:
+    fact(f&quot;n_break_weeks|{t}&quot;, int(w[f&quot;break_{t}&quot;].sum()))
+for wk in w[w.break_week == 1].week:
+    fact(f&quot;break_{wk}&quot;, round(float(row(wk).g_users_real), 2))
+# regime artifacts of the KaiChing app (sub-accounts *.users.kaiching)
+kc = q1[q1.family == &quot;kaiching&quot;].set_index(&quot;week&quot;).reindex(w.week).fillna(0)
+for wk in (&quot;2024-10-28&quot;, &quot;2025-02-10&quot;, &quot;2025-02-17&quot;, &quot;2025-02-24&quot;, &quot;2026-03-23&quot;, &quot;2026-03-30&quot;, &quot;2026-04-06&quot;,
+           &quot;2026-09-21&quot;, &quot;2026-09-28&quot;, &quot;2026-10-05&quot;, &quot;2026-10-12&quot;):
+    fact(f&quot;kc_signers_{wk}&quot;, int(kc.loc[wk].signers)); fact(f&quot;kc_relayed_{wk}&quot;, int(kc.loc[wk].relayed_users))
+    fact(f&quot;kc_real_{wk}&quot;, int(kc.loc[wk].users_real))
+fact(&quot;kc_new_2026-09-28&quot;, int(kc.loc[&quot;2026-09-28&quot;].new_users))
+fact(&quot;kc_share_users_real_pct&quot;, round(100 * kc.users_real.sum() / w.users_real.sum(), 1))
+fact(&quot;kc_peak_real&quot;, int(kc.users_real.max())); fact(&quot;kc_peak_week&quot;, kc.users_real.idxmax())
+kc_weeks = kc[kc.users_real &gt; 0]
+fact(&quot;kc_weeks_present&quot;, int(len(kc_weeks)))
+fact(&quot;kc_share_peak_week_pct&quot;, round(100 * kc.loc[kc.users_real.idxmax()].users_real / w.set_index(&quot;week&quot;).loc[kc.users_real.idxmax()].users_real, 1))
+ov = q1[q1.week == &quot;2025-02-24&quot;]
+fact(&quot;overlap_s5_relayed&quot;, int(ov.relayed_users.sum())); fact(&quot;overlap_flag_relayed&quot;, int(ov.flagged_relayed_week.iloc[0]))
+fact(&quot;relayed_first_week&quot;, int(first.relayed_users)); fact(&quot;relayed_share_first_pct&quot;, round(100 * first.relayed_users / first.users_any, 1))
+fact(&quot;users_any_first&quot;, int(first.users_any))
+fact(&quot;signers_2026-09-21&quot;, int(row(&quot;2026-09-21&quot;).signers)); fact(&quot;signers_2026-09-28&quot;, int(row(&quot;2026-09-28&quot;).signers))
+fact(&quot;signers_2026-10-19&quot;, int(row(&quot;2026-10-19&quot;).signers))
+fact(&quot;heavy_median&quot;, int(w.heavy_accounts.median()))
+fact(&quot;engaged_share_last_pct&quot;, round(100 * last.users_engaged / last.users_real, 1))
+# cross-correlation summaries (primary = Pearson, all weeks, k = 1..8 leads)
+for target in (&quot;users_real&quot;, &quot;users_core&quot;, &quot;users_engaged&quot;):
+    for ind in (&quot;xchain_events&quot;, &quot;intents_actions&quot;, &quot;price_close&quot;):
+        for db in (0, 1):
+            s = xc[(xc.target == target) &amp; (xc.indicator == ind) &amp; (xc.drop_breaks == db)]
+            lead = s[s.lag &gt; 0]
+            best = lead.loc[lead.pearson.abs().idxmax()]
+            tag = f&quot;{target}|{ind}|{&#x27;nobreak&#x27; if db else &#x27;all&#x27;}&quot;
+            fact(f&quot;xc_best_lag|{tag}&quot;, int(best.lag)); fact(f&quot;xc_best_r|{tag}&quot;, best.pearson)
+            fact(f&quot;xc_best_n|{tag}&quot;, int(best.n)); fact(f&quot;xc_band|{tag}&quot;, best.band95)
+            fact(f&quot;xc_sig_leads|{tag}&quot;, int(lead.significant.sum()))
+            fact(f&quot;xc_lag0_r|{tag}&quot;, s[s.lag == 0].pearson.iloc[0])
+            fact(f&quot;xc_lag0_n|{tag}&quot;, int(s[s.lag == 0].n.iloc[0])); fact(f&quot;xc_lag0_band|{tag}&quot;, s[s.lag == 0].band95.iloc[0])
+            fact(f&quot;xc_lag0_sig|{tag}&quot;, int(s[s.lag == 0].significant.iloc[0]))
+            fact(f&quot;xc_best_spearman|{tag}&quot;, best.spearman)
+            fact(f&quot;xc_sig_lags_any|{tag}&quot;, int(s.significant.sum()))
+for _, o in oos.iterrows():
+    tag = f&quot;{o.target}|{o.indicator}|{&#x27;nobreak&#x27; if o.drop_breaks else &#x27;all&#x27;}&quot;
+    fact(f&quot;oos_ratio|{tag}&quot;, o.rmse_ratio); fact(f&quot;oos_lag|{tag}&quot;, int(o.lag))
+    fact(f&quot;oos_ntest|{tag}&quot;, int(o.n_test)); fact(f&quot;oos_nfit|{tag}&quot;, int(o.n_fit))
+lead_tests = xc[xc.lag &gt; 0]
+fact(&quot;lead_tests&quot;, int(len(lead_tests)))
+fact(&quot;lead_tests_significant&quot;, int(lead_tests.significant.sum()))
+fact(&quot;lead_tests_expected_by_chance&quot;, round(0.05 * len(lead_tests), 1))
+for ind in (&quot;xchain_events&quot;, &quot;intents_actions&quot;, &quot;price_close&quot;):
+    li = lead_tests[lead_tests.indicator == ind]
+    fact(f&quot;lead_tests|{ind}&quot;, int(len(li))); fact(f&quot;lead_sig|{ind}&quot;, int(li.significant.sum()))
+    fact(f&quot;lead_sig_pos|{ind}&quot;, int(((li.significant == 1) &amp; (li.pearson &gt; 0)).sum()))
+    fact(f&quot;lead_max_abs_r|{ind}&quot;, float(li.pearson.abs().max()))
+fact(&quot;oos_improves_xchain&quot;, int(oos[oos.indicator == &quot;xchain_events&quot;].improves.sum()))
+fact(&quot;oos_improves_actions&quot;, int(oos[oos.indicator == &quot;intents_actions&quot;].improves.sum()))
+fact(&quot;oos_improves_price&quot;, int(oos[oos.indicator == &quot;price_close&quot;].improves.sum()))
+fact(&quot;oos_cases_per_indicator&quot;, int((oos.indicator == &quot;price_close&quot;).sum()))
+fact(&quot;oos_fits&quot;, int(len(oos))); fact(&quot;oos_within_3pct&quot;, int(((oos.rmse_ratio - 1).abs() &lt;= 0.03).sum()))
+fact(&quot;oos_best_gain_xchain_pct&quot;, round(100 * (1 - oos[oos.indicator == &quot;xchain_events&quot;].rmse_ratio.min()), 1))
+fact(&quot;oos_ratio_min&quot;, float(oos.rmse_ratio.min())); fact(&quot;oos_ratio_max&quot;, float(oos.rmse_ratio.max()))
+lvl = w[w.xchain_events &gt; 0]
+fact(&quot;level_corr_xchain_core&quot;, round(np.log(lvl.xchain_events).corr(np.log(lvl.users_core)), 2))
+fact(&quot;level_corr_price_core&quot;, round(np.log(w.price_close).corr(np.log(w.users_core)), 2))
+fact(&quot;level_corr_n_xchain&quot;, int(len(lvl)))
+fact(&quot;nep245_days&quot;, int(len(q3))); fact(&quot;nep245_sample_days_planned&quot;, 26)
+fact(&quot;nep245_ledger_max&quot;, int(nep.ledger_accounts.max())); fact(&quot;nep245_ledger_max_day&quot;, nep.loc[nep.ledger_accounts.idxmax()].block_date)
+fact(&quot;nep245_ledger_last&quot;, int(nep.iloc[-1].ledger_accounts)); fact(&quot;nep245_last_day&quot;, nep.iloc[-1].block_date)
+fact(&quot;nep245_ratio_median&quot;, round(float(nep.ledger_per_tx_signer.median()), 1))
+fact(&quot;intents_tx_signers_real_last&quot;, int(last.intents_tx_signers_real))
+
+facts = pd.DataFrame({&quot;key&quot;: list(F), &quot;value&quot;: [F[k] for k in F]})
+facts[&quot;abs_value&quot;] = [abs(v) if isinstance(v, (int, float, np.integer, np.floating)) else &quot;&quot; for v in facts.value]
+
+# ---- write ------------------------------------------------------------------------------------
+OUT.mkdir(parents=True, exist_ok=True)
+fmt = dict(index=False, lineterminator=&quot;\n&quot;, float_format=&quot;%.10g&quot;)
+keep = [&quot;week&quot;, &quot;sample&quot;, &quot;break_week&quot;, &quot;price_close&quot;, &quot;users_any&quot;, &quot;signers&quot;, &quot;relayed_users&quot;, &quot;heavy_accounts&quot;,
+        &quot;users_real&quot;, &quot;users_core&quot;, &quot;users_engaged&quot;, &quot;engaged_core&quot;, &quot;new_users&quot;, &quot;retained&quot;,
+        &quot;break_users_core&quot;, &quot;break_users_engaged&quot;, &quot;intents_tx_signers_real&quot;,
+        &quot;intents_actions&quot;, &quot;xchain_events&quot;, &quot;events_in&quot;, &quot;events_out&quot;, &quot;events_burn&quot;] + [f&quot;g_{n}&quot; for n in SERIES]
+w[keep].to_csv(OUT / &quot;a_weekly.csv&quot;, **fmt)
+xc.to_csv(OUT / &quot;a_xcorr.csv&quot;, **fmt)
+oos.to_csv(OUT / &quot;a_oos.csv&quot;, **fmt)
+fam.to_csv(OUT / &quot;a_families.csv&quot;, **fmt)
+chains.to_csv(OUT / &quot;a_chains.csv&quot;, **fmt)
+nep.to_csv(OUT / &quot;a_nep245.csv&quot;, **fmt)
+facts.to_csv(OUT / &quot;a_facts.csv&quot;, **fmt)
+print(f&quot;analysis: {len(w)} weeks, {len(xc)} correlations, {len(oos)} out-of-sample fits, {len(facts)} facts&quot;)
+</pre></details></div><div class="card chart"><img src="../charts/c5_nep245_vs_signers.png" alt="Intents keeps balances in its own NEP-245 ledger: on 2026-09-30 30,607 accounts appeared in it in a single day, while only a few hundred to a few thousand accounts a week sign transactions to intents.near themselves."><p class="say">Intents keeps balances in its own NEP-245 ledger: on 2026-09-30 30,607 accounts appeared in it in a single day, while only a few hundred to a few thousand accounts a week sign transactions to intents.near themselves.</p><details><summary><code>stage/s4_nep245_sample.sql</code></summary><pre>-- name: s4_nep245_sample  (HEAVY, run once; SAMPLED)
+-- NEAR Intents keeps user balances inside intents.near as NEP-245 multi-tokens. Those
+-- events are NOT in ft_events (which only carries nep141); they exist only as
+-- EVENT_JSON log lines in execution_outcomes. A full-window log scan dry-runs at about
+-- 2.4 TB (over budget), so we sample one day every 4 weeks: the Wednesday of every
+-- 4th ISO week, 26 days. One row per (day, event, account) with the number of
+-- event entries naming that account (owner_id, old_owner_id or new_owner_id).
+-- window: 2024-10-28 .. 2026-10-25, sampled days listed below
+CREATE OR REPLACE TABLE `{stage}.s4_nep245_sample` AS
+WITH ev AS (
+  SELECT block_date, SAFE.PARSE_JSON(SUBSTR(l.element, 12)) AS j
+  FROM `bigquery-public-data.crypto_near_mainnet_us.execution_outcomes`, UNNEST(logs.list) AS l
+  WHERE block_date BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+    AND block_date IN (&#x27;2024-10-30&#x27;,&#x27;2024-11-27&#x27;,&#x27;2024-12-25&#x27;,&#x27;2025-01-22&#x27;,&#x27;2025-02-19&#x27;,&#x27;2025-03-19&#x27;,&#x27;2025-04-16&#x27;,&#x27;2025-05-14&#x27;,&#x27;2025-06-11&#x27;,&#x27;2025-07-09&#x27;,&#x27;2025-08-06&#x27;,&#x27;2025-09-03&#x27;,&#x27;2025-10-01&#x27;,&#x27;2025-10-29&#x27;,&#x27;2025-11-26&#x27;,&#x27;2025-12-24&#x27;,&#x27;2026-01-21&#x27;,&#x27;2026-02-18&#x27;,&#x27;2026-03-18&#x27;,&#x27;2026-04-15&#x27;,&#x27;2026-05-13&#x27;,&#x27;2026-06-10&#x27;,&#x27;2026-07-08&#x27;,&#x27;2026-08-05&#x27;,&#x27;2026-09-02&#x27;,&#x27;2026-09-30&#x27;)
+    AND executor_account_id = &#x27;intents.near&#x27;
+    AND STARTS_WITH(l.element, &#x27;EVENT_JSON:&#x27;)
+    AND l.element LIKE &#x27;%&quot;nep245&quot;%&#x27;
+), items AS (
+  SELECT block_date, LAX_STRING(j.event) AS event, d
+  FROM ev, UNNEST(JSON_QUERY_ARRAY(j, &#x27;$.data&#x27;)) AS d
+)
+SELECT block_date, event, account_id, COUNT(*) AS n_items
+FROM items,
+  UNNEST(ARRAY_CONCAT(
+    IF(LAX_STRING(d.owner_id)     IS NULL, [], [LAX_STRING(d.owner_id)]),
+    IF(LAX_STRING(d.old_owner_id) IS NULL, [], [LAX_STRING(d.old_owner_id)]),
+    IF(LAX_STRING(d.new_owner_id) IS NULL, [], [LAX_STRING(d.new_owner_id)]))) AS account_id
+GROUP BY block_date, event, account_id
+</pre></details><details><summary><code>queries/q3_nep245_sample.sql</code></summary><pre>-- name: q3_nep245_sample
+-- question: On the 26 sampled days, how many distinct accounts appear in NEAR Intents&#x27;
+--           internal NEP-245 ledger (mt_mint / mt_transfer / mt_burn), and how many events?
+-- reads: {stage}.s4_nep245_sample (tiny; one day every 4 weeks, see stage/s4)
+-- window: 2024-10-28 .. 2026-10-25 (sampled days only)
+SELECT
+  block_date,
+  COUNT(DISTINCT account_id)                                       AS ledger_accounts,
+  COUNT(DISTINCT IF(event = &#x27;mt_transfer&#x27;, account_id, NULL))      AS transfer_accounts,
+  COUNT(DISTINCT IF(event = &#x27;mt_mint&#x27;, account_id, NULL))          AS mint_accounts,
+  COUNT(DISTINCT IF(event = &#x27;mt_burn&#x27;, account_id, NULL))          AS burn_accounts,
+  SUM(IF(event = &#x27;mt_transfer&#x27;, n_items, 0))                       AS transfer_items,
+  SUM(IF(event = &#x27;mt_mint&#x27;, n_items, 0))                           AS mint_items,
+  SUM(IF(event = &#x27;mt_burn&#x27;, n_items, 0))                           AS burn_items,
+  BIT_XOR(FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%s|%d&#x27;, block_date, event, account_id, n_items))) AS fp
+FROM `{stage}.s4_nep245_sample`
+WHERE block_date BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+GROUP BY block_date
+</pre></details></div><div class="card chart"><img src="../charts/c6_chains.png" alt="Cross-chain movements came from 24 source chains; ETH assets alone were 27.3%."><p class="say">Cross-chain movements came from 24 source chains; ETH assets alone were 27.3%.</p><details><summary><code>stage/s3_intents_token_flows.sql</code></summary><pre>-- name: s3_intents_token_flows  (HEAVY, run once)
+-- Fungible-token (NEP-141) balance changes of the intents.near account, per week.
+-- Cross-chain assets on NEAR Intents are the PoA-bridge tokens *.omft.near (one per
+-- source-chain asset). ft_events is clustered on contract_account_id, so the scan is
+-- pruned with STARTS_WITH on the chain prefixes seen in a 24-day sample, then filtered
+-- exactly with ENDS_WITH(&#x27;.omft.near&#x27;). Prefixes not in the list are missed (see THESIS.md).
+-- direction: &#x27;in&#x27; = intents.near balance increased, &#x27;out&#x27; = decreased (burn = bridge-out).
+-- Amounts are raw integer token units (no decimals, no prices).
+-- window: 2024-10-28 .. 2026-10-25 = 104 full ISO weeks
+CREATE OR REPLACE TABLE `{stage}.s3_intents_token_flows` AS
+SELECT
+  DATE_TRUNC(block_date, ISOWEEK)                          AS week,
+  contract_account_id                                      AS token,
+  cause,
+  IF(STARTS_WITH(delta_amount, &#x27;-&#x27;), &#x27;out&#x27;, &#x27;in&#x27;)          AS direction,
+  involved_account_id                                      AS counterparty,
+  COUNT(*)                                                 AS n_events,
+  SUM(ABS(CAST(delta_amount AS BIGNUMERIC)))               AS raw_amount
+FROM `bigquery-public-data.crypto_near_mainnet_us.ft_events`
+WHERE block_date BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+  AND affected_account_id = &#x27;intents.near&#x27;
+  AND ENDS_WITH(contract_account_id, &#x27;.omft.near&#x27;)
+  AND (   STARTS_WITH(contract_account_id, &#x27;eth&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;base&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;sol&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;gnosis&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;arb&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;hood&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;sui&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;aptos&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;aleo&#x27;)  OR STARTS_WITH(contract_account_id, &#x27;tron&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;bera&#x27;)  OR STARTS_WITH(contract_account_id, &#x27;plasma&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;zec&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;btc&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;xrp&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;ltc&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;qtc&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;doge&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;bch&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;cardano&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;starknet&#x27;) OR STARTS_WITH(contract_account_id, &#x27;dash&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;bsc&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;avax&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;pol&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;op&#x27;)
+       OR STARTS_WITH(contract_account_id, &#x27;ton&#x27;)   OR STARTS_WITH(contract_account_id, &#x27;stellar&#x27;))
+GROUP BY week, token, cause, direction, counterparty
+</pre></details><details><summary><code>queries/q2_intents_flows.sql</code></summary><pre>-- name: q2_intents_flows
+-- question: Per ISO week, how many cross-chain (PoA-bridge *.omft.near) token movements
+--           touched intents.near, in which direction, and from how many counterparties?
+-- reads: {stage}.s3_intents_token_flows (tiny). chain = asset prefix before &#x27;-&#x27; or &#x27;.&#x27;
+--        (eth, sol, btc, tron, ...). Burns (cause ft_burn) are withdrawals back to the
+--        source chain. Amounts stay in raw token units (no decimals, no prices).
+-- window: 2024-10-28 .. 2026-10-25
+SELECT
+  week,
+  REGEXP_EXTRACT(token, r&#x27;^([a-z0-9]+)&#x27;)                  AS chain,
+  COUNT(DISTINCT token)                                   AS tokens,
+  SUM(IF(direction = &#x27;in&#x27;, n_events, 0))                  AS events_in,
+  SUM(IF(direction = &#x27;out&#x27;, n_events, 0))                 AS events_out,
+  SUM(IF(cause = &#x27;ft_burn&#x27;, n_events, 0))                 AS events_burn,
+  COUNT(DISTINCT IF(direction = &#x27;in&#x27;, counterparty, NULL)) AS counterparties_in,
+  BIT_XOR(FARM_FINGERPRINT(FORMAT(&#x27;%t|%s|%s|%s|%s|%d|%t&#x27;, week, token, cause, direction,
+          IFNULL(counterparty, &#x27;&#x27;), n_events, raw_amount)))  AS fp
+FROM `{stage}.s3_intents_token_flows`
+WHERE week BETWEEN &#x27;2024-10-28&#x27; AND &#x27;2026-10-25&#x27;
+GROUP BY week, chain
+</pre></details></div>
+</div></section>
+<section id="repro" style="background:#fff"><div class="wrap">
+  <h2 class="sec">Reproduce</h2>
+  <p class="sub">Every query has a fixed date window and a SHA-256 fingerprint. <code>make verify-cached</code> re-checks everything offline; <code>make verify</code> re-runs the aggregates on BigQuery.</p>
+  <table><tr><td><b>query</b></td><td><b>rows</b></td><td><b>result sha256</b></td></tr><tr><td><code>q1_weekly_usage</code></td><td>701</td><td><code>d9d7733890d6bbdb…</code></td></tr><tr><td><code>q2_intents_flows</code></td><td>1526</td><td><code>12aee07ffb4f39ab…</code></td></tr><tr><td><code>q3_nep245_sample</code></td><td>25</td><td><code>2911bcced94a5ab0…</code></td></tr></table>
+</div></section>
+<footer class="foot">NearBI research shop · data: bigquery-public-data.crypto_near_mainnet_us + Binance NEARUSDT weekly klines · window 2024-10-28 to 2026-10-25</footer>
+</body></html>
