@@ -96,3 +96,11 @@ No NAT, EC2, RDS, load balancers or provisioned concurrency.
 gets two static behaviors (`/reports/<slug>` and `/reports/<slug>/*`) ahead of the gated `/reports/*` rule, the
 index-rewrite function 301s the slash-less URL, and the same list is passed to the Lambda as `FREE_REPORT_SLUGS`.
 To publish another free report: add its slug here and in the app's `DEFAULT_FREE_REPORT_SLUGS`, apply, then sync.
+
+## Public ledger (static, public)
+
+`/ledger` and `/ledger/*` (`local.public_static_paths` in `tofu/cdn.tf`) are static behaviors placed with the
+free reports, ahead of the gated `/reports/*` rule and every app behavior, so the ledger never reaches the
+Lambda; the index-rewrite function 301s `/ledger` to `/ledger/`. The files under `s3://nearbi-site/ledger/`
+are owned by **rs-ledger** (`bin/publish`: build, reconcile, upload with `Cache-Control: max-age=60`,
+invalidate `/ledger/*`), so `bin/sync-site.sh` excludes `ledger/*` from its `--delete` sync.
