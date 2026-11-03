@@ -1,0 +1,76 @@
+
+[  5s] forwarder forwarder.nearbi-agent.testnet -> splitter splitter.nearbi-agent.testnet (bps 1000)  token usdc-mock.nearbi-agent.testnet  paused=False  change_delay_sec=0
+
+[  5s] mock-USDC liquidity for the simulated 1Click sender: nearbi-agent.testnet -> oneclick-sim.nearbi-agent.testnet 49.000000
+    tx: DcG6kRUHEKzwAPBcYuc2ZvHL6sot91SqTACbPB4d1RpJ
+    https://testnet.nearblocks.io/txns/DcG6kRUHEKzwAPBcYuc2ZvHL6sot91SqTACbPB4d1RpJ
+    usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "nearbi-agent.testnet", "new_owner_id": "oneclick-sim.nearbi-agent.testnet", "amount": "49000000", "memo": "testnet demo: 1click liquidity"}]
+
+[ 62s] balances BEFORE
+    oneclick-sim.nearbi-agent.testnet                       49.000000 USDCm
+    forwarder.nearbi-agent.testnet                           0.000000 USDCm
+    splitter.nearbi-agent.testnet                            0.000000 USDCm
+    contributors.nearbi-agent.testnet                        9.800000 USDCm
+    treasury.nearbi-agent.testnet                           88.200000 USDCm
+
+[ 62s] 1Click delivery (simulated): oneclick-sim.nearbi-agent.testnet plain ft_transfer 49.000000 -> forwarder.nearbi-agent.testnet
+    tx: 8LWABgbCHDW1nsGJmERiGz8FLo8dnD3Cx3hxzYkagJN3
+    https://testnet.nearblocks.io/txns/8LWABgbCHDW1nsGJmERiGz8FLo8dnD3Cx3hxzYkagJN3
+    usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "oneclick-sim.nearbi-agent.testnet", "new_owner_id": "forwarder.nearbi-agent.testnet", "amount": "49000000", "memo": "1click withdrawal (simulated)"}]
+    forwarder balance now 49.000000 USDCm
+
+[ 69s] agent (function-call key [forward]) forward order_id=intents-20261103T051041Z amount=49.000000
+    tx: 9AFtmGBmdrs4QYSX7rE1a1fDrqf17wYhgkLwXuzajnzB
+    https://testnet.nearblocks.io/txns/9AFtmGBmdrs4QYSX7rE1a1fDrqf17wYhgkLwXuzajnzB
+    forwarder.nearbi-agent.testnet | nearbi_forwarder forward_started [{"order_id": "intents-20261103T051041Z", "amount": "49000000", "attempt": 1, "splitter": "splitter.nearbi-agent.testnet", "token": "usdc-mock.nearbi-agent.testnet", "by": "forwarder.nearbi-agent.testnet"}]
+    usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "forwarder.nearbi-agent.testnet", "new_owner_id": "splitter.nearbi-agent.testnet", "amount": "49000000"}]
+    splitter.nearbi-agent.testnet | nearbi_splitter sale [{"order_id": "intents-20261103T051041Z", "payer": "forwarder.nearbi-agent.testnet", "token": "usdc-mock.nearbi-agent.testnet", "amount": "49000000", "contributors_amount": "4900000", "treasury_amount": "44100000", "split_bps_contributors": 1000}]
+    usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "splitter.nearbi-agent.testnet", "new_owner_id": "contributors.nearbi-agent.testnet", "amount": "4900000", "memo": "nearbi:intents-20261103T051041Z"}]
+    splitter.nearbi-agent.testnet | nearbi_splitter payout [{"order_id": "intents-20261103T051041Z", "token": "usdc-mock.nearbi-agent.testnet", "recipient": "contributors.nearbi-agent.testnet", "role": "Contributors", "amount": "4900000"}]
+    usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "splitter.nearbi-agent.testnet", "new_owner_id": "treasury.nearbi-agent.testnet", "amount": "44100000", "memo": "nearbi:intents-20261103T051041Z"}]
+    splitter.nearbi-agent.testnet | nearbi_splitter payout [{"order_id": "intents-20261103T051041Z", "token": "usdc-mock.nearbi-agent.testnet", "recipient": "treasury.nearbi-agent.testnet", "role": "Treasury", "amount": "44100000"}]
+    forwarder.nearbi-agent.testnet | nearbi_forwarder forwarded [{"order_id": "intents-20261103T051041Z", "amount": "49000000"}]
+
+[ 80s] balances AFTER
+    oneclick-sim.nearbi-agent.testnet                        0.000000 USDCm
+    forwarder.nearbi-agent.testnet                           0.000000 USDCm
+    splitter.nearbi-agent.testnet                            0.000000 USDCm
+    contributors.nearbi-agent.testnet                       14.700000 USDCm
+    treasury.nearbi-agent.testnet                          132.300000 USDCm
+    delta 1click -49.000000  forwarder +0.000000  splitter +0.000000  contributors +4.900000  treasury +44.100000
+    expected contributors 4.900000 + treasury 44.100000 = 49.000000  -> SPLIT OK
+
+[ 80s] is_forwarded(intents-20261103T051041Z) = true
+    {"order_id":"intents-20261103T051041Z","status":"forwarded","amount":"49000000","forwarded_amount":"49000000","unused":"0","attempts":1,"updated_at_ns":"1793682714877174361"}
+
+[ 81s] agent forwards the same order again -> the contract must reject it
+    rejected: order already forwarded
+
+[ 86s] agent key tries set_agent -> must be rejected by the protocol
+    rejected: Transaction method name <set_agent> isn't allowed by the access key
+
+[ 87s] forwarder config
+    {
+        "version": "0.2.0",
+        "owner": "nearbi-agent.testnet",
+        "splitter": "splitter.nearbi-agent.testnet",
+        "token": "usdc-mock.nearbi-agent.testnet",
+        "agent": "forwarder.nearbi-agent.testnet",
+        "paused": false,
+        "change_delay_sec": "0",
+        "pending_change": null,
+        "forwarded_count": 1,
+        "forwarded_total": "49000000",
+        "open_orders": 0
+    }
+
+[ 87s] keys on forwarder.nearbi-agent.testnet (a full-access key can still redeploy code; see README trust model)
+    ed25519:4e7uzpp3u8U3… FunctionCall ["forward"]
+    ed25519:DZag1P5TaH8L… FullAccess
+
+SUMMARY  order intents-20261103T051041Z  forwarder forwarder.nearbi-agent.testnet  duration 88s
+  drip to 1click-sim         https://testnet.nearblocks.io/txns/DcG6kRUHEKzwAPBcYuc2ZvHL6sot91SqTACbPB4d1RpJ
+  1click plain ft_transfer   https://testnet.nearblocks.io/txns/8LWABgbCHDW1nsGJmERiGz8FLo8dnD3Cx3hxzYkagJN3
+  forward -> splitter        https://testnet.nearblocks.io/txns/9AFtmGBmdrs4QYSX7rE1a1fDrqf17wYhgkLwXuzajnzB
+bin/demo-intents.sh  0.59s user 0.32s system 1% cpu 1:27.88 total
+EXIT 0
