@@ -14,6 +14,10 @@ describe("requiredAccess", () => {
     ["/api/me", "public"],
     ["/auth/challenge", "public"],
     ["/billing/confirm", "public"], // admin-token protected inside the handler, not by session
+    ["/billing/admin/orders", "public"], // admin-token protected inside the handler
+    ["/billing/admin/orders/0b6f3a1e-0000-4000-8000-000000000000", "public"],
+    ["/billing/orders", "session"],
+    ["/billing/administrator", "session"],
     [`/reports/${FREE}/`, "public"],
     [`/reports/${FREE}/NEAR-real-users-or-bots.pdf`, "public"],
     [`/reports/${FREE}/charts/q1_daily_activity.png`, "public"],

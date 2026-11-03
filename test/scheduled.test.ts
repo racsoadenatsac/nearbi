@@ -5,6 +5,9 @@ import { IntentsAdapter, OneClickClient } from "../src/intents";
 import { isScheduledTask, runScheduledTask } from "../src/scheduled";
 import { createCheckout, type BillingDeps } from "../src/services/billing";
 import { fakeOneClick, statusBody } from "./helpers/oneclick";
+import { buildCatalog } from "../src/core/products";
+
+const SUB = buildCatalog({ monthlyPriceUsd: 49, quickAnswerPriceUsd: 29, deepDivePriceUsd: 499 }).subscription;
 
 const now = Math.floor(Date.parse("2026-11-02T00:00:00Z") / 1000);
 
@@ -28,7 +31,7 @@ describe("scheduled tasks (EventBridge Scheduler input)", () => {
 
   it("sweep-payments confirms a SUCCESS and logs one structured line", async () => {
     const { d, repo, f } = deps();
-    const co = await createCheckout(d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: "nep141:wrap.near" });
+    const co = await createCheckout(d, { accountId: "alice.near", product: SUB, nowSec: now, originAsset: "nep141:wrap.near" });
     f.statuses.set(co.depositAddress!, statusBody("SUCCESS", f.issued.get(co.depositAddress!)!));
     const r = await runScheduledTask({ nearbiTask: "sweep-payments" }, d, () => now + 60);
     expect(r).toMatchObject({ task: "sweep-payments", open: 1, paid: 1, closed: 1, errors: 0 });

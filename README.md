@@ -7,7 +7,11 @@ site (`./public`) is plain static files in S3 behind the same CloudFront distrib
 
 Part of the NEAR Hackathon one-agent research shop. See `rs-docs/ARCHITECTURE.md`.
 
-> Status (v0.4.0): deployed at https://nearbi.ai through `../nearbi-infra` (OpenTofu). Payments are
+> Status (v0.5.0): one-off checkout for the **Quick Answer ($29)** and **Deep Dive ($499)** reports next to the
+> $49/month subscription, with the customer's brief, an ORDER per paid report and an ops loop to deliver it
+> (see [One-off orders](#one-off-orders-quick-answer--deep-dive)).
+>
+> v0.4.0: deployed at https://nearbi.ai through `../nearbi-infra` (OpenTofu). Payments are
 > **LIVE on NEAR mainnet** (`INTENTS_MODE=live`): checkout issues real 1Click deposit addresses, revenue
 > settles as USDC on NEAR to `forwarder.nearbi.near` (plain `ft_transfer`), the forwarding agent
 > (`rs-agent bin/forwarder-runner`) passes each order into `splitter.nearbi.near`, and every sale is on
@@ -26,6 +30,7 @@ Part of the NEAR Hackathon one-agent research shop. See `rs-docs/ARCHITECTURE.md
 | Payment status | **Real** code: `GET /billing/status/:id` (checkout page, every 10 s) and the **scheduled sweep** (EventBridge Scheduler → same Lambda, every minute) poll 1Click and extend the subscription once on `SUCCESS`. Exercised offline; the first real payment is the operator's |
 | Forwarding into the splitter | **Real**, outside this app: a 1Click `SUCCESS` is written to the `FWDQ` queue; `rs-agent bin/forwarder-runner` (operator's Mac, Keychain key) calls `forward(order_id, amount)` and marks the payment `forwardedTx` |
 | Payment confirmation override | **Manual**: `POST /billing/confirm` with `ADMIN_TOKEN` |
+| One-off reports (Quick Answer / Deep Dive) | **Real** checkout (same live 1Click settlement), brief validation, ORDER on `SUCCESS`, members "Your orders". **Fulfilment is manual**: the agent/operator lists open orders (`bin/list-orders`) and sets status + delivery link (`bin/update-order`); no email/Telegram notification is sent to the customer yet |
 | Gating (public / session / subscriber) | **Real** |
 | Private content: HTML proxied from S3, everything else via presigned S3 GET | **Real** code; presigning is tested offline, S3 reads with a fake client |
 | DynamoDB single-table repository | **Real**; passes the shared repository contract against **DynamoDB Local** (`bin/test-dynamo-local.sh`), never against AWS |
@@ -43,6 +48,7 @@ src/
     signin.ts        challenge creation + sign-in verification (nonce store and key check injected)
     session.ts       HMAC session token + cookie strings
     subscription.ts  period math and subscription state
+    products.ts      product catalog (subscription / quick_answer / deep_dive), brief validation, order types
     gating.ts        path -> required access, access decision, report path parsing
     registry-token.ts token generation, hashing, validity, docker instructions
     account.ts, encoding.ts
@@ -50,7 +56,7 @@ src/
   adapters/        memory-repository, dynamo-repository, memory-content, s3-content, near-rpc
   intents/         NEAR Intents 1Click: typed client (timeouts, retries), adapter (token cache, USD quotes),
                    amounts (BigInt), settlement rules, 1Click status -> payment state
-  services/        billing (tokens/checkout/status/confirm), registry (issue/validate): core + Repository
+  services/        billing (tokens/checkout/status/confirm), orders (admin update), registry (issue/validate): core + Repository
   app.ts           Hono app; all dependencies injected
   lambda.ts        AWS Lambda entry (hono/aws-lambda), wires DynamoDB + S3; routes scheduler events to scheduled.ts
   scheduled.ts     EventBridge Scheduler tasks ({"nearbiTask":"sweep-payments"} -> background payment sweep)
@@ -93,7 +99,7 @@ confirm that payment with the admin override:
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `SESSION_SECRET` | yes | | ≥ 32 chars. Secret, from SSM SecureString / Secrets Manager |
-| `ADMIN_TOKEN` | yes | | Bearer token for `POST /billing/confirm`. Secret |
+| `ADMIN_TOKEN` | yes | | Bearer token for `POST /billing/confirm` and `/billing/admin/*`. Secret |
 | `TABLE_NAME` | yes (Lambda) | | DynamoDB table |
 | `CONTENT_BUCKET` | yes (Lambda) | | private S3 bucket for report content |
 | `CONTENT_PREFIX` | no | `""` | key prefix inside the bucket, e.g. `prod/` |
@@ -102,7 +108,9 @@ confirm that payment with the admin override:
 | `ORIGIN_VERIFY_SECRET` | no | | if set, every request must carry `x-origin-verify: <secret>` (a CloudFront custom origin header). Secret |
 | `PRESIGN_TTL_SECONDS` | no | `300` | max 3600 |
 | `NEAR_RPC_URL` | no | `https://rpc.mainnet.near.org` | consider a dedicated RPC provider for production |
-| `MONTHLY_PRICE_USD` | no | `49` | |
+| `MONTHLY_PRICE_USD` | no | `49` | subscription price |
+| `QUICK_ANSWER_PRICE_USD` | no | `29` | one-off Quick Answer price |
+| `DEEP_DIVE_PRICE_USD` | no | `499` | one-off Deep Dive price |
 | `AUTH_RECIPIENT` | no | `nearbi.ai` | NEP-413 recipient |
 | `REGISTRY_HOST` | no | `registry.nearbi.ai` | |
 | `FREE_REPORT_SLUGS` | no | `near-users-vs-bots,near-thesis` | comma-separated public reports (static site); legacy `FREE_REPORT_SLUG` still read |
@@ -183,9 +191,11 @@ One table, on-demand billing. Key schema: `PK` (S, partition) + `SK` (S, sort). 
 | Account | `ACCT#<accountId>` | `PROFILE` | `createdAt` (`if_not_exists`), `lastLoginAt` | Update on every login |
 | Subscription | `ACCT#<accountId>` | `SUB` | `status`, `currentPeriodEnd`, `lastPaymentTx`, `updatedAt` | Get (consistent) on every gated request |
 | Current registry token | `ACCT#<accountId>` | `RTOKEN` | `tokenHash` | pointer used to revoke the previous token |
-| Payment | `PAY#<paymentId>` | `PAYMENT` | `accountId`, `amountUsd`, `token`, `depositAddress`, `status`, `txHash`, `createdAt`, `paidAt`, `quoteJson`, `mode`, `quoteId`, `depositMemo`, `destinationAsset`, `recipient`, `amountIn`, `amountInFormatted`, `minAmountIn`, `amountOut`, `deadline`, `intentsStatus`, `checkedAt`, `settlementTx`, `settledAmountOut`, `forwardedTx` (+ `forwardedAt`, `forwardedAmount`, written by the forwarding agent) | Put on checkout, Get + conditional Update on status poll, Get on confirm. Stub-era items read back with the 1Click fields null |
+| Payment | `PAY#<paymentId>` | `PAYMENT` | `accountId`, `amountUsd`, `product` (`subscription` / `quick_answer` / `deep_dive`; absent on pre-v0.5 items = subscription), `brief` (map, one-off only), `token`, `depositAddress`, `status`, `txHash`, `createdAt`, `paidAt`, `quoteJson`, `mode`, `quoteId`, `depositMemo`, `destinationAsset`, `recipient`, `amountIn`, `amountInFormatted`, `minAmountIn`, `amountOut`, `deadline`, `intentsStatus`, `checkedAt`, `settlementTx`, `settledAmountOut`, `forwardedTx` (+ `forwardedAt`, `forwardedAmount`, written by the forwarding agent) | Put on checkout, Get + conditional Update on status poll, Get on confirm. Stub-era items read back with the 1Click fields null |
 | Open live payment | `OPENPAY` | `PAY#<paymentId>` | `paymentId`, `createdAt`, `deadline` | Put with the live payment (same `TransactWriteItems`); Query `PK = OPENPAY` by the scheduled sweep; Delete when paid/refunded/failed, or 24 h past the deadline when expired |
 | Forward queue | `FWDQ` | `PAY#<paymentId>` | `paymentId`, `amount` (settled `amountOut`, base units, or null), `recipient`, `destinationAsset`, `depositAddress`, `settlementTx`, `enqueuedAt` | Put (`attribute_not_exists`) on 1Click `SUCCESS`, **before** the subscription is extended; read and deleted by the forwarding agent (`rs-agent`) after `forward` is final onchain |
+| Order | `ACCT#<accountId>` | `ORDER#<paymentId>` | `paymentId`, `accountId`, `product`, `brief` {`question`, `contact`, `scope`}, `amountUsd`, `status` (`paid` / `in_progress` / `delivered`), `deliveryUrl`, `createdAt`, `updatedAt` | Put with the payment's `paid` transition (one-off products only); Query `begins_with(SK, ORDER#)` for the members page; Update by the admin endpoint |
+| Open order | `ORDERQ` | `ORDER#<paymentId>` | `paymentId`, `accountId`, `createdAt` | Put with the order; Query `PK = ORDERQ` by `bin/list-orders` / `GET /billing/admin/orders`; Delete when the order is `delivered` (re-put if it is re-opened) |
 | Tx-hash claim | `TX#<txHash>` | `TX` | `paymentId`, `accountId` | makes a tx hash usable once |
 | Registry token | `RTOK#<sha256(token)>` | `RTOKEN` | `accountId`, `expiresAt`, `revoked`, `createdAt`, `ttl` (= expiry + 90 days) | Get by hash on validation |
 | Catalog entry | `CATALOG` | `REPORT#<slug>` | `slug`, `title`, `summary`, `publishedAt`, `isFree`, `pdfFile` | Query `PK = CATALOG` for the members page |
@@ -198,6 +208,10 @@ Atomic operations:
   still equal to the value read before computing the new end (or the item not existing). The service
   retries a lost race up to 3 times, so two payments confirmed at once both count, and confirming the
   same payment twice never extends twice.
+- **Confirm a one-off payment** (Quick Answer / Deep Dive) is one `TransactWriteItems` too: (1) the same
+  payment condition (plus `accountId` match) → `paid`; (2) the `TX#` claim; (3) put the `ORDER` with
+  `attribute_not_exists`; (4) put the `ORDERQ` entry. The subscription item is not touched, so a paid report
+  never extends a subscription, and polling/sweeping/confirming again returns `alreadyPaid` without a second order.
 - **Issue registry token** is one `TransactWriteItems`: put the new token, swap the account pointer
   (conditional on the old hash), mark the old token `revoked`.
 
@@ -262,12 +276,14 @@ Checked against https://docs.near-intents.org (1Click pages, OpenAPI at
 
 ### Flow
 
-1. `GET /members/checkout` (session) loads `public/js/checkout.js`, which fetches `GET /billing/tokens`: the
+1. `GET /members/checkout?product=subscription|quick_answer|deep_dive` (session; default `subscription`;
+   signed-out visitors go to `/login?next=<path+query>`) loads `public/js/checkout.js`, which fetches `GET /billing/tokens`: the
    live `GET /v0/tokens` list (210 tokens on 2026-11-02), cached 5 min per Lambda environment and served
    stale for up to 1 h if 1Click is down. Popular assets first.
-2. `POST /billing/checkout {originAsset, refundTo?}` asks `POST /v0/quote` for
-   `swapType: EXACT_OUTPUT`, `amount` = `MONTHLY_PRICE_USD` in the settlement asset's base units
-   (49 USD → `49000000` USDC), `depositType: ORIGIN_CHAIN`, `recipient: SETTLEMENT_RECIPIENT`,
+2. `POST /billing/checkout {product?, originAsset, refundTo?, brief?}` asks `POST /v0/quote` for
+   `swapType: EXACT_OUTPUT`, `amount` = the product's catalog price in the settlement asset's base units
+   (49 USD → `49000000` USDC; Quick Answer `29000000`, Deep Dive `499000000`). Any amount in the request body
+   is ignored. One-off products need `brief: {question, contact?, scope?}` (see below), `depositType: ORIGIN_CHAIN`, `recipient: SETTLEMENT_RECIPIENT`,
    `recipientType: DESTINATION_CHAIN`, `deadline` = now + 30 min (60 for BTC-like chains),
    `slippageTolerance: 100`, `referral: nearbi`, `dry` = (`INTENTS_MODE` = `dry`). Refunds default to
    `refundType: INTENTS` / `refundTo: <signed-in NEAR account>` (no address to type, and 1Click charged
@@ -390,6 +406,51 @@ shape (no `requestContext`, so no HTTP request can produce it) to `sweepOpenPaym
 
 The admin override (`POST /billing/confirm`) does **not** queue a forward (it has no settled amount);
 forward such a payment by hand with `rs-agent bin/forwarder-runner --order <paymentId> --amount <base units>`.
+
+## One-off orders (Quick Answer / Deep Dive)
+
+Since v0.5.0 the two report products can be bought directly, alongside the subscription. Ecosystem Reports
+(from $2,500) stay quote-by-email (`mailto:` on the landing page), with no checkout.
+
+| Product id | Price (env, default) | Delivery promised | Effect when paid |
+|---|---|---|---|
+| `subscription` | `MONTHLY_PRICE_USD` (49) | | extends the subscription by one month (unchanged) |
+| `quick_answer` | `QUICK_ANSWER_PRICE_USD` (29) | within 24 h | creates an ORDER, subscription untouched |
+| `deep_dive` | `DEEP_DIVE_PRICE_USD` (499) | within 48 h | creates an ORDER, subscription untouched |
+
+**Customer flow.** Landing page `#order` → "Order: $29" / "Order: $499" →
+`/members/checkout?product=quick_answer|deep_dive` (sign-in first; `next` keeps the product) → the checkout form
+asks for the brief: **question** (required, ≤ 2,000 chars), **contact** (optional email or Telegram handle,
+≤ 200), and for Deep Dive an optional **topic/scope** (≤ 2,000). The server validates it
+(`validateBrief`, control characters stripped), stores it on the payment, and quotes the product's price with the
+same live settlement as the subscription (USDC on NEAR to `forwarder.nearbi.near`). On 1Click `SUCCESS` (page
+poll or the minute sweep) the payment is queued on `FWDQ` exactly like a subscription, so the revenue still goes
+through the splitter, and the ORDER is created (status `paid`). The members page lists **Your orders**
+(product, date, status paid → in progress → delivered, and the delivery link once set).
+
+**Agent / operator fulfilment.**
+
+```bash
+AWS_PROFILE=nearbi bin/list-orders            # open orders (paid / in_progress), oldest first, brief + due time
+AWS_PROFILE=nearbi bin/list-orders --json     # same, machine-readable (orderId, accountId, product, brief, ...)
+AWS_PROFILE=nearbi bin/update-order <orderId> in_progress
+AWS_PROFILE=nearbi bin/update-order <orderId> delivered https://nearbi.ai/reports/<slug>/   # or a /path
+```
+
+- `bin/list-orders` reads DynamoDB directly (read-only: `ORDERQ` query + `GetItem`), needs `aws` + `jq`.
+- `bin/update-order` calls the admin endpoint with the `ADMIN_TOKEN` from SSM `/nearbi/app/ADMIN_TOKEN` (or
+  `$NEARBI_ADMIN_TOKEN`). "delivered" needs a link (https URL or a nearbi.ai path) and removes the order from the
+  open list.
+- HTTP equivalents (bearer `ADMIN_TOKEN`, no session): `GET /billing/admin/orders` (open orders) and
+  `POST /billing/admin/orders/<orderId> {status?, deliveryUrl?}`. The signed-in customer sees their own orders at
+  `GET /billing/orders` and on `/members`.
+- Delivering a private report: upload it to the content bucket under `reports/<slug>/` (as for any gated
+  report) and set the delivery link to `/reports/<slug>/` (or `https://nearbi.ai/reports/<slug>/`). Once the order
+  is `delivered`, its buyer can open that one report (and its files) without a subscription; everyone else still
+  needs a subscription. Use a fresh slug per order if the report is private to that customer.
+- Nothing notifies the customer automatically: if they left a contact, message them with the link.
+- The admin override `POST /billing/confirm` also works for a one-off payment (it creates the order), but as for
+  subscriptions it does not queue a forward.
 
 ## Deploy: AWS resources
 

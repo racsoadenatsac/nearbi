@@ -5,6 +5,9 @@ import { IntentsAdapter, OneClickClient, USDC_ON_NEAR } from "../../src/intents"
 import type { Repository } from "../../src/ports/repository";
 import { CheckoutError, confirmPayment, createCheckout, LATE_SUCCESS_WINDOW, pollPaymentStatus, SWEEP_SLOW_RECHECK, sweepOpenPayments, type BillingDeps } from "../../src/services/billing";
 import { fakeOneClick, statusBody } from "../helpers/oneclick";
+import { buildCatalog } from "../../src/core/products";
+
+const SUB = buildCatalog({ monthlyPriceUsd: 49, quickAnswerPriceUsd: 29, deepDivePriceUsd: 499 }).subscription;
 
 const ts = (iso: string) => Math.floor(Date.parse(iso) / 1000);
 const now = ts("2026-11-02T00:00:00Z");
@@ -23,7 +26,7 @@ function deps(env: Record<string, string> = LIVE) {
 async function withPending(env: Record<string, string> = LIVE) {
   const x = deps(env);
   await x.repo.recordLogin("alice.near", now);
-  const co = await createCheckout(x.d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC });
+  const co = await createCheckout(x.d, { accountId: "alice.near", product: SUB, nowSec: now, originAsset: BASE_USDC });
   return { ...x, co };
 }
 
@@ -76,7 +79,7 @@ describe("createCheckout", () => {
     const { d, f } = deps();
     await d.intents.listTokens();
     f.on = () => new Response("{}", { status: 502 });
-    await expect(createCheckout(d, { accountId: "a.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC })).rejects.toMatchObject({ name: "CheckoutError", status: 503 });
+    await expect(createCheckout(d, { accountId: "a.near", product: SUB, nowSec: now, originAsset: BASE_USDC })).rejects.toMatchObject({ name: "CheckoutError", status: 503 });
     expect(CheckoutError).toBeDefined();
   });
 });
@@ -196,7 +199,7 @@ describe("pollPaymentStatus (1Click -> payment state)", () => {
 describe("confirmPayment (admin override and poller)", () => {
   it("confirm marks paid and activates one month from now", async () => {
     const { repo, co } = await withPending();
-    expect(await confirmPayment(repo, co.paymentId, "tx1", now)).toEqual({ ok: true, alreadyPaid: false, accountId: "alice.near", currentPeriodEnd: ts("2026-12-02T00:00:00Z") });
+    expect(await confirmPayment(repo, co.paymentId, "tx1", now)).toEqual({ ok: true, alreadyPaid: false, accountId: "alice.near", product: "subscription", currentPeriodEnd: ts("2026-12-02T00:00:00Z"), orderId: null });
     expect(await repo.getSubscription("alice.near")).toMatchObject({ status: "active", lastPaymentTx: "tx1" });
     expect(await repo.getPayment(co.paymentId)).toMatchObject({ status: "paid", txHash: "tx1", paidAt: now });
   });
@@ -210,7 +213,7 @@ describe("confirmPayment (admin override and poller)", () => {
   it("a second payment stacks a second month onto the running period", async () => {
     const { d, repo, co } = await withPending();
     await confirmPayment(repo, co.paymentId, "tx1", now);
-    const co2 = await createCheckout(d, { accountId: "alice.near", amountUsd: 49, nowSec: now + 86400, originAsset: BASE_USDC });
+    const co2 = await createCheckout(d, { accountId: "alice.near", product: SUB, nowSec: now + 86400, originAsset: BASE_USDC });
     expect(await confirmPayment(repo, co2.paymentId, "tx2", now + 86400)).toMatchObject({ ok: true, currentPeriodEnd: ts("2027-01-02T00:00:00Z") });
   });
 
@@ -218,7 +221,7 @@ describe("confirmPayment (admin override and poller)", () => {
     const { d, repo, co } = await withPending();
     await confirmPayment(repo, co.paymentId, "tx1", now);
     const later = ts("2027-03-10T00:00:00Z");
-    const co2 = await createCheckout(d, { accountId: "alice.near", amountUsd: 49, nowSec: later, originAsset: BASE_USDC });
+    const co2 = await createCheckout(d, { accountId: "alice.near", product: SUB, nowSec: later, originAsset: BASE_USDC });
     expect(await confirmPayment(repo, co2.paymentId, "tx2", later)).toMatchObject({ currentPeriodEnd: ts("2027-04-10T00:00:00Z") });
   });
 
@@ -226,7 +229,7 @@ describe("confirmPayment (admin override and poller)", () => {
     const { d, repo, co } = await withPending();
     expect(await confirmPayment(repo, "nope", "tx", now)).toMatchObject({ ok: false, status: 404 });
     await confirmPayment(repo, co.paymentId, "tx1", now);
-    const co2 = await createCheckout(d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC });
+    const co2 = await createCheckout(d, { accountId: "alice.near", product: SUB, nowSec: now, originAsset: BASE_USDC });
     expect(await confirmPayment(repo, co2.paymentId, "tx1", now)).toMatchObject({ ok: false, status: 409 });
     expect((await repo.getSubscription("alice.near"))?.currentPeriodEnd).toBe(ts("2026-12-02T00:00:00Z"));
     expect((await repo.getPayment(co2.paymentId))?.status).toBe("pending");
@@ -234,7 +237,7 @@ describe("confirmPayment (admin override and poller)", () => {
 
   it("two payments confirmed concurrently both count (optimistic retry)", async () => {
     const { d, repo, co } = await withPending();
-    const co2 = await createCheckout(d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC });
+    const co2 = await createCheckout(d, { accountId: "alice.near", product: SUB, nowSec: now, originAsset: BASE_USDC });
     const slow: Repository = Object.create(repo);
     let reads = 0;
     slow.getSubscription = async (id) => {
@@ -368,7 +371,7 @@ describe("background sweep (EventBridge Scheduler -> sweepOpenPayments)", () => 
 
   it("stops at the time budget and reports truncated; one bad payment doesn't stop the rest", async () => {
     const x = deps();
-    for (let i = 0; i < 3; i++) await createCheckout(x.d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC });
+    for (let i = 0; i < 3; i++) await createCheckout(x.d, { accountId: "alice.near", product: SUB, nowSec: now, originAsset: BASE_USDC });
     let t = 0;
     const r = await sweepOpenPayments(x.d, now + 60, { budgetMs: 15, clock: () => (t += 10), concurrency: 1 });
     expect(r).toMatchObject({ open: 3, truncated: true });
@@ -383,7 +386,7 @@ describe("background sweep (EventBridge Scheduler -> sweepOpenPayments)", () => 
 
   it("randomized order: a truncated run doesn't always pick the same payments", async () => {
     const x = deps();
-    for (let i = 0; i < 6; i++) await createCheckout(x.d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC });
+    for (let i = 0; i < 6; i++) await createCheckout(x.d, { accountId: "alice.near", product: SUB, nowSec: now, originAsset: BASE_USDC });
     const seen = new Set<string>();
     const orig = x.repo.getPayment.bind(x.repo);
     x.repo.getPayment = async (id: string) => (seen.add(id), orig(id));
@@ -398,8 +401,8 @@ describe("background sweep (EventBridge Scheduler -> sweepOpenPayments)", () => 
 
   it("backs off old pending payments (1Click keeps addresses open ~72 h) but keeps young ones at every run", async () => {
     const x = deps();
-    const old = await createCheckout(x.d, { accountId: "alice.near", amountUsd: 49, nowSec: now, originAsset: BASE_USDC });
-    const young = await createCheckout(x.d, { accountId: "alice.near", amountUsd: 49, nowSec: now + 7200, originAsset: BASE_USDC });
+    const old = await createCheckout(x.d, { accountId: "alice.near", product: SUB, nowSec: now, originAsset: BASE_USDC });
+    const young = await createCheckout(x.d, { accountId: "alice.near", product: SUB, nowSec: now + 7200, originAsset: BASE_USDC });
     const t0 = now + 7260;
     expect(await sweepOpenPayments(x.d, t0)).toMatchObject({ checked: 2, deferred: 0 });
     expect(await sweepOpenPayments(x.d, t0 + 60)).toMatchObject({ checked: 1, deferred: 1 }); // old one deferred
@@ -409,5 +412,99 @@ describe("background sweep (EventBridge Scheduler -> sweepOpenPayments)", () => 
     // a deposit on the old one is still picked up within SWEEP_SLOW_RECHECK
     setStatus(x.f, old.depositAddress!, "SUCCESS");
     expect(await sweepOpenPayments(x.d, t0 + 2 * SWEEP_SLOW_RECHECK + 2)).toMatchObject({ paid: 1 });
+  });
+});
+
+describe("one-off products (Quick Answer / Deep Dive)", () => {
+  const CATALOG = buildCatalog({ monthlyPriceUsd: 49, quickAnswerPriceUsd: 29, deepDivePriceUsd: 499 });
+  const brief = { question: "How many accounts used Intents last week, excluding bots?", contact: "me@example.com", scope: null };
+
+  async function withOrder(product: "quick_answer" | "deep_dive" = "quick_answer") {
+    const x = deps();
+    const co = await createCheckout(x.d, { accountId: "alice.near", product: CATALOG[product], brief, nowSec: now, originAsset: BASE_USDC });
+    return { ...x, co };
+  }
+
+  it("quotes EXACT_OUTPUT for the product's price (29 / 499 USDC) to the same live recipient", async () => {
+    for (const [product, amount] of [["quick_answer", "29000000"], ["deep_dive", "499000000"]] as const) {
+      const { f, co, repo } = await withOrder(product);
+      const sent = f.calls.find((c) => c.url.endsWith("/quote"))!.body as Record<string, unknown>;
+      expect(sent).toMatchObject({ dry: false, swapType: "EXACT_OUTPUT", amount, recipient: "treasury.nearbi.near", destinationAsset: USDC_ON_NEAR });
+      expect(co).toMatchObject({ product, amountUsd: CATALOG[product].priceUsd, status: "pending" });
+      expect(await repo.getPayment(co.paymentId)).toMatchObject({ product, brief, amountUsd: CATALOG[product].priceUsd, amountOut: amount });
+    }
+  });
+
+  it("refuses a one-off checkout without a brief; the subscription never stores one", async () => {
+    const x = deps();
+    await expect(createCheckout(x.d, { accountId: "alice.near", product: CATALOG.quick_answer, nowSec: now, originAsset: BASE_USDC })).rejects.toMatchObject({ status: 400 });
+    const sub = await createCheckout(x.d, { accountId: "alice.near", product: CATALOG.subscription, brief, nowSec: now, originAsset: BASE_USDC });
+    expect(await x.repo.getPayment(sub.paymentId)).toMatchObject({ product: "subscription", brief: null });
+  });
+
+  it("SUCCESS -> ORDER (status paid) + FWDQ entry, and the subscription is NOT extended", async () => {
+    const { repo, f, d, co } = await withOrder();
+    setStatus(f, co.depositAddress!, "SUCCESS");
+    const r = await pollPaymentStatus(d, co.paymentId, "alice.near", now + 60);
+    expect(r).toMatchObject({ ok: true, view: { status: "paid", product: "quick_answer", statusLabel: expect.stringMatching(/order is in our queue/) } });
+    expect(await repo.getOrder(co.paymentId)).toEqual({
+      paymentId: co.paymentId,
+      accountId: "alice.near",
+      product: "quick_answer",
+      brief,
+      amountUsd: 29,
+      status: "paid",
+      deliveryUrl: null,
+      createdAt: now + 60,
+      updatedAt: now + 60,
+    });
+    expect(await repo.getSubscription("alice.near")).toBeNull();
+    expect(await repo.listForwardQueue(10)).toEqual([expect.objectContaining({ paymentId: co.paymentId, amount: "29000000", recipient: "treasury.nearbi.near" })]);
+  });
+
+  it("idempotent: page polls, the sweep and the admin override never create a second order or touch the subscription", async () => {
+    const { repo, f, d, co } = await withOrder("deep_dive");
+    setStatus(f, co.depositAddress!, "SUCCESS");
+    await Promise.all([pollPaymentStatus(d, co.paymentId, "alice.near", now + 60), sweepOpenPayments(d, now + 60)]);
+    await pollPaymentStatus(d, co.paymentId, "alice.near", now + 120);
+    await sweepOpenPayments(d, now + 180);
+    expect(await confirmPayment(repo, co.paymentId, "manual-tx", now + 200)).toEqual({
+      ok: true,
+      alreadyPaid: true,
+      accountId: "alice.near",
+      product: "deep_dive",
+      currentPeriodEnd: null,
+      orderId: co.paymentId,
+    });
+    expect(await repo.listOrders("alice.near")).toHaveLength(1);
+    expect(await repo.listForwardQueue(10)).toHaveLength(1);
+    expect(await repo.getSubscription("alice.near")).toBeNull();
+    expect((await repo.getOrder(co.paymentId))?.createdAt).toBe(now + 60);
+  });
+
+  it("an existing subscription keeps its period end when a one-off is paid", async () => {
+    const x = deps();
+    const sub = await createCheckout(x.d, { accountId: "alice.near", product: CATALOG.subscription, nowSec: now, originAsset: BASE_USDC });
+    await confirmPayment(x.repo, sub.paymentId, "tx-sub", now);
+    const end = (await x.repo.getSubscription("alice.near"))!.currentPeriodEnd;
+    const qa = await createCheckout(x.d, { accountId: "alice.near", product: CATALOG.quick_answer, brief, nowSec: now, originAsset: BASE_USDC });
+    expect(await confirmPayment(x.repo, qa.paymentId, "tx-qa", now + 10)).toMatchObject({ ok: true, alreadyPaid: false, product: "quick_answer", currentPeriodEnd: null, orderId: qa.paymentId });
+    expect((await x.repo.getSubscription("alice.near"))!.currentPeriodEnd).toBe(end);
+  });
+
+  it("the admin override creates the order (no forward queued: no settled amount, forward by hand)", async () => {
+    const { repo, co } = await withOrder();
+    expect(await confirmPayment(repo, co.paymentId, "tx-manual", now)).toMatchObject({ ok: true, alreadyPaid: false, orderId: co.paymentId });
+    expect(await repo.getOrder(co.paymentId)).toMatchObject({ status: "paid" });
+    expect(await repo.listForwardQueue(10)).toEqual([]);
+    expect(await confirmPayment(repo, co.paymentId, "tx-manual", now)).toMatchObject({ ok: true, alreadyPaid: true });
+  });
+
+  it("refunded one-off payments never become orders", async () => {
+    const { repo, f, d, co } = await withOrder();
+    setStatus(f, co.depositAddress!, "REFUNDED");
+    await pollPaymentStatus(d, co.paymentId, "alice.near", now + 60);
+    expect(await confirmPayment(repo, co.paymentId, "tx", now + 70)).toMatchObject({ ok: false, status: 409 });
+    expect(await repo.listOrders("alice.near")).toEqual([]);
   });
 });

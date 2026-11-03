@@ -11,6 +11,8 @@
 //   CATALOG             REPORT#<slug>   report catalog entry
 //   OPENPAY             PAY#<paymentId> live payment the scheduled sweep still watches (removed when settled)
 //   FWDQ                PAY#<paymentId> forward queue: 1Click SUCCESS, waiting for the forwarding agent
+//   ACCT#<accountId>    ORDER#<paymentId> one-off order (Quick Answer / Deep Dive), created when its payment is paid
+//   ORDERQ              ORDER#<paymentId> order awaiting delivery (status paid / in_progress; removed when delivered)
 //
 // Table: partition key PK (S), sort key SK (S), TTL attribute `ttl` (epoch seconds). No GSIs.
 
@@ -26,7 +28,11 @@ import {
 import {
   PAYABLE_STATUSES,
   type AccountRecord,
+  type ApplyOrderPaymentInput,
+  type ApplyOrderPaymentResult,
   type ApplyPaymentInput,
+  type OrderRecord,
+  type OrderUpdate,
   type ApplyPaymentResult,
   type PaymentRecord,
   type PaymentStatus,
@@ -51,7 +57,23 @@ export const keys = {
   report: (slug: string) => ({ PK: "CATALOG", SK: `REPORT#${slug}` }),
   openPayment: (id: string) => ({ PK: "OPENPAY", SK: `PAY#${id}` }),
   forwardQueue: (id: string) => ({ PK: "FWDQ", SK: `PAY#${id}` }),
+  order: (accountId: string, id: string) => ({ PK: `ACCT#${accountId}`, SK: `ORDER#${id}` }),
+  openOrder: (id: string) => ({ PK: "ORDERQ", SK: `ORDER#${id}` }),
 };
+
+function orderFromItem(i: Record<string, any>): OrderRecord {
+  return {
+    paymentId: i.paymentId,
+    accountId: i.accountId,
+    product: i.product,
+    brief: { question: i.brief?.question ?? "", contact: i.brief?.contact ?? null, scope: i.brief?.scope ?? null },
+    amountUsd: i.amountUsd,
+    status: i.status,
+    deliveryUrl: i.deliveryUrl ?? null,
+    createdAt: i.createdAt,
+    updatedAt: i.updatedAt,
+  };
+}
 
 /** Registry token items linger this long after expiry before DynamoDB TTL removes them (audit trail). */
 const TOKEN_TTL_GRACE_SECONDS = 90 * 86400;
@@ -229,7 +251,140 @@ export class DynamoRepository implements Repository {
       settlementTx: n(p.settlementTx),
       settledAmountOut: n(p.settledAmountOut),
       forwardedTx: n(p.forwardedTx),
+      product: n(p.product),
+      brief: p.brief ? { question: p.brief.question, contact: p.brief.contact ?? null, scope: p.brief.scope ?? null } : null,
     };
+  }
+
+  // ------------------------------------------------------------------ orders
+  async applyOrderPayment(i: ApplyOrderPaymentInput): Promise<ApplyOrderPaymentResult> {
+    const o = i.order;
+    try {
+      await this.db.send(
+        new TransactWriteCommand({
+          TransactItems: [
+            {
+              Update: {
+                TableName: this.table,
+                Key: keys.payment(i.paymentId),
+                UpdateExpression: "SET #st = :paid, txHash = :tx, paidAt = :now",
+                ConditionExpression: `#st IN (${PAYABLE_STATUSES.map((_, k) => `:open${k}`).join(", ")}) AND accountId = :acct`,
+                ExpressionAttributeNames: { "#st": "status" },
+                ExpressionAttributeValues: { ":paid": "paid", ":tx": i.txHash, ":now": i.nowSec, ":acct": o.accountId, ...openValues() },
+              },
+            },
+            {
+              Put: {
+                TableName: this.table,
+                Item: { ...keys.tx(i.txHash), type: "tx", paymentId: i.paymentId, accountId: o.accountId, createdAt: i.nowSec },
+                ConditionExpression: "attribute_not_exists(PK)",
+              },
+            },
+            {
+              Put: {
+                TableName: this.table,
+                Item: { ...keys.order(o.accountId, o.paymentId), type: "order", ...o },
+                ConditionExpression: "attribute_not_exists(PK)",
+              },
+            },
+            {
+              Put: {
+                TableName: this.table,
+                Item: { ...keys.openOrder(o.paymentId), type: "orderq", paymentId: o.paymentId, accountId: o.accountId, createdAt: o.createdAt },
+              },
+            },
+          ],
+        }),
+      );
+      return { ok: true };
+    } catch (e) {
+      const codes = cancellationCodes(e);
+      if (!codes) throw e;
+      if (codes[1] === "ConditionalCheckFailed" && codes[0] !== "ConditionalCheckFailed") return { ok: false, reason: "tx_used" };
+      if (codes[0] === "ConditionalCheckFailed" || codes[2] === "ConditionalCheckFailed" || codes.includes("TransactionConflict")) return { ok: false, reason: "not_pending" };
+      throw e;
+    }
+  }
+
+  async getOrder(paymentId: string): Promise<OrderRecord | null> {
+    const pay = await this.db.send(new GetCommand({ TableName: this.table, Key: keys.payment(paymentId), ConsistentRead: true }));
+    const accountId: string | undefined = pay.Item?.accountId;
+    if (!accountId) return null;
+    const r = await this.db.send(new GetCommand({ TableName: this.table, Key: keys.order(accountId, paymentId), ConsistentRead: true }));
+    return r.Item ? orderFromItem(r.Item) : null;
+  }
+
+  async listOrders(accountId: string): Promise<OrderRecord[]> {
+    const out: OrderRecord[] = [];
+    let start: Record<string, unknown> | undefined;
+    do {
+      const r = await this.db.send(
+        new QueryCommand({
+          TableName: this.table,
+          KeyConditionExpression: "PK = :pk AND begins_with(SK, :sk)",
+          ExpressionAttributeValues: { ":pk": `ACCT#${accountId}`, ":sk": "ORDER#" },
+          ConsistentRead: true,
+          ExclusiveStartKey: start,
+        }),
+      );
+      for (const i of r.Items ?? []) out.push(orderFromItem(i));
+      start = r.LastEvaluatedKey;
+    } while (start);
+    return out.sort((a, b) => b.createdAt - a.createdAt || a.paymentId.localeCompare(b.paymentId));
+  }
+
+  async listOpenOrders(limit: number): Promise<OrderRecord[]> {
+    const refs: { paymentId: string; accountId: string }[] = [];
+    let start: Record<string, unknown> | undefined;
+    do {
+      const r = await this.db.send(
+        new QueryCommand({ TableName: this.table, KeyConditionExpression: "PK = :pk", ExpressionAttributeValues: { ":pk": "ORDERQ" }, ConsistentRead: true, ExclusiveStartKey: start }),
+      );
+      for (const i of r.Items ?? []) refs.push({ paymentId: i.paymentId, accountId: i.accountId });
+      start = r.LastEvaluatedKey;
+    } while (start);
+    const orders: OrderRecord[] = [];
+    for (const ref of refs) {
+      const r = await this.db.send(new GetCommand({ TableName: this.table, Key: keys.order(ref.accountId, ref.paymentId), ConsistentRead: true }));
+      if (r.Item && r.Item.status !== "delivered") orders.push(orderFromItem(r.Item));
+    }
+    return orders.sort((a, b) => a.createdAt - b.createdAt || a.paymentId.localeCompare(b.paymentId)).slice(0, limit);
+  }
+
+  async updateOrder(paymentId: string, u: OrderUpdate): Promise<OrderRecord | null> {
+    const cur = await this.getOrder(paymentId);
+    if (!cur) return null;
+    const values: Record<string, unknown> = { ":st": u.status, ":now": u.nowSec };
+    let set = "SET #st = :st, updatedAt = :now";
+    if (u.deliveryUrl !== undefined) {
+      set += ", deliveryUrl = :url";
+      values[":url"] = u.deliveryUrl;
+    }
+    await this.db.send(
+      new TransactWriteCommand({
+        TransactItems: [
+          {
+            Update: {
+              TableName: this.table,
+              Key: keys.order(cur.accountId, paymentId),
+              UpdateExpression: set,
+              ConditionExpression: "attribute_exists(PK)",
+              ExpressionAttributeNames: { "#st": "status" },
+              ExpressionAttributeValues: values,
+            },
+          },
+          u.status === "delivered"
+            ? { Delete: { TableName: this.table, Key: keys.openOrder(paymentId) } }
+            : {
+                Put: {
+                  TableName: this.table,
+                  Item: { ...keys.openOrder(paymentId), type: "orderq", paymentId, accountId: cur.accountId, createdAt: cur.createdAt },
+                },
+              },
+        ],
+      }),
+    );
+    return { ...cur, status: u.status, updatedAt: u.nowSec, ...(u.deliveryUrl !== undefined ? { deliveryUrl: u.deliveryUrl } : {}) };
   }
 
   async applyPayment(i: ApplyPaymentInput): Promise<ApplyPaymentResult> {

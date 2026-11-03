@@ -29,6 +29,14 @@ export function replayQuote(req: OneClickQuoteRequest, depositAddress = SYNTH_DE
   const pick = RECORDED_BY_ORIGIN[req.originAsset] ?? fx.quoteBaseUsdc;
   const r = pick();
   r.quoteRequest = { ...r.quoteRequest, ...req };
+  if (req.swapType === "EXACT_OUTPUT" && /^\d+$/.test(req.amount) && req.amount !== r.quote.amountOut) {
+    // The recordings are $49 quotes; other prices (Quick Answer $29, Deep Dive $499) scale linearly.
+    const scale = (v: string) => ((BigInt(v) * BigInt(req.amount)) / BigInt(r.quote.amountOut)).toString();
+    r.quote.amountIn = scale(r.quote.amountIn);
+    r.quote.minAmountIn = scale(r.quote.minAmountIn);
+    r.quote.amountOut = req.amount;
+    r.quote.amountOutFormatted = String(Number(req.amount) / 1e6);
+  }
   if (!req.dry) {
     r.quote.depositAddress = depositAddress;
     r.quote.deadline = req.deadline;

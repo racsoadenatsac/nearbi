@@ -38,14 +38,20 @@ export function requiredAccess(pathname: string, freeSlugs: string | readonly st
   if (pathname.startsWith("/members/")) return "subscriber";
   if (pathname === "/registry/token") return "subscriber";
   if (pathname === "/auth/logout") return "session";
-  // Everything under /billing/ needs a session, except the admin override (bearer token, checked in the route).
-  if (pathname.startsWith("/billing/") && pathname !== "/billing/confirm") return "session";
+  // Everything under /billing/ needs a session, except the admin endpoints (bearer token, checked in the route).
+  if (isAdminPath(pathname)) return "public";
+  if (pathname.startsWith("/billing/")) return "session";
   if (pathname === "/reports" || pathname.startsWith("/reports/")) {
     const r = parseReportPath(pathname);
     if (r && free.includes(r.slug)) return "public";
     return "subscriber"; // unknown/invalid report paths are still gated: never leak what exists
   }
   return "public";
+}
+
+/** Admin-token endpoints: POST /billing/confirm and /billing/admin/*. The route checks the bearer token. */
+export function isAdminPath(pathname: string): boolean {
+  return pathname === "/billing/confirm" || pathname.startsWith("/billing/admin/");
 }
 
 export function decide(access: Access, accountId: string | null, sub: SubscriptionState | null): Decision {

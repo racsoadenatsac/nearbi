@@ -3,6 +3,7 @@
 // Manager; they are never committed.
 
 import { DEFAULT_FREE_REPORT_SLUGS } from "./core/gating";
+import { buildCatalog, type ProductCatalog } from "./core/products";
 import { isMainnetAccount, looksLikeAssetId, ONECLICK_BASE_URL, USDC_ON_NEAR, type SettlementDelivery } from "./intents";
 
 export type IntentsMode = "dry" | "live";
@@ -26,6 +27,8 @@ export interface IntentsConfig {
 export interface Config {
   nearRpcUrl: string;
   monthlyPriceUsd: number;
+  /** subscription / quick_answer / deep_dive, prices from env (server-side only). */
+  products: ProductCatalog;
   authRecipient: string;
   registryHost: string;
   /** Public report slugs (static site). */
@@ -60,9 +63,15 @@ export function loadConfig(env: Env, opts: { requireAws?: boolean } = {}): Confi
     if (!v) missing.push(k);
     return v ?? "";
   };
+  const monthlyPriceUsd = num(env.MONTHLY_PRICE_USD, 49);
   const cfg: Config = {
     nearRpcUrl: env.NEAR_RPC_URL || "https://rpc.mainnet.near.org",
-    monthlyPriceUsd: num(env.MONTHLY_PRICE_USD, 49),
+    monthlyPriceUsd,
+    products: buildCatalog({
+      monthlyPriceUsd,
+      quickAnswerPriceUsd: num(env.QUICK_ANSWER_PRICE_USD, 29),
+      deepDivePriceUsd: num(env.DEEP_DIVE_PRICE_USD, 499),
+    }),
     authRecipient: env.AUTH_RECIPIENT || "nearbi.ai",
     registryHost: env.REGISTRY_HOST || "registry.nearbi.ai",
     freeReportSlugs: (env.FREE_REPORT_SLUGS || env.FREE_REPORT_SLUG || DEFAULT_FREE_REPORT_SLUGS.join(","))

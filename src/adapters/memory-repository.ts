@@ -2,7 +2,11 @@
 import {
   PAYABLE_STATUSES,
   type AccountRecord,
+  type ApplyOrderPaymentInput,
+  type ApplyOrderPaymentResult,
   type ApplyPaymentInput,
+  type OrderRecord,
+  type OrderUpdate,
   type ApplyPaymentResult,
   type PaymentRecord,
   type PaymentStatus,
@@ -29,6 +33,7 @@ export class MemoryRepository implements Repository {
   readonly reports = new Map<string, ReportRecord>();
   readonly openPayments = new Map<string, OpenPaymentRef>();
   readonly forwardQueue = new Map<string, ForwardQueueEntry>();
+  readonly orders = new Map<string, OrderRecord>(); // paymentId -> order
 
   constructor(seed: { reports?: ReportRecord[] } = {}) {
     for (const r of seed.reports ?? []) this.reports.set(r.slug, clone(r));
@@ -81,6 +86,40 @@ export class MemoryRepository implements Repository {
       updatedAt: i.nowSec,
     });
     return { ok: true };
+  }
+
+  async applyOrderPayment(i: ApplyOrderPaymentInput): Promise<ApplyOrderPaymentResult> {
+    const pay = this.payments.get(i.paymentId);
+    if (!pay || !PAYABLE_STATUSES.includes(pay.status) || this.orders.has(i.paymentId)) return { ok: false, reason: "not_pending" };
+    if (this.txHashes.has(i.txHash)) return { ok: false, reason: "tx_used" };
+    this.payments.set(i.paymentId, { ...pay, status: "paid", txHash: i.txHash, paidAt: i.nowSec });
+    this.txHashes.set(i.txHash, i.paymentId);
+    this.orders.set(i.paymentId, clone(i.order));
+    return { ok: true };
+  }
+  async getOrder(paymentId: string) {
+    const o = this.orders.get(paymentId);
+    return o ? clone(o) : null;
+  }
+  async listOrders(accountId: string) {
+    return [...this.orders.values()]
+      .filter((o) => o.accountId === accountId)
+      .sort((a, b) => b.createdAt - a.createdAt || a.paymentId.localeCompare(b.paymentId))
+      .map(clone);
+  }
+  async listOpenOrders(limit: number) {
+    return [...this.orders.values()]
+      .filter((o) => o.status !== "delivered")
+      .sort((a, b) => a.createdAt - b.createdAt || a.paymentId.localeCompare(b.paymentId))
+      .slice(0, limit)
+      .map(clone);
+  }
+  async updateOrder(paymentId: string, u: OrderUpdate) {
+    const o = this.orders.get(paymentId);
+    if (!o) return null;
+    const next: OrderRecord = { ...o, status: u.status, updatedAt: u.nowSec, ...(u.deliveryUrl !== undefined ? { deliveryUrl: u.deliveryUrl } : {}) };
+    this.orders.set(paymentId, next);
+    return clone(next);
   }
 
   async updatePaymentStatus(id: string, from: readonly PaymentStatus[], patch: PaymentStatusPatch) {
