@@ -12,7 +12,7 @@ const ev = (path) => ({
   requestContext: { domainName: "x.execute-api.us-east-1.amazonaws.com", http: { method: "GET", path, protocol: "HTTP/1.1", sourceIp: "203.0.113.1", userAgent: "smoke" }, stage: "$default" },
   isBase64Encoded: false,
 });
-const expect = { "/api/me": 200, "/login": 200, "/members": 302, "/reports/some-premium-report/": 302 };
+const expect = { "/api/me": 200, "/login": 200, "/members": 302, "/members/checkout": 302, "/billing/tokens": 401, "/reports/some-premium-report/": 302 };
 let failed = 0;
 for (const [path, status] of Object.entries(expect)) {
   const r = await handler(ev(path), {});
