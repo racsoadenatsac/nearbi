@@ -51,3 +51,7 @@ output "api_endpoint" {
 output "ssm_secret_parameters" {
   value = { for k, p in aws_ssm_parameter.secret : k => p.name }
 }
+
+output "payment_sweep_schedule" {
+  value = aws_scheduler_schedule.payment_sweep.name
+}
