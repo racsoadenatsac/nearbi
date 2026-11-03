@@ -21,7 +21,7 @@ resource "aws_cloudfront_origin_access_control" "site" {
 resource "aws_cloudfront_function" "index_rewrite" {
   name    = "nearbi-index-rewrite"
   runtime = "cloudfront-js-2.0"
-  comment = "Map /path/ to /path/index.html; redirect the free sample to its trailing-slash URL"
+  comment = "Map /path/ to /path/index.html; redirect free reports to their trailing-slash URL"
   publish = true
   code    = file("${path.module}/functions/index-rewrite.js")
 }
@@ -30,6 +30,10 @@ locals {
   static_origin_id = "static"
   app_origin_id    = "app"
   all_methods      = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+
+  # Free (public) reports live in the static bucket; keep in sync with the app's FREE_REPORT_SLUGS.
+  free_report_slugs = ["near-users-vs-bots", "near-thesis"]
+  free_report_paths = flatten([for s in local.free_report_slugs : ["/reports/${s}", "/reports/${s}/*"]])
 
   # Ordered behaviors (precedence = list order), from the app README.
   app_behaviors = [
@@ -77,35 +81,23 @@ resource "aws_cloudfront_distribution" "site" {
     }
   }
 
-  # 1) Free sample: static and cacheable. The exact path (no slash) also goes to static so the
-  #    CloudFront Function can redirect it.
-  ordered_cache_behavior {
-    path_pattern           = "/reports/near-users-vs-bots"
-    target_origin_id       = local.static_origin_id
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD"]
-    cached_methods         = ["GET", "HEAD"]
-    compress               = true
-    cache_policy_id        = data.aws_cloudfront_cache_policy.optimized.id
+  # 1) Free reports: static and cacheable, placed before the gated /reports/* rule. The exact path
+  #    (no slash) also goes to static so the CloudFront Function can redirect it.
+  dynamic "ordered_cache_behavior" {
+    for_each = local.free_report_paths
+    content {
+      path_pattern           = ordered_cache_behavior.value
+      target_origin_id       = local.static_origin_id
+      viewer_protocol_policy = "redirect-to-https"
+      allowed_methods        = ["GET", "HEAD"]
+      cached_methods         = ["GET", "HEAD"]
+      compress               = true
+      cache_policy_id        = data.aws_cloudfront_cache_policy.optimized.id
 
-    function_association {
-      event_type   = "viewer-request"
-      function_arn = aws_cloudfront_function.index_rewrite.arn
-    }
-  }
-
-  ordered_cache_behavior {
-    path_pattern           = "/reports/near-users-vs-bots/*"
-    target_origin_id       = local.static_origin_id
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD"]
-    cached_methods         = ["GET", "HEAD"]
-    compress               = true
-    cache_policy_id        = data.aws_cloudfront_cache_policy.optimized.id
-
-    function_association {
-      event_type   = "viewer-request"
-      function_arn = aws_cloudfront_function.index_rewrite.arn
+      function_association {
+        event_type   = "viewer-request"
+        function_arn = aws_cloudfront_function.index_rewrite.arn
+      }
     }
   }
 

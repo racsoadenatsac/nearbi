@@ -1,15 +1,17 @@
 // CloudFront Function (viewer request, static behaviors only).
 // S3 REST origins behind OAC don't serve directory indexes: map "/path/" to "/path/index.html".
-// The free sample without a trailing slash is redirected to the canonical URL.
+// Free reports without a trailing slash are redirected to their canonical URL.
+var FREE_REPORTS = ["/reports/near-users-vs-bots", "/reports/near-thesis"];
+
 function handler(event) {
   var request = event.request;
   var uri = request.uri;
 
-  if (uri === "/reports/near-users-vs-bots") {
+  if (FREE_REPORTS.indexOf(uri) !== -1) {
     return {
       statusCode: 301,
       statusDescription: "Moved Permanently",
-      headers: { location: { value: "/reports/near-users-vs-bots/" } },
+      headers: { location: { value: uri + "/" } },
     };
   }
 
