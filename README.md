@@ -97,6 +97,13 @@ the digest-pinned image, and writes `res/<crate>.wasm` + `.sha256`. That's what
 the same bytes. The deploy script checks that the on-chain `code_hash`
 (base58 of sha256) equals the local WASM.
 
+Determinism check (2026-11-03): a second clean `bin/build.sh` from a later commit with
+identical contract sources produced byte-identical files: `nearbi_splitter.wasm`
+sha256 `193b1516326f09dafd3d6d1364cf085891ea4a021335184e3a83bad4f2b1fc13`, `usdc_mock.wasm`
+sha256 `1a380d783c16f3f3c9460707254b0cd0e6d366a079584c99cfc663391548ec01`, the same bytes that
+are deployed. On an Apple-silicon host the amd64 image runs under QEMU and takes about 10–12 min
+for both contracts. One attempt hung (cargo idle at 0 % CPU) and had to be killed and re-run.
+
 Sandbox tests deploy the real mock NEP-141 and the splitter, register storage, then
 check: exact split for odd amounts (1, 9 999, 12 345 679, 10 000 001 base units, plus
 49.000000) with zero dust left in the splitter; paused → full refund; non-accepted token →
