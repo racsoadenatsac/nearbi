@@ -13,3 +13,12 @@ node_modules/
 .ipynb_checkpoints/
 .DS_Store
 cache/
+# rust / near
+target/
+res/*.wasm.tmp
+.tools/
+.cargo-cache/
+# near keys: never in the repo (they live in ~/.near-credentials, see README)
+*.json.key
+near-credentials/
+deploy/state/*.local.*
