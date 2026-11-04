@@ -151,11 +151,18 @@ async function signWithMeteor(mc) {
 }
 
 // ---------------------------------------------------------------- UI
-function addWalletButton(box, label, onClick) {
+function addWalletButton(box, label, onClick, iconUrl) {
   const b = document.createElement("button");
-  b.className = "btn wallet-btn";
+  b.className = "btn pri wallet-btn";
   b.type = "button";
-  b.textContent = label;
+  if (iconUrl) {
+    const img = document.createElement("img");
+    img.src = iconUrl;
+    img.alt = "";
+    img.addEventListener("error", () => img.remove());
+    b.appendChild(img);
+  }
+  b.append(label);
   b.addEventListener("click", () => onClick().catch((e) => setStatus(`Sign-in failed: ${e.message}`)));
   box.appendChild(b);
   return b;
@@ -171,9 +178,9 @@ async function loadWallets() {
     ),
   ]);
   box.innerHTML = "";
-  if (meteor.status === "fulfilled") addWalletButton(box, "Meteor Wallet", () => signWithMeteor(meteor.value));
+  if (meteor.status === "fulfilled") addWalletButton(box, "Meteor Wallet", () => signWithMeteor(meteor.value), "/assets/wallets/meteor.png");
   if (selector.status === "fulfilled") {
-    for (const m of selector.value.store.getState().modules) addWalletButton(box, m.metadata.name, () => signWithSelector(selector.value, m.id));
+    for (const m of selector.value.store.getState().modules) addWalletButton(box, m.metadata.name, () => signWithSelector(selector.value, m.id), m.metadata.iconUrl);
   }
   const failed = [meteor, selector].filter((r) => r.status === "rejected");
   if (failed.length) {
