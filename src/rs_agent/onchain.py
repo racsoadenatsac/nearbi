@@ -19,6 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Optional
 
+from . import egress
 from . import forwarder as fw
 from .rules import Config
 
@@ -29,15 +30,12 @@ MAX_REF = 256  # splitter MAX_TEXT_LEN
 KIND_MAX = 64
 SLUG_MAX = 128  # splitter MAX_ORDER_ID_LEN (anchor_report slug)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy")
+PROXY_VARS = egress.PROXY_VARS
 
 
 def near_cli_env() -> dict:
-    """Environment for near-cli-rs: without the gateway egress proxy, whose TLS-intercepting CA near-cli-rs
-    (rustls, built-in roots) does not trust. NEAR RPC needs no proxied secret. RS_AGENT_NEAR_CLI_PROXY=1 keeps it."""
-    if os.environ.get("RS_AGENT_NEAR_CLI_PROXY") == "1":
-        return dict(os.environ)
-    return {k: v for k, v in os.environ.items() if k not in PROXY_VARS}
+    """Environment for near-cli-rs: direct egress (rs_agent.egress.direct_env); NEAR RPC needs no proxied secret."""
+    return egress.direct_env()
 
 
 def build_ref(order_id: str, line_hash: str, note: str = "") -> str:
@@ -105,7 +103,8 @@ class SplitterSigner:
         finally:
             sk = ""  # noqa: F841
 
-    def call(self, method: str, args: dict) -> tuple[int, str]:
+    def call(self, method: str, args: dict, broadcast: bool = True) -> tuple[int, str]:
+        """near-cli-rs signs `method(args)`; broadcast=False ends in `display` (signed offline, never sent)."""
         r, w = os.pipe()
         try:
             sk = self.secret()
@@ -116,7 +115,7 @@ class SplitterSigner:
             cmd = [self.near, "contract", "call-function", "as-transaction", self.account, method, "json-args",
                    json.dumps(args, separators=(",", ":")), "prepaid-gas", f"{PREPAID_GAS_TGAS} Tgas", "attached-deposit", "0 NEAR",
                    "sign-as", self.account, "network-config", self.cfg.net["near_cli_network"],
-                   "sign-with-access-key-file", f"/dev/fd/{r}", "send"]
+                   "sign-with-access-key-file", f"/dev/fd/{r}", "send" if broadcast else "display"]
             p = subprocess.run(cmd, capture_output=True, text=True, pass_fds=(r,), timeout=180, env=near_cli_env())
             return p.returncode, fw.scrub(p.stdout + "\n" + p.stderr)
         finally:
@@ -140,6 +139,21 @@ def preflight(cfg: Config, rpc: Any, signer: SplitterSigner, method: str = "reco
         raise fw.Stop(fw.EXIT_TOPUP, f"top up {acct}: free NEAR {free / fw.YOCTO:.4f} < 0.01")
     if not signer.key_matches():
         raise fw.Stop(fw.EXIT_ERROR, f"the local secret for {acct} does not match {signer.public_key}")
+
+
+def sign_check(cfg: Config, signer: SplitterSigner, method: str, args: dict) -> None:
+    """Sign the exact call with near-cli-rs (nonce + block hash over NEAR RPC) and only display it: proves key,
+    near-cli and its egress without broadcasting. The signed tx is checked in memory and discarded."""
+    rc, out = signer.call(method, args, broadcast=False)
+    blob = fw.signed_blob(out)
+    if rc != 0 or blob is None:
+        safe = fw.SIGNED_RE.sub(r"\1<signed tx withheld>", out)
+        raise fw.Stop(fw.EXIT_ERROR, f"sign check: near-cli rc={rc}, no signed transaction:\n{safe[-800:]}")
+    marker = (args.get("ref") or args.get("slug") or "").encode()
+    ok = signer.public_key in out and signer.account.encode() in blob and method.encode() in blob and marker in blob
+    blob = b""  # noqa: F841  (discard the signed tx)
+    if not ok:
+        raise fw.Stop(fw.EXIT_ERROR, "sign check: signed tx does not match the request")
 
 
 def verify_cost_tx(tx: dict, splitter: str, args: dict) -> list[str]:

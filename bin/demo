@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from rs_agent import forwarder as fw  # noqa: E402
-from rs_agent import onchain  # noqa: E402
+from rs_agent import egress, onchain  # noqa: E402
 from rs_agent import order_loop as ol  # noqa: E402
 from rs_agent import rules, spend  # noqa: E402
 
@@ -162,8 +162,7 @@ def main():
     out("  NOTE: NEAR Intents 1Click has no testnet. The customer's plain ft_transfer to the forwarder stands in for the")
     out("        1Click withdrawal (exactly what 1Click sends on mainnet); everything after it is the production path.")
     result = Path(fw.state_dir()) / f"demo-sale-{order_id}.json"
-    env = {k: v for k, v in onchain.near_cli_env().items()}
-    env.update(NEARBI_SPLITTER=cfg.net["splitter"], NEARBI_FORWARDER=cfg.net["forwarder"], PRICE=str(int(PRICE_USD * 10**6)),
+    env = egress.direct_env(NEARBI_SPLITTER=cfg.net["splitter"], NEARBI_FORWARDER=cfg.net["forwarder"], PRICE=str(int(PRICE_USD * 10**6)),
                PAYER=a.customer, DRIP="auto", QUICK="1", RESULT_JSON=str(result), ORDER_ID=order_id, DEMO_T0=str(int(out.t0)))
     rc, _ = stream(["bash", str(RS_PAYMENTS / "bin/demo-intents.sh")], out, env=env,
                    keep=lambda l: not l.startswith("  sale done") and not re.match(r"^\s{2}\S.*https://", l))
@@ -212,7 +211,7 @@ def main():
     else:
         out.step(6, f"Public ledger: rs-ledger bin/publish --network {LEDGER_NETWORK}")
         # direct egress like near-cli: the aws-crt S3 client rejects the gateway proxy's TLS CA, and S3 needs no proxied secret
-        lenv = dict(onchain.near_cli_env(), AWS_PROFILE=os.environ.get("AWS_PROFILE", "nearbi"), LEDGER_CUTOFF_BLOCKS="1",
+        lenv = egress.direct_env(AWS_PROFILE=os.environ.get("AWS_PROFILE", "nearbi"), LEDGER_CUTOFF_BLOCKS="1",
                     PUBLISH_NO_WAIT="1", LEDGER_EXTRA_TXS=",".join(h for _, h in links))
         want = {"sale": 1, "payout": 2, "cost": len(order["onchain"]["record_cost"]), "report_anchor": 1}
         for attempt in (1, 2):

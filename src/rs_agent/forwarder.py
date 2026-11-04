@@ -25,7 +25,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import rules
+from . import egress, rules
 
 # ------------------------------------------------------------------------------------------ constants
 FORWARDER = "forwarder.nearbi.near"
@@ -137,7 +137,8 @@ class Dynamo:
     """DynamoDB through the aws CLI (operator SSO profile). Read: FWDQ queue + PAY# items. Write: mark forwarded."""
 
     def __init__(self, profile: str = "nearbi", table: str = TABLE, region: str = REGION):
-        self.env = {**os.environ, "AWS_PROFILE": profile, "AWS_REGION": region, "AWS_PAGER": ""}
+        # direct egress: DynamoDB/STS need no proxied secret (rs_agent.egress)
+        self.env = egress.direct_env(AWS_PROFILE=profile, AWS_REGION=region, AWS_PAGER="")
         self.table = table
 
     def _aws(self, *args: str) -> Any:
@@ -244,8 +245,14 @@ class Signer:
         finally:
             sk = ""  # noqa: F841
 
-    def forward(self, order_id: str, amount: str) -> tuple[int, str]:
+    def forward_cmd(self, order_id: str, amount: str, fd: int, broadcast: bool = True) -> list[str]:
+        """near-cli-rs argv for forward(); broadcast=False ends in `display` (sign offline, print, never send)."""
         args = json.dumps({"order_id": order_id, "amount": amount}, separators=(",", ":"))
+        return [self.near, "contract", "call-function", "as-transaction", FORWARDER, "forward", "json-args", args,
+                "prepaid-gas", f"{PREPAID_GAS_TGAS} Tgas", "attached-deposit", "0 NEAR", "sign-as", FORWARDER,
+                "network-config", NEAR_NETWORK, "sign-with-access-key-file", f"/dev/fd/{fd}", "send" if broadcast else "display"]
+
+    def forward(self, order_id: str, amount: str, broadcast: bool = True) -> tuple[int, str]:
         r, w = os.pipe()
         try:
             sk = self.secret()
@@ -253,10 +260,9 @@ class Signer:
             sk = ""  # noqa: F841
             os.close(w)
             w = -1
-            cmd = [self.near, "contract", "call-function", "as-transaction", FORWARDER, "forward", "json-args", args,
-                   "prepaid-gas", f"{PREPAID_GAS_TGAS} Tgas", "attached-deposit", "0 NEAR", "sign-as", FORWARDER,
-                   "network-config", NEAR_NETWORK, "sign-with-access-key-file", f"/dev/fd/{r}", "send"]
-            p = subprocess.run(cmd, capture_output=True, text=True, pass_fds=(r,), timeout=180)
+            cmd = self.forward_cmd(order_id, amount, r, broadcast)
+            # direct egress: near-cli-rs rejects the gateway proxy CA (UnknownIssuer); NEAR RPC needs no proxied secret
+            p = subprocess.run(cmd, capture_output=True, text=True, pass_fds=(r,), timeout=180, env=egress.direct_env())
             return p.returncode, scrub(p.stdout + "\n" + p.stderr)
         finally:
             if w != -1:
@@ -486,6 +492,27 @@ class Runner:
         log(f"{pid}: forwarded {int(amount) / 1e6:.6f} USDC into {SPLITTER}; tx {tx_hash} https://nearblocks.io/txns/{tx_hash}")
         return "forwarded"
 
+    def sign_check(self, order_id: Optional[str] = None, amount: str = "1") -> str:
+        """Exercise the real signing path short of broadcast: rules gate + preflight, then near-cli-rs signs
+        forward(<fresh random order id>, 1) with the Keychain key, fetching nonce and block hash over NEAR RPC, and
+        ends in `display` (never `send`). The signed transaction is checked in memory and discarded, never printed."""
+        import uuid
+        self.rules_gate("sign check")
+        self.preflight()
+        oid = order_id or str(uuid.uuid4())
+        assert self.signer.forward_cmd(oid, amount, 0, broadcast=False)[-1] == "display"
+        rc, out = self.signer.forward(oid, amount, broadcast=False)
+        blob = signed_blob(out)
+        safe = SIGNED_RE.sub(r"\1<signed tx withheld>", out)
+        if rc != 0 or blob is None:
+            raise Stop(EXIT_ERROR, f"sign check: near-cli rc={rc}, no signed transaction:\n{safe[-800:]}")
+        problems = [w for w, ok in (("public key", FC_PUBLIC_KEY in out), ("signer/receiver", FORWARDER.encode() in blob),
+                                    ("method", b"forward" in blob), ("order id", oid.encode() in blob)) if not ok]
+        blob = b""  # noqa: F841  (discard the signed tx)
+        if problems:
+            raise Stop(EXIT_ERROR, f"sign check: signed tx does not match the request ({', '.join(problems)})")
+        return oid
+
     def journal_tx(self, pid: str) -> Optional[str]:
         """Last tx hash this machine recorded for a forward of `pid` (forwarded or forward_problem)."""
         if not self.journal.exists():
@@ -549,6 +576,20 @@ class Runner:
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
             lock.close()
+
+
+SIGNED_RE = re.compile(r"(Signed transaction \(serialized as base64\):[^\S\n]*\n\s*)([A-Za-z0-9+/=]{40,})")
+
+
+def signed_blob(out: str) -> Optional[bytes]:
+    """The borsh bytes of the signed transaction near-cli `display` printed, or None."""
+    m = SIGNED_RE.search(out)
+    if not m:
+        return None
+    try:
+        return base64.b64decode(m.group(2), validate=True)
+    except ValueError:
+        return None
 
 
 def manual_entry(db: Dynamo, order_id: str, amount: str) -> dict:

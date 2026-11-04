@@ -8,7 +8,7 @@ set -euo pipefail
 RS_PAYMENTS="${RS_PAYMENTS_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/rs-payments}"
 export NEARBI_SPLITTER=splitter-v2.nearbi-agent.testnet NEARBI_FORWARDER=forwarder-v2.nearbi-agent.testnet
 # near-cli-rs does not trust the gateway egress proxy CA; NEAR RPC goes direct (no secrets are proxied for it)
-unset HTTPS_PROXY HTTP_PROXY https_proxy http_proxy
+unset HTTPS_PROXY HTTP_PROXY ALL_PROXY NODE_USE_ENV_PROXY https_proxy http_proxy all_proxy node_use_env_proxy  # = rs_agent.egress.PROXY_VARS
 source "$RS_PAYMENTS/bin/lib.sh"
 CUSTOMER="${DEMO_CUSTOMER:-demo-customer.$AGENT}"
 FUND="${DEMO_CUSTOMER_FUND:-145000000}"

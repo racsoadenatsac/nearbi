@@ -30,6 +30,7 @@ bin/forwarder-runner --once                # one pass, then exit (use this from 
 bin/forwarder-runner --once --dry-run      # every check, no transaction
 bin/forwarder-runner --loop --interval 60  # foreground loop until Ctrl-C or a stop condition
 bin/forwarder-runner --order <paymentId> --amount <USDC base units>   # a payment not on the queue
+bin/forwarder-runner --sign-check          # preflight + near-cli signs forward(<random id>, 1), display only, never sent
 ```
 
 Needs: macOS `security` (Keychain item `nearbi-mainnet-fc-forwarder.nearbi.near`), `aws` CLI with the SSO
@@ -45,6 +46,34 @@ launchd/cron here, the main agent owns scheduling (e.g. `--once` every 1–5 min
 | 3 | `SSO expired` | the operator runs `aws sso login --profile nearbi` (the agent never does) |
 | 4 | **top up forwarder.nearbi.near** (free NEAR < 0.16), or the key allowance is < 0.15 NEAR | send NEAR to `forwarder.nearbi.near` from any account; allowance: see Limits |
 | 5 | **refused by config.yaml**: kill switch on, split mismatch (`ALERT:`), `network` not mainnet, invalid config | read the `REFUSED (<rule>)` line; see [Operator rules](#operator-rules-configyaml). `--loop` keeps running and resumes by itself |
+
+### Egress under the gateway egress proxy (v0.4.1)
+
+The gateway exec environment routes HTTPS through the secret egress proxy (`HTTPS_PROXY`, `HTTP_PROXY`,
+`NODE_USE_ENV_PROXY`, `SSL_CERT_FILE` → a trust bundle with the proxy CA). Only NEAR AI Cloud needs it (the
+proxy swaps the real `NEAR_AI_CLOUD_API_KEY` for the sentinel). near-cli-rs does **not** trust the proxy CA:
+up to v0.4.0 every forward would have died at signing with
+
+```
+ERROR failed to verify TLS certificate: invalid peer certificate: UnknownIssuer
+0: Cannot sign a transaction due to an error while fetching the most recent nonce value on network <mainnet>
+```
+
+(`--status` and `--once --dry-run` were green because they never call near-cli: Python urllib RPC/1Click and
+`aws` DynamoDB/STS trust the bundle). Since v0.4.1 one helper, `rs_agent.egress.direct_env()`, removes
+`HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NODE_USE_ENV_PROXY` (any case) for **near-cli-rs and `aws`**
+subprocesses only (forwarder signer, DynamoDB/STS, `record_cost`/`anchor_report`, `bin/demo`, rs-ledger
+publish); CA variables are kept (the bundle holds the public roots). NEAR AI Cloud calls (in-process urllib,
+and `bin/write-report` / `bin/record-cost` children of the order loop) keep the proxy. `RS_AGENT_NEAR_CLI_PROXY=1`
+keeps the proxy everywhere (debugging; reproduces the failure above). Keys are unchanged: Keychain → memory →
+`/dev/fd/N`.
+
+`--sign-check` runs the rules gate and preflight, then has near-cli-rs fetch the nonce/block hash and sign
+`forward(<fresh random order id>, 1)` with the Keychain key, ending in `display` instead of `send`; the signed
+transaction is checked in memory (signer, method, order id, public key) and discarded, never printed. Use it
+after any near-cli, key or network change. `bin/record-cost --dry-run --preflight` does the same for the
+splitter key (`record_cost`). What it does not cover: broadcast, `EXPERIMENTAL_tx_status` of a real tx, and
+the DynamoDB writes (`UpdateItem`/`DeleteItem`).
 
 ### What one pass does
 
@@ -179,7 +208,7 @@ pass the cap check; the agent runs jobs one at a time.
 bin/record-cost --order <id> --usd 0.42 --kind bigquery --note "q1-q4, 84 GB scanned"   # book + DRY RUN of the onchain call
 bin/record-cost --order <id> --usd 0.42 --kind bigquery --send                           # book + send record_cost
 bin/record-cost --from-line <seq> [--send]        # mirror a line already booked (e.g. by the NEAR AI client)
-bin/record-cost --order <id> --usd 0.42 --kind bigquery --dry-run --preflight            # write/send nothing; check key + gas
+bin/record-cost --order <id> --usd 0.42 --kind bigquery --dry-run --preflight            # write/send nothing; check key + gas + sign (display only)
 ```
 
 It books the line, then prints the exact `splitter.record_cost(kind, amount_usd_micros, ref)` call (receiver,
@@ -191,7 +220,8 @@ Keychain item `nearbi-mainnet-fc-splitter.nearbi.near` (function-call key `ed255
 `[record_cost, anchor_report]`), testnet the chmod-600 file from rs-payments `deploy-testnet.sh`; either way
 the secret is read into memory and passed to near-cli-rs via `/dev/fd/N`, never written, never on argv. The
 preflight checks the onchain key permission, that the local secret is its private half, the allowance and the
-splitter's free NEAR.
+splitter's free NEAR, then has near-cli-rs sign the exact call and only display it (v0.4.1; not broadcast, signed
+tx discarded).
 
 Proven on testnet 2026-11-04: `record_cost(inference, 12500, "order:demo-opsrules-20261104 spend:87532f87…")`,
 tx [`4wF4n3vq…`](https://testnet.nearblocks.io/txns/4wF4n3vq9Rb1uXNqoPuRccXQ1sPbyh2J974YPAindyTW); a second
