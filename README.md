@@ -17,18 +17,28 @@ NearBI is an autonomous agent that sells evidence-first research on NEAR onchain
   command re-hashes or re-runs everything on the public NEAR BigQuery dataset and prints
   `REPRODUCED ✅` or `MISMATCH ❌`. A checker refuses any number in the prose that does not trace to a
   result cell.
-- **Operator rules live in config.** The operator controls the agent through one `config.yaml`: kill
-  switch, daily NEAR AI Cloud inference cap (`max_spend_usd_per_day`), minimum prices and `split_bps`.
-  Every inference call is meant to be logged as a `cost` event (design: `docs/ARCHITECTURE.md`
-  §3.2 and §3.5). Prices are configured in the app (`MONTHLY_PRICE_USD`=49, `QUICK_ANSWER_PRICE_USD`=29,
-  `DEEP_DIVE_PRICE_USD`=499, see `app/README.md`). The split is fixed in the splitter contract
-  (`split_bps_contributors: 1000`).
+- **Operator rules live in config.** The operator controls the agent through one file,
+  `agent/config.yaml`: kill switch, network, daily NEAR AI Cloud cap (`max_inference_usd_per_day`, 50),
+  per-report cap (`per_report_cost_cap_usd`, 10), minimum prices (49 / 29 / 499) and the revenue split
+  (10 % / 90 %). Every agent action re-reads it before acting, and a split that disagrees with the
+  splitter contract (`split_bps_contributors: 1000`) stops the agent. Every paid inference call is
+  written to a spend ledger and recorded on-chain as a `cost` event (`record_cost`).
 
-> **Status, honestly.** These parts are live on mainnet: payments, the forwarder, the splitter and the
-> ledger. The `config.yaml` enforcer and the NEAR AI Cloud inference client are designed but **not yet
-> in `agent/`**. Today `agent/` holds the forwarding agent only, and `record_cost` reporting is not
-> wired (`agent/src/rs_agent/forwarder.py`). One-off report fulfilment is manual (`app/bin/list-orders`,
-> `app/bin/update-order`).
+> **Status, honestly (2026-11-04).**
+> - **Live on mainnet and proven by a real sale:** payments, the forwarder, the splitter and the
+>   public ledger. The first sale (below) was forwarded and split on-chain, but its report was
+>   written and delivered by a person.
+> - **Built, tested and running on mainnet, but not yet exercised by a real order:** the automatic
+>   order path. `agent/bin/agent-tick` runs every 5 minutes. It forwards settled payments, picks up
+>   paid Quick Answers, writes the report with NEAR AI Cloud inference, delivers it on nearbi.ai,
+>   then records the cost and anchors the report on-chain (`record_cost`, `anchor_report`). Those
+>   two calls have been signed on mainnet but only sent on testnet so far.
+> - **Proven end to end on testnet:** `make demo` in `agent/` runs the whole loop (payment, forward,
+>   split, inference, delivery, cost, anchor, public ledger) in about 77 s, under the 2-minute budget.
+>   Transcript: `agent/docs/demo-run-20261104T1206Z.txt`. In this monorepo, run it with
+>   `RS_PAYMENTS_DIR=$PWD/contracts RS_LEDGER_DIR=$PWD/ledger`. It needs the operator's testnet keys.
+> - **Still human by design:** Deep Dives ($499) and any Quick Answer the agent can't match to a
+>   cached result pack are flagged for the operator instead of answered.
 
 ## First real sale
 
@@ -110,7 +120,7 @@ dates are preserved. `git log -- <dir>` stops at the import merge. To see a unit
 | `app/` | nearbi-app | nearbi.ai backend + static site: Sign in with NEAR (NEP-413), NEAR Intents 1Click checkout (subscription, Quick Answer, Deep Dive), gated reports. AWS Lambda + DynamoDB + S3 |
 | `infra/` | nearbi-infra | OpenTofu for nearbi.ai: Route 53, ACM, CloudFront, S3, API Gateway, Lambda, DynamoDB, SSM secrets |
 | `contracts/` | rs-payments | Rust contracts: revenue splitter, settlement forwarder, testnet mock USDC; deploy scripts and records (`deploy/*.json`), demos |
-| `agent/` | rs-agent | The forwarding agent (`bin/forwarder-runner`): calls `forward` for every settled payment |
+| `agent/` | rs-agent | The shop agent: `config.yaml` operator rules, forwarder, order loop (`bin/agent-tick`), report writer on NEAR AI Cloud, spend ledger + `record_cost`, `make demo` testnet loop |
 | `ledger/` | rs-ledger | Public ledger: pull events → normalize → hash-chain → reconcile → render; `verify-ledger` |
 | `repro/` | rs-repro | Reproducibility container: query safeguards, cost-capped dry runs, result fingerprints, verify |
 | `thesis/` | rs-thesis | Track 02 NEAR investment thesis, its queries, data, analysis and dashboard |
@@ -126,8 +136,9 @@ The decision to use one monorepo is recorded in `docs/decisions/ADR-003-single-m
 - **NEAR accounts and contracts:** the splitter enforces the split onchain. The agent holds only
   scoped function-call keys. Report fingerprints can be anchored with `anchor_report`.
 - **Sign in with NEAR (NEP-413):** members authenticate with their NEAR wallet.
-- **NEAR AI Cloud:** the planned inference provider, metered against the daily cap in `config.yaml`
-  (see Status above).
+- **NEAR AI Cloud:** the agent buys its own inference there to write each report
+  (`anthropic/claude-haiku-5-5`, about $0.002–0.004 per report), metered against the daily cap in
+  `agent/config.yaml` and recorded on-chain with `record_cost`.
 - **NEAR BigQuery public dataset:** the evidence base for every report and the thesis.
 
 ## License
