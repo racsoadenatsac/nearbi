@@ -205,6 +205,7 @@ price) → daily + per-report cap → `POST /v1/chat/completions` → cost = the
 `POST /v1/billing/costs` for the `inference-id` header, else usage × list price → booked in the spend ledger
 (`kind=inference`, model, tokens, inference id, cost source). A timeout is booked at the estimate; an HTTP
 error books nothing; an unpriced model is refused. Default model `zai-org/GLM-5.1-FP8`.
+An empty or `finish_reason=length` reply is still booked but flagged (`_rs_result.empty/truncated`, ledger meta, stderr WARNING); report code must use `nearai.text_of()`, which raises `EmptyCompletion` instead of shipping it.
 
 **What the operator must provide**: a NEAR AI Cloud API key (cloud.near.ai → Credits → API Keys; set a
 spend limit on the key there as a second cap), stored as a **protected secret**

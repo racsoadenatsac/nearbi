@@ -412,6 +412,34 @@ class NearAIClient(TempState):
         self.assertEqual(http.calls, [])
         self.assertEqual(self.sl.load(), [])
 
+    def test_ok_completion_is_not_flagged(self):
+        r = nearai.Client(str(self.cfg_file), http=FakeNearAI(billed=1000), sleep=lambda s: None).chat(PID, [{"role": "user", "content": "hello"}], max_tokens=100)
+        self.assertEqual(nearai.text_of(r), "hi")
+        self.assertEqual((r["_rs_result"]["truncated"], r["_rs_result"]["empty"]), (False, False))
+
+    def test_empty_reasoning_only_completion_is_flagged_booked_and_cannot_ship(self):
+        import contextlib, io
+        http = FakeNearAI(billed=22_000, content="", finish_reason="length", reasoning_tokens=70)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            r = nearai.Client(str(self.cfg_file), http=http, sleep=lambda s: None).chat(PID, [{"role": "user", "content": "hello"}], max_tokens=70)
+        self.assertEqual(r["_rs_result"], {"text": "", "finish_reason": "length", "truncated": True, "empty": True, "reasoning_tokens": 70})
+        self.assertIn("EMPTY completion", err.getvalue())
+        self.assertNotIn("sentinel-not-a-real-key", err.getvalue())
+        (line,) = self.sl.load()  # still paid, still booked
+        self.assertEqual((line["usd_micros"], line["meta"]["empty"], line["meta"]["truncated"], line["meta"]["reasoning_tokens"]), (22, True, True, 70))
+        with self.assertRaisesRegex(nearai.EmptyCompletion, "empty completion"):
+            nearai.text_of(r)
+
+    def test_truncated_text_is_flagged(self):
+        import contextlib, io
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            r = nearai.Client(str(self.cfg_file), http=FakeNearAI(content="Hello, NEAR is", finish_reason="length"), sleep=lambda s: None).chat(PID, [{"role": "user", "content": "x"}], max_tokens=70)
+        self.assertIn("TRUNCATED completion", err.getvalue())
+        with self.assertRaisesRegex(nearai.EmptyCompletion, "truncated"):
+            nearai.text_of(r)
+        self.assertEqual(nearai.text_of(r, allow_truncated=True), "Hello, NEAR is")
+
     def test_unpriced_model_is_refused(self):
         with self.assertRaisesRegex(nearai.InferenceError, "not in the NEAR AI Cloud price list"):
             nearai.Client(str(self.cfg_file), http=FakeNearAI(), sleep=lambda s: None).chat(PID, [{"role": "user", "content": "x"}], model="nope/x")
@@ -428,8 +456,9 @@ def no_http(*a):
 
 
 class FakeNearAI:
-    def __init__(self, billed=None, timeout=False):
+    def __init__(self, billed=None, timeout=False, content="hi", finish_reason="stop", reasoning_tokens=0):
         self.billed, self.timeout, self.calls, self.headers = billed, timeout, [], []
+        self.content, self.finish_reason, self.reasoning_tokens = content, finish_reason, reasoning_tokens
 
     def __call__(self, method, url, headers, body, timeout):
         self.calls.append((method, url))
@@ -441,8 +470,9 @@ class FakeNearAI:
             if self.timeout:
                 raise TimeoutError("timed out")
             return 200, {"inference-id": "6f1c1f0e-0000-5000-8000-000000000001"}, json.dumps({
-                "id": "x", "choices": [{"message": {"role": "assistant", "content": "hi"}}],
-                "usage": {"prompt_tokens": 11, "completion_tokens": 70, "total_tokens": 81}}).encode()
+                "id": "x", "choices": [{"message": {"role": "assistant", "content": self.content}, "finish_reason": self.finish_reason}],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 70, "total_tokens": 81,
+                          "completion_tokens_details": {"reasoning_tokens": self.reasoning_tokens}}}).encode()
         if url.endswith("/billing/costs"):
             return 200, {}, json.dumps({"requests": [{"requestId": "6f1c1f0e-0000-5000-8000-000000000001", "costNanoUsd": self.billed or 0}]}).encode()
         raise AssertionError(url)
