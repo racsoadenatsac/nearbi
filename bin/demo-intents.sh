@@ -12,13 +12,27 @@
 # Prints balances before/after, tx hashes, explorer links, events and the duration
 # (fails if >= 120 s).
 #   ORDER_ID=<id> bin/demo-intents.sh
+#
+# Knobs for callers (rs-agent bin/demo); the defaults reproduce the recorded runs:
+#   PRICE=<USDCm base units>  default 49000000
+#   PAYER=<account>.testnet   who sends the plain ft_transfer (default oneclick-sim.<agent>); e.g. a demo
+#                             customer standing in for the 1Click delivery (1Click has no testnet)
+#   DRIP=always|auto          agent -> payer mock-USDC drip; auto = only if the payer holds < PRICE (default always)
+#   QUICK=1                   skip the negative checks (double forward, set_agent), the config and key dumps
+#   RESULT_JSON=<file>        write order, txs, balances, deltas and the split verdict as JSON
+#   DEMO_T0=<epoch s>         step clock origin (default: this script's start)
 source "$(dirname "$0")/lib.sh"
 START=$(date +%s)
-PRICE=49000000          # 49.000000 USDCm
+T0="${DEMO_T0:-$START}"
+PRICE="${PRICE:-49000000}"          # 49.000000 USDCm
+PAYER="${PAYER:-$ONECLICK_SIM}"
+DRIP="${DRIP:-always}"
+QUICK="${QUICK:-0}"
+require_testnet "$PAYER"
 ORDER_ID="${ORDER_ID:-intents-$(date -u +%Y%m%dT%H%M%SZ)}"
 [ -f "$FWD_FC_KEY_FILE" ] || { echo "no forwarder function-call key at $FWD_FC_KEY_FILE; run bin/deploy-forwarder-testnet.sh" >&2; exit 1; }
 declare -a LINKS=()
-step() { printf '\n\033[1m[%3ss] %s\033[0m\n' "$(( $(date +%s) - START ))" "$*"; }
+step() { printf '\n\033[1m[%3ss] %s\033[0m\n' "$(( $(date +%s) - T0 ))" "$*"; }
 record_tx() { # label signer
   local h; h="$(last_tx)"
   [ -n "$h" ] || { echo "no tx hash for $1" >&2; exit 1; }
@@ -40,31 +54,35 @@ BPS="$(view "$SPLITTER" get_config '{}' | python3 -c 'import sys,json; print(jso
 step "forwarder $FORWARDER -> splitter $FSPL (bps $BPS)  token $FTOK  paused=$FPAUSED  change_delay_sec=$FDELAY"
 
 balances() {
-  for a in "$ONECLICK_SIM" "$FORWARDER" "$SPLITTER" "$CONTRIBUTORS" "$TREASURY"; do
+  for a in "$PAYER" "$FORWARDER" "$SPLITTER" "$CONTRIBUTORS" "$TREASURY"; do
     printf '%s=%s\n' "$a" "$(ft_balance "$a")"
   done
 }
 show() { while IFS='=' read -r a v; do printf '    %-48s %16s USDCm\n' "$a" "$(fmt_usdc "$v")"; done <<<"$1"; }
 
-step "mock-USDC liquidity for the simulated 1Click sender: $AGENT -> $ONECLICK_SIM 49.000000"
-call "$AGENT" "$TOKEN" ft_transfer "{\"receiver_id\":\"$ONECLICK_SIM\",\"amount\":\"$PRICE\",\"memo\":\"testnet demo: 1click liquidity\"}" '1 yoctoNEAR' '30 Tgas'
-record_tx "drip to 1click-sim" "$AGENT"
+if [ "$DRIP" = auto ] && [ "$(ft_balance "$PAYER")" -ge "$PRICE" ]; then
+  step "payer $PAYER already holds >= $(fmt_usdc "$PRICE") USDCm (no drip)"
+else
+  step "mock-USDC liquidity for the payer: $AGENT -> $PAYER $(fmt_usdc "$PRICE")"
+  call "$AGENT" "$TOKEN" ft_transfer "{\"receiver_id\":\"$PAYER\",\"amount\":\"$PRICE\",\"memo\":\"testnet demo: payer liquidity\"}" '1 yoctoNEAR' '30 Tgas'
+  record_tx "drip to payer" "$AGENT"
+fi
 
 BEFORE="$(balances)"
 step "balances BEFORE"; show "$BEFORE"
 
-step "1Click delivery (simulated): $ONECLICK_SIM plain ft_transfer 49.000000 -> $FORWARDER"
-call "$ONECLICK_SIM" "$TOKEN" ft_transfer "{\"receiver_id\":\"$FORWARDER\",\"amount\":\"$PRICE\",\"memo\":\"1click withdrawal (simulated)\"}" '1 yoctoNEAR' '30 Tgas'
-record_tx "1click plain ft_transfer" "$ONECLICK_SIM"
+step "1Click delivery (simulated): $PAYER plain ft_transfer $(fmt_usdc "$PRICE") -> $FORWARDER"
+call "$PAYER" "$TOKEN" ft_transfer "{\"receiver_id\":\"$FORWARDER\",\"amount\":\"$PRICE\",\"memo\":\"order $ORDER_ID (simulated 1click delivery)\"}" '1 yoctoNEAR' '30 Tgas'
+record_tx "1click plain ft_transfer" "$PAYER"
 echo "    forwarder balance now $(fmt_usdc "$(ft_balance "$FORWARDER")") USDCm"
 
-step "agent (function-call key [forward]) forward order_id=$ORDER_ID amount=49.000000"
+step "agent (function-call key [forward]) forward order_id=$ORDER_ID amount=$(fmt_usdc "$PRICE")"
 fc_forward "{\"order_id\":\"$ORDER_ID\",\"amount\":\"$PRICE\"}"
 record_tx "forward -> splitter" "$FORWARDER"
 
 AFTER="$(balances)"
 step "balances AFTER"; show "$AFTER"
-python3 - "$BEFORE" "$AFTER" "$PRICE" "$BPS" "$ONECLICK_SIM" "$FORWARDER" "$SPLITTER" "$CONTRIBUTORS" "$TREASURY" <<'PY'
+python3 - "$BEFORE" "$AFTER" "$PRICE" "$BPS" "$PAYER" "$FORWARDER" "$SPLITTER" "$CONTRIBUTORS" "$TREASURY" <<'PY'
 import sys
 b = dict(l.split("=") for l in sys.argv[1].splitlines())
 a = dict(l.split("=") for l in sys.argv[2].splitlines())
@@ -74,7 +92,7 @@ d = {k: int(a[k]) - int(b[k]) for k in a}
 exp_c = price // 10000 * bps + (price % 10000) * bps // 10000
 exp_t = price - exp_c
 f = lambda v: f"{v/1e6:+.6f}"
-print(f"    delta 1click {f(d[oc])}  forwarder {f(d[fw])}  splitter {f(d[spl])}  contributors {f(d[con])}  treasury {f(d[tre])}")
+print(f"    delta payer {f(d[oc])}  forwarder {f(d[fw])}  splitter {f(d[spl])}  contributors {f(d[con])}  treasury {f(d[tre])}")
 ok = d[oc] == -price and d[fw] == 0 and d[spl] == 0 and d[con] == exp_c and d[tre] == exp_t
 print(f"    expected contributors {exp_c/1e6:.6f} + treasury {exp_t/1e6:.6f} = {price/1e6:.6f}  ->", "SPLIT OK" if ok else "SPLIT MISMATCH")
 sys.exit(0 if ok else 1)
@@ -84,6 +102,32 @@ FWDED="$(view "$FORWARDER" is_forwarded "{\"order_id\":\"$ORDER_ID\"}")"
 step "is_forwarded($ORDER_ID) = $FWDED"
 [ "$FWDED" = "true" ] || { echo "order not marked forwarded" >&2; exit 1; }
 view "$FORWARDER" get_order "{\"order_id\":\"$ORDER_ID\"}" | sed 's/^/    /'
+
+if [ -n "${RESULT_JSON:-}" ]; then
+  python3 - "$RESULT_JSON" "$ORDER_ID" "$PRICE" "$BPS" "$PAYER" "$FORWARDER" "$SPLITTER" "$CONTRIBUTORS" "$TREASURY" "$TOKEN" "$EXPLORER" "$BEFORE" "$AFTER" "${LINKS[@]}" <<'PY'
+import json, sys
+out, order, price, bps, payer, fwd, spl, con, tre, tok, explorer, before, after, *links = sys.argv[1:]
+b = {k: int(v) for k, v in (l.split("=") for l in before.splitlines())}
+a = {k: int(v) for k, v in (l.split("=") for l in after.splitlines())}
+price, bps = int(price), int(bps)
+exp_c = price // 10000 * bps + (price % 10000) * bps // 10000
+d = {k: a[k] - b[k] for k in a}
+txs = {l.split("|", 1)[0]: l.split("|", 1)[1] for l in links}
+json.dump({"order_id": order, "price": str(price), "bps_contributors": bps, "token": tok, "payer": payer, "forwarder": fwd,
+           "splitter": spl, "contributors": con, "treasury": tre, "explorer": explorer, "txs": txs,
+           "before": {k: str(v) for k, v in b.items()}, "after": {k: str(v) for k, v in a.items()},
+           "delta": {k: str(v) for k, v in d.items()},
+           "expected": {"contributors": str(exp_c), "treasury": str(price - exp_c)},
+           "split_ok": d[payer] == -price and d[fwd] == 0 and d[spl] == 0 and d[con] == exp_c and d[tre] == price - exp_c},
+          open(out, "w"), indent=2)
+PY
+fi
+if [ "$QUICK" = 1 ]; then
+  END=$(date +%s)
+  printf '\n  sale done in %ss (QUICK=1: negative checks skipped; a full bin/demo-intents.sh run shows them)\n' "$((END - START))"
+  for l in "${LINKS[@]}"; do printf '  %-26s %s/%s\n' "${l%%|*}" "$EXPLORER" "${l##*|}"; done
+  exit 0
+fi
 
 step "agent forwards the same order again -> the contract must reject it"
 if fc_forward "{\"order_id\":\"$ORDER_ID\",\"amount\":\"$PRICE\"}" 2>/dev/null; then
