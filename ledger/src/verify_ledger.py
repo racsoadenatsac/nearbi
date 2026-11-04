@@ -5,8 +5,9 @@
     python3 verify_ledger.py ledger.jsonl --rpc      # also re-fetch every event from NEAR RPC and compare
                                                      # raw logs, block hashes, timestamps and get_stats()
 
-The network (mainnet: splitter.nearbi.near + forwarder.nearbi.near; testnet: splitter.nearbi-agent.testnet)
-is inferred from the explorer links in the file; override with --network.
+The network (mainnet: splitter.nearbi.near + forwarder.nearbi.near; testnet: splitter.nearbi-agent.testnet;
+testnet-v2: splitter-v2 + forwarder-v2.nearbi-agent.testnet) is inferred from the explorer links and accounts in
+the file; override with --network.
 
 Hash chain: each line is a JSON object with `prev_hash` and `line_hash`.
     body      = the line without `prev_hash` and `line_hash`
@@ -30,7 +31,12 @@ NETWORKS = {
                 "rpc": ["https://rpc.mainnet.fastnear.com", "https://archival-rpc.mainnet.fastnear.com"]},
     "testnet": {"explorer": EXPLORER, "splitter": "splitter.nearbi-agent.testnet", "forwarder": None,
                 "rpc": ["https://rpc.testnet.near.org", "https://archival-rpc.testnet.near.org"]},
+    # the `make demo` deployment (rs-payments deploy/testnet-v2.json), published at /ledger/testnet-v2/
+    "testnet-v2": {"explorer": EXPLORER, "splitter": "splitter-v2.nearbi-agent.testnet",
+                   "forwarder": "forwarder-v2.nearbi-agent.testnet",
+                   "rpc": ["https://rpc.testnet.fastnear.com", "https://archival-rpc.testnet.fastnear.com"]},
 }
+V2_SUFFIX = "-v2.nearbi-agent.testnet"
 SPLITTER_STANDARD, FORWARDER_STANDARD = "nearbi_splitter", "nearbi_forwarder"
 
 
@@ -39,6 +45,9 @@ def infer_network(lines):
         if str(ln.get("explorer", "")).startswith(NETWORKS["mainnet"]["explorer"]):
             return "mainnet"
         if str(ln.get("explorer", "")).startswith(EXPLORER):
+            # v2 rows: a forwarder-v2 event, a sale paid by forwarder-v2, or a cost/anchor signed by splitter-v2
+            if any(str(v).endswith(V2_SUFFIX) for l in lines for v in [l.get("signer")] + list((l.get("accounts") or {}).values())):
+                return "testnet-v2"
             return "testnet"
     return "mainnet"
 

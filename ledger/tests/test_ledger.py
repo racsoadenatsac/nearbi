@@ -70,7 +70,7 @@ class T(unittest.TestCase):
         self.assertTrue(any("split" in e for e in V.check_rows([b])))
 
     def test_published_snapshots_verify(self):
-        for net in ("testnet", "mainnet"):
+        for net in ("testnet", "mainnet", "testnet-v2"):
             p = ROOT / "data" / net / "ledger.jsonl"
             if p.exists():
                 lines = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
@@ -91,6 +91,43 @@ class T(unittest.TestCase):
         self.assertEqual(V.totals([ln]), ({}, {}))
         self.assertTrue(V.check_rows([dict(ln, standard="nearbi_splitter")]), "standard must match the raw event")
         self.assertTrue(V.check_rows([ln], explorer=V.EXPLORER), "testnet explorer link on a mainnet row is rejected")
+
+    def test_testnet_v2_is_inferred_from_its_accounts(self):
+        lines = sample()
+        self.assertEqual(V.infer_network(lines), "testnet")
+        d = dict(lines[0]["data"], payer="forwarder-v2.nearbi-agent.testnet")
+        v2 = [dict(lines[0], data=d, raw=ev("sale", d), accounts={"payer": "forwarder-v2.nearbi-agent.testnet"})] + lines[1:]
+        self.assertEqual(V.infer_network(v2), "testnet-v2")
+        cost = dict(lines[0], signer="splitter-v2.nearbi-agent.testnet")
+        self.assertEqual(V.infer_network([cost]), "testnet-v2")
+        self.assertEqual(V.NETWORKS["testnet-v2"]["forwarder"], "forwarder-v2.nearbi-agent.testnet")
+
+    def test_config_has_testnet_v2_page_beside_the_others(self):
+        c = json.loads((ROOT / "config.json").read_text())["networks"]
+        self.assertEqual(c["testnet-v2"]["s3_prefix"], "ledger/testnet-v2/")
+        self.assertEqual(c["testnet"]["splitter"], "splitter.nearbi-agent.testnet")  # the v1 page is unchanged
+        self.assertEqual(c["mainnet"]["s3_prefix"], "ledger/")
+        for net in c:
+            self.assertEqual(c[net]["splitter"], V.NETWORKS[net]["splitter"], net)
+
+    def test_extra_txs_seed_discovery(self):
+        import os
+        import build_ledger as B
+        old, oldenv = B.fastnear_account_txs, os.environ.get("LEDGER_EXTRA_TXS")
+        try:
+            B.fastnear_account_txs = lambda account: ([{"transaction_hash": "IDX"}], 1)
+            os.environ["LEDGER_EXTRA_TXS"] = "NEW1, NEW2,"
+            sources, ok = B.discover([], False)
+            self.assertTrue(ok)
+            self.assertEqual(sources["NEW1"], {"seed"})
+            self.assertIn("NEW2", sources)
+            self.assertIn("fastnear", sources["IDX"])
+        finally:
+            B.fastnear_account_txs = old
+            if oldenv is None:
+                os.environ.pop("LEDGER_EXTRA_TXS", None)
+            else:
+                os.environ["LEDGER_EXTRA_TXS"] = oldenv
 
 
 if __name__ == "__main__":
