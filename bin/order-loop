@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""order-loop: fulfil paid orders. Paid order -> cached result pack -> write-report -> customer inbox -> onchain.
+
+  bin/order-loop new --order <id> --product quick_answer --price 29 --customer <account> [--topic near-users-vs-bots]
+        put an order in the store as awaiting_payment (the app does this on mainnet; the demo does it on testnet)
+  bin/order-loop run [--order <id>] [--onchain send|dry-run|off] [--max-usd 0.25]
+        one pass over open orders:
+          awaiting_payment -> paid       forwarder.get_order(<id>) == forwarded and >= min_price_usd (+ slippage)
+          paid -> delivered              product -> pack + question, bin/write-report (paid NEAR AI inference),
+                                         report.md + meta.json + pack files + checksums.sha256 -> the inbox
+          delivered -> done              bin/record-cost --from-line <seq> --send for each inference line,
+                                         then splitter.anchor_report(<id>, sha256(report.md))
+          write-report exit 6, a product with no cached pack, a below-floor payment -> needs_human (never delivered)
+  bin/order-loop status [--order <id>]
+
+Common: --config <rules file> (default $RS_AGENT_CONFIG or <repo>/config.yaml; its `network` picks the forwarder,
+splitter, key and spend ledger), --kill-switch-config <file> (repeatable: another rules file whose kill_switch
+also stops the loop, e.g. the operator's config.yaml when running on the demo config), --orders DIR,
+--inbox DIR. Defaults: $RS_AGENT_STATE_DIR/{orders,inbox}.<network>/, reports in $RS_AGENT_STATE_DIR/reports/<id>.
+
+Exit codes: 0 ok / nothing to do, 1 error, 2 at least one order needs a human, 5 refused by the rules.
+"""
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from rs_agent import forwarder as fw  # noqa: E402
+from rs_agent import order_loop as ol  # noqa: E402
+from rs_agent import rules  # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--config")
+    ap.add_argument("--kill-switch-config", action="append", default=[])
+    ap.add_argument("--orders")
+    ap.add_argument("--inbox")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    n = sub.add_parser("new")
+    n.add_argument("--order", required=True)
+    n.add_argument("--product", required=True, choices=sorted(ol.PRODUCTS))
+    n.add_argument("--price", required=True, help="quoted price, USD")
+    n.add_argument("--customer", required=True)
+    n.add_argument("--topic")
+    n.add_argument("--question", help="the customer's words (kept on the order; cached packs answer their own question)")
+    r = sub.add_parser("run")
+    r.add_argument("--order")
+    r.add_argument("--onchain", choices=("send", "dry-run", "off"), default="send")
+    r.add_argument("--max-usd", default="0.25", help="write-report worst-case ceiling per order (both attempts)")
+    s = sub.add_parser("status")
+    s.add_argument("--order")
+    a = ap.parse_args()
+
+    try:
+        cfg = rules.current(a.config)
+    except rules.Refused as e:
+        fw.log(str(e))
+        return ol.EXIT_REFUSED
+    store = ol.OrderStore(Path(a.orders)) if a.orders else ol.OrderStore.default(cfg.network)
+
+    if a.cmd == "new":
+        try:
+            rules.check_min_price(cfg, a.product, a.price, order_id=a.order)
+            o = store.create(order_id=a.order, network=cfg.network, product=a.product, price_usd=a.price,
+                             customer=a.customer, topic=a.topic, question=a.question)
+        except rules.Refused as e:
+            fw.log(str(e))
+            return ol.EXIT_REFUSED
+        except ol.OrderError as e:
+            fw.log(f"ERROR: {e}")
+            return ol.EXIT_ERROR
+        print(f"order {o['order_id']} ({o['product']} ${o['price_usd']}, {cfg.network}) awaiting payment -> {store.path(o['order_id'])}")
+        return ol.EXIT_OK
+    if a.cmd == "status":
+        for o in ([store.load(a.order)] if a.order else store.all()):
+            last = o["history"][-1]
+            print(f"{o['order_id']:40s} {o['product']:13s} ${o['price_usd']:>7s} {o['status']:16s} {last['ts']} {last['note'][:90]}")
+        return ol.EXIT_OK
+    loop = ol.Loop(cfg_path=a.config, kill_switch_configs=tuple(a.kill_switch_config), store=store,
+                   inbox=Path(a.inbox) if a.inbox else None, onchain_mode=a.onchain, max_usd=a.max_usd, emit=fw.log)
+    return loop.run_once(a.order)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

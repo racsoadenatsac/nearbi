@@ -1,0 +1,118 @@
+NearBI research shop - full loop on NEAR TESTNET (mock USDC, no real value)   2026-11-04 12:07:35 UTC
+order qa-20261104T120735Z: quick_answer $29 for demo-customer.nearbi-agent.testnet
+
+[   0.0s  12:07:35Z]  STEP 1/7  Rules check (operator config.yaml + demo rules + onchain split)
+----------------------------------------------------------------------------------------------------
+  operator config.yaml: kill_switch off (network mainnet; never edited by the demo)
+  demo rules demo/config.testnet.yaml: network testnet, kill_switch off; caps, prices and split = the operator's
+  min price: quick_answer $29 >= floor $29 (settled USDC may be 2% lower)
+  split: splitter-v2.nearbi-agent.testnet.get_config = 1000/9000 bps -> contributors.nearbi-agent.testnet / treasury.nearbi-agent.testnet, paused=False  == config 10% / 90%  OK
+  forwarder: forwarder-v2.nearbi-agent.testnet -> splitter-v2.nearbi-agent.testnet (token usdc-mock.nearbi-agent.testnet, paused=False, change delay 86400 s)
+  caps: today's testnet compute $0.003599 of $50/day, per order $10; this order's write-report worst case is capped at $0.25 (ledger spend-ledger.testnet.jsonl)
+  contracts: https://testnet.nearblocks.io/address/splitter-v2.nearbi-agent.testnet  https://testnet.nearblocks.io/address/forwarder-v2.nearbi-agent.testnet
+
+[   1.9s  12:07:36Z]  STEP 2/7  Sale: demo-customer.nearbi-agent.testnet pays 29 USDCm for a Quick Answer -> forwarder-v2 -> splitter-v2
+----------------------------------------------------------------------------------------------------
+  order qa-20261104T120735Z created: awaiting_payment (~/.local/state/rs-agent/orders.testnet/qa-20261104T120735Z.json)
+  NOTE: NEAR Intents 1Click has no testnet. The customer's plain ft_transfer to the forwarder stands in for the
+        1Click withdrawal (exactly what 1Click sends on mainnet); everything after it is the production path.
+    [  2s] forwarder forwarder-v2.nearbi-agent.testnet -> splitter splitter-v2.nearbi-agent.testnet (bps 1000)  token usdc-mock.nearbi-agent.testnet  paused=False  change_delay_sec=86400
+    [  3s] payer demo-customer.nearbi-agent.testnet already holds >= 29.000000 USDCm (no drip)
+    [  5s] balances BEFORE
+        demo-customer.nearbi-agent.testnet                      58.000000 USDCm
+        forwarder-v2.nearbi-agent.testnet                        0.000000 USDCm
+        splitter-v2.nearbi-agent.testnet                         0.000000 USDCm
+        contributors.nearbi-agent.testnet                       33.200000 USDCm
+        treasury.nearbi-agent.testnet                          298.800000 USDCm
+    [  5s] 1Click delivery (simulated): demo-customer.nearbi-agent.testnet plain ft_transfer 29.000000 -> forwarder-v2.nearbi-agent.testnet
+        tx: 3WmRkSN6Hgd3zGV2FxnXWHp9ibTTpmENvH4BFZn1q7PW
+        https://testnet.nearblocks.io/txns/3WmRkSN6Hgd3zGV2FxnXWHp9ibTTpmENvH4BFZn1q7PW
+        usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "demo-customer.nearbi-agent.testnet", "new_owner_id": "forwarder-v2.nearbi-agent.testnet", "amount": "29000000", "memo": "order qa-20261104T120735Z (simulated 1click delivery)"}]
+        forwarder balance now 29.000000 USDCm
+    [ 11s] agent (function-call key [forward]) forward order_id=qa-20261104T120735Z amount=29.000000
+        tx: 4LN3GQE3ERW9LAiXwJXr5E6c3U1BnBkjJaafzAEqZfHr
+        https://testnet.nearblocks.io/txns/4LN3GQE3ERW9LAiXwJXr5E6c3U1BnBkjJaafzAEqZfHr
+        forwarder-v2.nearbi-agent.testnet | nearbi_forwarder forward_started [{"order_id": "qa-20261104T120735Z", "amount": "29000000", "attempt": 1, "splitter": "splitter-v2.nearbi-agent.testnet", "token": "usdc-mock.nearbi-agent.testnet", "by": "forwarder-v2.nearbi-agent.testnet"}]
+        usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "forwarder-v2.nearbi-agent.testnet", "new_owner_id": "splitter-v2.nearbi-agent.testnet", "amount": "29000000"}]
+        splitter-v2.nearbi-agent.testnet | nearbi_splitter sale [{"order_id": "qa-20261104T120735Z", "payer": "forwarder-v2.nearbi-agent.testnet", "token": "usdc-mock.nearbi-agent.testnet", "amount": "29000000", "contributors_amount": "2900000", "treasury_amount": "26100000", "split_bps_contributors": 1000}]
+        usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "splitter-v2.nearbi-agent.testnet", "new_owner_id": "contributors.nearbi-agent.testnet", "amount": "2900000", "memo": "nearbi:qa-20261104T120735Z"}]
+        splitter-v2.nearbi-agent.testnet | nearbi_splitter payout [{"order_id": "qa-20261104T120735Z", "token": "usdc-mock.nearbi-agent.testnet", "recipient": "contributors.nearbi-agent.testnet", "role": "Contributors", "amount": "2900000"}]
+        usdc-mock.nearbi-agent.testnet | nep141 ft_transfer [{"old_owner_id": "splitter-v2.nearbi-agent.testnet", "new_owner_id": "treasury.nearbi-agent.testnet", "amount": "26100000", "memo": "nearbi:qa-20261104T120735Z"}]
+        splitter-v2.nearbi-agent.testnet | nearbi_splitter payout [{"order_id": "qa-20261104T120735Z", "token": "usdc-mock.nearbi-agent.testnet", "recipient": "treasury.nearbi-agent.testnet", "role": "Treasury", "amount": "26100000"}]
+        forwarder-v2.nearbi-agent.testnet | nearbi_forwarder forwarded [{"order_id": "qa-20261104T120735Z", "amount": "29000000"}]
+    [ 20s] balances AFTER
+        demo-customer.nearbi-agent.testnet                      29.000000 USDCm
+        forwarder-v2.nearbi-agent.testnet                        0.000000 USDCm
+        splitter-v2.nearbi-agent.testnet                         0.000000 USDCm
+        contributors.nearbi-agent.testnet                       36.100000 USDCm
+        treasury.nearbi-agent.testnet                          324.900000 USDCm
+        delta payer -29.000000  forwarder +0.000000  splitter +0.000000  contributors +2.900000  treasury +26.100000
+        expected contributors 2.900000 + treasury 26.100000 = 29.000000  -> SPLIT OK
+    [ 20s] is_forwarded(qa-20261104T120735Z) = true
+        {"order_id":"qa-20261104T120735Z","status":"forwarded","amount":"29000000","forwarded_amount":"29000000","unused":"0","attempts":1,"updated_at_ns":"1793794070314492008"}
+  split verification (balance deltas read before/after over RPC):
+    customer          demo-customer.nearbi-agent.testnet       - 29.000000  expected - 29.000000  OK
+    forwarder         forwarder-v2.nearbi-agent.testnet        +  0.000000  expected +  0.000000  OK
+    splitter          splitter-v2.nearbi-agent.testnet         +  0.000000  expected +  0.000000  OK
+    contributors 10%  contributors.nearbi-agent.testnet        +  2.900000  expected +  2.900000  OK
+    treasury 90%      treasury.nearbi-agent.testnet            + 26.100000  expected + 26.100000  OK
+  SPLIT OK: 29.000000 = 2.900000 contributors + 26.100000 treasury, paid onchain by the splitter
+
+[  21.5s  12:07:56Z]  STEP 3/7  Order loop: detect the paid order, map product -> pack + question, write-report
+----------------------------------------------------------------------------------------------------
+  qa-20261104T120735Z: PAID 29.000000 via forwarder-v2.nearbi-agent.testnet (>= $29 floor) -> paid
+  qa-20261104T120735Z: quick_answer -> pack near-users-vs-bots, question (the pack title); write-report (paid NEAR AI inference, booked in spend-ledger.testnet.jsonl)
+    write-report: rules ok: worst case $0.009263 (2 attempts × anthropic/claude-haiku-5-5, max_tokens 8000); today $0.003599 of $50.000000, order $0.000000 of $10.000000
+    write-report: attempt 1: number check ok (35 numbers traced); {'prompt_tokens': 2790, 'completion_tokens': 3043, 'total_tokens': 5833} $0.001801 (billing)
+    wrote ~/.local/state/rs-agent/reports/qa-20261104T120735Z/report.md (sha256 ecc7d9aa3c3861fb…) + meta.json
+    claim: The window's NEAR transaction volume is concentrated in a few high-frequency signers, most of which look like infrastructure or automated accounts, so the data supports "mostly automated by volume" but does not show that real users are absent.
+    model anthropic/claude-haiku-5-5: 2790+3043 tokens, $0.001801 (billing) in 1 attempt(s); number check 35 numbers, 0 untraced; spend lines d11cfc517ef23565
+
+[  41.8s  12:08:16Z]  STEP 4/7  Delivery: report.md + pack checksums -> customer inbox
+----------------------------------------------------------------------------------------------------
+  qa-20261104T120735Z: DELIVERED ~/.local/state/rs-agent/inbox.testnet/qa-20261104T120735Z/report.md (sha256 ecc7d9aa3c3861fb…), 11 files checksummed, every pack hash matches manifest.json
+
+[  41.8s  12:08:16Z]  STEP 5/7  Onchain: record_cost for the order's inference lines + anchor_report(sha256(report.md))
+----------------------------------------------------------------------------------------------------
+    [2026-11-04T12:08:24Z] sent + verified: record_cost on splitter-v2.nearbi-agent.testnet tx https://testnet.nearblocks.io/txns/6JKgniNTWEewKMYakFM7LC5TmoufEgEByiecyTkLVccj
+  record_cost inference $0.001801 (spend seq 2 d11cfc517ef23565): https://testnet.nearblocks.io/txns/6JKgniNTWEewKMYakFM7LC5TmoufEgEByiecyTkLVccj
+  anchor_report(slug=qa-20261104T120735Z, sha256=ecc7d9aa3c3861fb…): https://testnet.nearblocks.io/txns/6QAbryiXAYoZ28dUwMZithyNkT4kNbmmPa66guHhb36w
+
+[  57.0s  12:08:32Z]  STEP 6/7  Public ledger: rs-ledger bin/publish --network testnet-v2
+----------------------------------------------------------------------------------------------------
+    network testnet-v2 -> https://nearbi.ai/ledger/testnet-v2/ (s3://nearbi-site/ledger/testnet-v2/)
+    append-only reference: out/testnet-v2/live-ledger.jsonl (31 lines)
+    build: final block 276192601, ledger cutoff block 276192600
+    network: testnet-v2 (splitter-v2.nearbi-agent.testnet + forwarder-v2.nearbi-agent.testnet)
+    invalidation I9B1YWMOLAGKNO1ZDMMP232LH8
+    invalidation not awaited (PUBLISH_NO_WAIT=1): the edge serves the new files within ~1 min
+    200 https://nearbi.ai/ledger/testnet-v2/
+    200 https://nearbi.ai/ledger/testnet-v2/ledger.jsonl
+    200 https://nearbi.ai/ledger/testnet-v2/ledger.json
+    200 https://nearbi.ai/ledger/testnet-v2/verify_ledger.py
+    published testnet-v2: 38 events, head e8ef4e8009f995282a351853377b8091dcfaa8f60a6598504543885df91b896b
+  ledger rows for qa-20261104T120735Z: sale 1/1, payout 2/2, cost 1/1, report_anchor 1/1  (38 rows total, chain head e8ef4e8009f99528…)
+  public ledger: https://nearbi.ai/ledger/testnet-v2/  (raw: https://nearbi.ai/ledger/testnet-v2/ledger.jsonl, verifier: https://nearbi.ai/ledger/testnet-v2/verify_ledger.py)
+
+[  76.3s  12:08:51Z]  STEP 7/7  Summary
+----------------------------------------------------------------------------------------------------
+  revenue           29.000000 USDCm  (Quick Answer, mock USDC on testnet)
+  payouts            2.900000 contributors (10%) + 26.100000 treasury (90%), paid by splitter-v2 in the sale tx
+  inference          0.001801 USD   anthropic/claude-haiku-5-5 via NEAR AI Cloud, 2790+3043 tokens, 1 attempt(s), billed cost from NEAR AI Cloud /v1/billing/costs
+  shop margin       26.098199       = treasury share - inference (89.99% of revenue; testnet gas not counted)
+  report claim   The window's NEAR transaction volume is concentrated in a few high-frequency signers, most of which look like infrastructure or automated accounts, so the data supports "mostly automated by volume" but does not show that real users are absent.
+  delivered      ~/.local/state/rs-agent/inbox.testnet/qa-20261104T120735Z/report.md  sha256 ecc7d9aa3c3861fb92accdce0e4e0a5dd7d33b923c437114989c8162dfa850af
+  step 1     1.9s  Rules check (operator config.yaml + demo rules + onchain split)
+  step 2    19.6s  Sale: demo-customer.nearbi-agent.testnet pays 29 USDCm for a Quick Answer -> forwarder-v2 -> splitter-v2
+  step 3    20.3s  Order loop: detect the paid order, map product -> pack + question, write-report
+  step 4     0.0s  Delivery: report.md + pack checksums -> customer inbox
+  step 5    15.3s  Onchain: record_cost for the order's inference lines + anchor_report(sha256(report.md))
+  step 6    19.3s  Public ledger: rs-ledger bin/publish --network testnet-v2
+  step 7     0.0s  Summary
+  tx  1click plain ft_transfer     https://testnet.nearblocks.io/txns/3WmRkSN6Hgd3zGV2FxnXWHp9ibTTpmENvH4BFZn1q7PW
+  tx  forward -> splitter          https://testnet.nearblocks.io/txns/4LN3GQE3ERW9LAiXwJXr5E6c3U1BnBkjJaafzAEqZfHr
+  tx  record_cost (spend seq 2)    https://testnet.nearblocks.io/txns/6JKgniNTWEewKMYakFM7LC5TmoufEgEByiecyTkLVccj
+  tx  anchor_report                https://testnet.nearblocks.io/txns/6QAbryiXAYoZ28dUwMZithyNkT4kNbmmPa66guHhb36w
+  ledger https://nearbi.ai/ledger/testnet-v2/  (published; all rows for this order present)
+
+  TOTAL WALL TIME 76.3 s (budget 120 s) -> PASS
