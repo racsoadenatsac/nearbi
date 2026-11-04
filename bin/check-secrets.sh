@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Pre-push secret scan. Run before every push (also usable as .git/hooks/pre-push).
 # Scans the working tree AND every blob in the full git history (all refs) for:
-#   * NEAR ed25519 private keys / keypairs (ed25519:<~88 base58 chars>; public keys are ~44)
+#   * NEAR ed25519 private keys / keypairs (ed25519:<~88 base58 chars>; public keys are ~44);
+#     exempt: the value of a JSON "signature" key (an ed25519 signature, e.g. 1Click quotes)
 #   * private_key / secret_key / seed phrase fields
 #   * AWS access keys / secret keys and the CloudFront x-origin-verify value
+#     (exempt: the test placeholder "cf-shared-secret")
 #   * 12/15/18/21/24-word runs where every word is in the BIP-39 English list
 # Exits 1 on any hit. Usage: bin/check-secrets.sh [repo-dir]  (default: this repo)
 set -euo pipefail
@@ -34,13 +36,21 @@ data = open(sys.argv[1], "rb").read().decode("utf-8", "replace")
 words = set(open(sys.argv[2]).read().split()) if os.path.exists(sys.argv[2]) else None
 hits, where = [], "?"
 pk = re.compile(r"ed25519:[1-9A-HJ-NP-Za-km-z]{70,}")
+sig_ctx = re.compile(r"[\"']signature[\"']\s*:\s*[\"']$")
 field = re.compile(r"(private_key|secret_key|master_seed_phrase|seed_phrase)[\"']?\s*[:=]\s*[\"'][^\"'\s]{20,}", re.I)
 aws = re.compile(r"\b(AKIA|ASIA)[0-9A-Z]{16}\b|aws_secret_access_key\s*[:=]\s*\S{20,}|x-origin-verify[\"']?\s*[:=]\s*[\"'][^\"'\s]{16,}", re.I)
 for line in data.splitlines():
     if line.startswith("== "):
         where = line[3:]; continue
-    if pk.search(line): hits.append((where, "ed25519 private key", pk.search(line).group(0)[:16] + "…"))
-    if aws.search(line): hits.append((where, "AWS credential / origin secret", aws.search(line).group(0)[:12] + "…"))
+    for m in pk.finditer(line):
+        # exception: a value under a JSON "signature" key is an ed25519 signature (same 64-byte length as a
+        # secret key), e.g. 1Click quote signatures in app/test/fixtures/1click/. Only that exact key is exempt.
+        if sig_ctx.search(line, 0, m.start()): continue
+        hits.append((where, "ed25519 private key", m.group(0)[:16] + "…")); break
+    for m in aws.finditer(line):
+        # exception: nearbi-app's test placeholder for the CloudFront origin header (the live value is a random secret)
+        if re.search(r"[\"']cf-shared-secret[\"']", m.group(0) + line[m.end():m.end() + 1]): continue
+        hits.append((where, "AWS credential / origin secret", m.group(0)[:12] + "…")); break
     if field.search(line): hits.append((where, "secret field", field.search(line).group(1)))
     if words:
         toks = re.findall(r"[a-z]+", line)
