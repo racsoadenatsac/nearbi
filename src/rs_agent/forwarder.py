@@ -133,6 +133,9 @@ class Rpc:
         return self.call("EXPERIMENTAL_tx_status", {"tx_hash": tx_hash, "sender_account_id": sender, "wait_until": "FINAL"})
 
 
+MARK_FORWARDED_CONDITION = "attribute_exists(PK) AND (attribute_not_exists(forwardedTx) OR attribute_type(forwardedTx, :nul))"
+
+
 class Dynamo:
     """DynamoDB through the aws CLI (operator SSO profile). Read: FWDQ queue + PAY# items. Write: mark forwarded."""
 
@@ -168,12 +171,15 @@ class Dynamo:
         return unmarshal(out["Item"]) if out.get("Item") else None
 
     def mark_forwarded(self, pid: str, tx: str, amount: str, now: int) -> bool:
-        """Conditional: never overwrites an existing forwardedTx. Returns False if it was already set."""
+        """Conditional: never overwrites an existing forwardedTx. Returns False if it was already set.
+        nearbi-app writes `forwardedTx: null` (a NULL attribute) on every payment, so "not set yet" means missing OR
+        NULL; `attribute_not_exists` alone never matched an app-written payment and nothing was ever marked."""
         try:
             self._aws("update-item", "--key", json.dumps({"PK": {"S": f"PAY#{pid}"}, "SK": {"S": "PAYMENT"}}),
                       "--update-expression", "SET forwardedTx = :tx, forwardedAt = :at, forwardedAmount = :amt",
-                      "--condition-expression", "attribute_exists(PK) AND attribute_not_exists(forwardedTx)",
-                      "--expression-attribute-values", json.dumps({":tx": {"S": tx}, ":at": {"N": str(now)}, ":amt": {"S": amount}}))
+                      "--condition-expression", MARK_FORWARDED_CONDITION,
+                      "--expression-attribute-values", json.dumps({":tx": {"S": tx}, ":at": {"N": str(now)}, ":amt": {"S": amount},
+                                                                   ":nul": {"S": "NULL"}}))
             return True
         except ConditionFailed:
             return False
@@ -543,6 +549,39 @@ class Runner:
         self.db.dequeue(pid)
         log(f"{pid}: recovered: forwarded by {tx_hash}, marked in DynamoDB")
         return "recovered"
+
+    def mark_forwarded(self, pid: str, tx_hash: Optional[str] = None) -> str:
+        """Set forwardedTx on a payment that is forwarded onchain but was never marked in DynamoDB (forwarder-runner
+        <= v0.4.1: the app's `forwardedTx: null` made every mark fail its condition). The tx (given, or the last one
+        in the journal) must verify as this order's forward with the onchain forwarded amount. Respects --dry-run."""
+        if not ORDER_ID_RE.match(pid):
+            raise Stop(EXIT_ERROR, f"bad payment id {pid!r}")
+        self.rules_gate(f"marking {pid} forwarded")
+        self.db.check_sso()
+        pay = self.db.payment(pid)
+        if pay is None:
+            raise Stop(EXIT_ERROR, f"payment {pid} not found")
+        if pay.get("forwardedTx"):
+            log(f"{pid}: forwardedTx already set ({pay['forwardedTx']}); nothing to do")
+            return "already-done"
+        st = self.rpc.view(FORWARDER, "get_order", {"order_id": pid})
+        if not st or st.get("status") != "forwarded":
+            raise Stop(EXIT_ERROR, f"{pid}: not forwarded onchain (get_order: {(st or {}).get('status', 'none')}); nothing to mark")
+        amount = str(st.get("forwarded_amount"))
+        tx_hash = tx_hash or self.journal_tx(pid)
+        if not tx_hash:
+            raise Stop(EXIT_ERROR, f"{pid}: no forward tx in {self.journal}; pass --tx <hash> (find it on nearblocks)")
+        problems = verify_forward_tx(self.rpc.tx_final(tx_hash, FORWARDER), pid, amount)
+        if problems:
+            raise Stop(EXIT_ERROR, f"{pid}: tx {tx_hash} does not verify as forward({pid}, {amount}): {'; '.join(problems)}")
+        if self.dry_run:
+            log(f"{pid}: DRY RUN, would set forwardedTx={tx_hash} forwardedAmount={amount} (tx verified: forwarded + sale events)")
+            return "dry-run"
+        if not self.db.mark_forwarded(pid, tx_hash, amount, self.now()):
+            raise Stop(EXIT_ERROR, f"{pid}: conditional update refused (forwardedTx set meanwhile?)")
+        self.record(event="marked_forwarded", order_id=pid, amount=amount, tx=tx_hash)
+        log(f"{pid}: forwardedTx={tx_hash} forwardedAmount={amount} written (verified onchain)")
+        return "marked"
 
     def run_once(self, manual: Optional[dict] = None) -> int:
         lock = open(state_dir() / "forwarder-runner.lock", "w")
