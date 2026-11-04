@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""agent-orders: one pass of the DynamoDB order source (live nearbi-app orders -> order loop -> nearbi.ai).
+
+  bin/agent-orders                 one pass: claim paid + forwarded orders, fulfil, deliver, record_cost, anchor
+  bin/agent-orders --dry-run       every read and check, no claim, no DynamoDB/S3/API write, no paid call, no tx
+  bin/agent-orders --status        open orders with the agent's status (no customer text printed)
+
+Options: --max-orders N (orders auto-fulfilled per pass, default 3), --max-usd X (write-report worst case per
+order, default 0.25), --config F (operator rules, default <repo>/config.yaml; must say network: mainnet),
+--profile P (AWS profile, default $AWS_PROFILE or nearbi-agent; nearbi = operator SSO), --app-url U (default https://nearbi.ai).
+
+Exit codes: 0 ok / nothing to do, 1 error, 2 an order newly needs a human, 3 AWS credentials
+invalid/missing (nearbi-agent key: rotate, README "Agent identity"; AWS_PROFILE=nearbi: SSO expired), 5 refused by config.yaml (kill switch, daily cap, network).
+See README "DynamoDB order source".
+"""
+import argparse
+import os
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from rs_agent import dynamo_orders as do  # noqa: E402
+from rs_agent import forwarder as fw  # noqa: E402
+from rs_agent import order_loop as ol  # noqa: E402
+from rs_agent import rules  # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--status", action="store_true")
+    ap.add_argument("--max-orders", type=int, default=3)
+    ap.add_argument("--max-usd", default="0.25")
+    ap.add_argument("--config")
+    ap.add_argument("--profile", default=fw.aws_profile())
+    ap.add_argument("--app-url", default=os.environ.get("NEARBI_URL", do.APP_URL))
+    a = ap.parse_args()
+
+    t = do.AwsTable(profile=a.profile)
+    table = do.OrderTable(t, do.default_owner())
+    if a.status:
+        try:
+            t.check_sso()
+            rows = table.open_orders()
+        except fw.Stop as s:
+            fw.log(f"STOP: {s}")
+            return s.code
+        fw.log(f"{len(rows)} open order(s) on ORDERQ")
+        for ref, order, pay in rows:
+            o, p = order or {}, pay or {}
+            q = ((o.get("brief") or {}).get("question")) or ""
+            pl = do.plan(o) if order else {"kind": "?", "why": "no ORDER item"}
+            print(f"  {ref.get('paymentId')}  {o.get('product')}  ${o.get('amountUsd')}  order={o.get('status')}  "
+                  f"paid={time.strftime('%Y-%m-%dT%H:%MZ', time.gmtime(o.get('createdAt') or 0))}  "
+                  f"forwarded={'yes' if do.forwarded_tx(p) else 'no'}  agent={p.get('agentStatus') or '-'}  "
+                  f"plan={pl['kind']}{(' ' + pl['topic']) if pl.get('topic') else ''}  question={len(q)} chars"
+                  + (f"\n      note: {p.get('agentNote')}" if p.get("agentNote") else "")
+                  + (f"\n      why: {pl['why']}" if pl["kind"] == "human" else ""))
+        queued = {ref.get("paymentId") for ref, _, _ in rows}
+        try:
+            cfg = rules.current(a.config)
+            pend = [o["order_id"] for o in ol.OrderStore.default(cfg.network).all()
+                    if o.get("status") == "delivered" and o.get("order_id") not in queued]
+        except (rules.Refused, ol.OrderError, OSError, ValueError) as e:
+            pend = []
+            fw.log(f"WARNING local order store unreadable: {e}")
+        if pend:
+            fw.log(f"{len(pend)} delivered order(s) off ORDERQ with the onchain step unfinished (resumed by the next pass): "
+                   + ", ".join(pend))
+        return 0
+
+    app = do.AppDelivery(t, base_url=a.app_url)
+    loop = do.DynamoLoop(cfg_path=a.config, onchain_mode="send", max_usd=a.max_usd, emit=fw.log, app=app)
+    step = do.OrderStep(table=table, loop=loop, cfg_path=a.config, dry_run=a.dry_run, max_orders=max(0, a.max_orders),
+                        max_usd=a.max_usd, emit=fw.log)
+    try:
+        return step.run()
+    except rules.Refused as r:
+        fw.log(str(r))
+        return do.EXIT_REFUSED
+    except fw.Stop as s:
+        fw.log(f"STOP: {s}")
+        return s.code
+    except ol.OrderError as e:
+        fw.log(f"ERROR: {e}")
+        return do.EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())

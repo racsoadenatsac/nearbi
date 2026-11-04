@@ -1,6 +1,7 @@
 # rs-agent
 
-The shop agent: order intake, config.yaml rules (spend cap, min price, split, kill switch), NEAR AI Cloud inference.
+The shop agent: order intake, config.yaml rules (spend cap, min price, split, kill switch), NEAR AI Cloud inference,
+the order loop and the `make demo` testnet run of the whole shop.
 
 Part of the NEAR Hackathon one-agent research shop. See `rs-docs/ARCHITECTURE.md`.
 
@@ -29,10 +30,12 @@ bin/forwarder-runner --once                # one pass, then exit (use this from 
 bin/forwarder-runner --once --dry-run      # every check, no transaction
 bin/forwarder-runner --loop --interval 60  # foreground loop until Ctrl-C or a stop condition
 bin/forwarder-runner --order <paymentId> --amount <USDC base units>   # a payment not on the queue
+bin/forwarder-runner --sign-check          # preflight + near-cli signs forward(<random id>, 1), display only, never sent
 ```
 
-Needs: macOS `security` (Keychain item `nearbi-mainnet-fc-forwarder.nearbi.near`), `aws` CLI with the SSO
-profile `nearbi` (`AWS_PROFILE`, default `nearbi`), near-cli-rs (`NEAR_CLI`, default
+Needs: macOS `security` (Keychain item `nearbi-mainnet-fc-forwarder.nearbi.near`), `aws` CLI with the profile
+`nearbi-agent` (`AWS_PROFILE`, default `nearbi-agent`, see [Agent identity](#agent-identity-aws-v051); `AWS_PROFILE=nearbi`
+= the operator's SSO), near-cli-rs (`NEAR_CLI`, default
 `../rs-payments/.tools/bin/near`), Python ≥ 3.9 (stdlib only). Nothing is installed as a service: no
 launchd/cron here, the main agent owns scheduling (e.g. `--once` every 1–5 minutes).
 
@@ -41,13 +44,41 @@ launchd/cron here, the main agent owns scheduling (e.g. `--once` every 1–5 min
 | 0 | done, or nothing to do | |
 | 1 | stopped on an error (config mismatch, paused contract, Keychain key mismatch, near-cli gave no tx hash) | read the log; check `get_order` before rerunning |
 | 2 | at least one order needs a human (`ATTENTION:` lines); the others were processed | see below |
-| 3 | `SSO expired` | the operator runs `aws sso login --profile nearbi` (the agent never does) |
+| 3 | AWS credentials invalid or missing | profile `nearbi-agent`: the Keychain key was revoked/deleted/rotated away → [rotate](#rotate-or-revoke-the-key); with `AWS_PROFILE=nearbi`: SSO expired → the operator runs `aws sso login --profile nearbi` (the agent never does) |
 | 4 | **top up forwarder.nearbi.near** (free NEAR < 0.16), or the key allowance is < 0.15 NEAR | send NEAR to `forwarder.nearbi.near` from any account; allowance: see Limits |
 | 5 | **refused by config.yaml**: kill switch on, split mismatch (`ALERT:`), `network` not mainnet, invalid config | read the `REFUSED (<rule>)` line; see [Operator rules](#operator-rules-configyaml). `--loop` keeps running and resumes by itself |
 
+### Egress under the gateway egress proxy (v0.4.1)
+
+The gateway exec environment routes HTTPS through the secret egress proxy (`HTTPS_PROXY`, `HTTP_PROXY`,
+`NODE_USE_ENV_PROXY`, `SSL_CERT_FILE` → a trust bundle with the proxy CA). Only NEAR AI Cloud needs it (the
+proxy swaps the real `NEAR_AI_CLOUD_API_KEY` for the sentinel). near-cli-rs does **not** trust the proxy CA:
+up to v0.4.0 every forward would have died at signing with
+
+```
+ERROR failed to verify TLS certificate: invalid peer certificate: UnknownIssuer
+0: Cannot sign a transaction due to an error while fetching the most recent nonce value on network <mainnet>
+```
+
+(`--status` and `--once --dry-run` were green because they never call near-cli: Python urllib RPC/1Click and
+`aws` DynamoDB/STS trust the bundle). Since v0.4.1 one helper, `rs_agent.egress.direct_env()`, removes
+`HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NODE_USE_ENV_PROXY` (any case) for **near-cli-rs and `aws`**
+subprocesses only (forwarder signer, DynamoDB/STS, `record_cost`/`anchor_report`, `bin/demo`, rs-ledger
+publish); CA variables are kept (the bundle holds the public roots). NEAR AI Cloud calls (in-process urllib,
+and `bin/write-report` / `bin/record-cost` children of the order loop) keep the proxy. `RS_AGENT_NEAR_CLI_PROXY=1`
+keeps the proxy everywhere (debugging; reproduces the failure above). Keys are unchanged: Keychain → memory →
+`/dev/fd/N`.
+
+`--sign-check` runs the rules gate and preflight, then has near-cli-rs fetch the nonce/block hash and sign
+`forward(<fresh random order id>, 1)` with the Keychain key, ending in `display` instead of `send`; the signed
+transaction is checked in memory (signer, method, order id, public key) and discarded, never printed. Use it
+after any near-cli, key or network change. `bin/record-cost --dry-run --preflight` does the same for the
+splitter key (`record_cost`). What it does not cover: broadcast, `EXPERIMENTAL_tx_status` of a real tx, and
+the DynamoDB writes (`UpdateItem`/`DeleteItem`).
+
 ### What one pass does
 
-1. **Preflight**: SSO valid; `forwarder.get_config()` has splitter `splitter.nearbi.near`, token USDC, agent
+1. **Preflight**: AWS credentials valid; `forwarder.get_config()` has splitter `splitter.nearbi.near`, token USDC, agent
    = itself, not paused (a pending timelocked change is printed as a warning); the splitter accepts USDC and
    isn't paused; the onchain access key `ed25519:5xFkg…wSi` is a function-call key for `[forward]` on the
    forwarder; the Keychain secret's public half equals that key (checked in memory, nothing printed).
@@ -84,12 +115,10 @@ Journal: `~/.local/state/rs-agent/forwarder-journal.jsonl` (no secrets): `forwar
 
 ### Write path and IAM
 
-The runner uses the operator's SSO session (`AWS_PROFILE=nearbi`, AdministratorAccess). Its only writes
-are the conditional `UpdateItem` on `PAY#<id>` (`forwardedTx`, `forwardedAt`, `forwardedAmount`) and
-`DeleteItem` on `FWDQ/PAY#<id>`. No long-lived IAM user or access key was created for it, so it stops with
-`SSO expired` (exit 3) when the session ends and the operator logs in again. A narrower role
-(`dynamodb:Query/GetItem` on the table, `UpdateItem` on `PAY#*`, `DeleteItem` on `FWDQ`) would be the next
-step if it runs unattended for long. The journal is the local record if DynamoDB is unreachable.
+Since v0.5.1 the runner uses the IAM user `nearbi-agent` (see [Agent identity](#agent-identity-aws-v051)), not the
+operator's SSO session. Its only writes are the conditional `UpdateItem` on `PAY#<id>` (`forwardedTx`,
+`forwardedAt`, `forwardedAmount`) and `DeleteItem` on `FWDQ/PAY#<id>`, and that is all IAM lets it write
+(`dynamodb:LeadingKeys` conditions). The journal is the local record if DynamoDB is unreachable.
 
 ### Inference / BigQuery cost (`record_cost`)
 
@@ -178,7 +207,7 @@ pass the cap check; the agent runs jobs one at a time.
 bin/record-cost --order <id> --usd 0.42 --kind bigquery --note "q1-q4, 84 GB scanned"   # book + DRY RUN of the onchain call
 bin/record-cost --order <id> --usd 0.42 --kind bigquery --send                           # book + send record_cost
 bin/record-cost --from-line <seq> [--send]        # mirror a line already booked (e.g. by the NEAR AI client)
-bin/record-cost --order <id> --usd 0.42 --kind bigquery --dry-run --preflight            # write/send nothing; check key + gas
+bin/record-cost --order <id> --usd 0.42 --kind bigquery --dry-run --preflight            # write/send nothing; check key + gas + sign (display only)
 ```
 
 It books the line, then prints the exact `splitter.record_cost(kind, amount_usd_micros, ref)` call (receiver,
@@ -190,14 +219,15 @@ Keychain item `nearbi-mainnet-fc-splitter.nearbi.near` (function-call key `ed255
 `[record_cost, anchor_report]`), testnet the chmod-600 file from rs-payments `deploy-testnet.sh`; either way
 the secret is read into memory and passed to near-cli-rs via `/dev/fd/N`, never written, never on argv. The
 preflight checks the onchain key permission, that the local secret is its private half, the allowance and the
-splitter's free NEAR.
+splitter's free NEAR, then has near-cli-rs sign the exact call and only display it (v0.4.1; not broadcast, signed
+tx discarded).
 
 Proven on testnet 2026-11-04: `record_cost(inference, 12500, "order:demo-opsrules-20261104 spend:87532f87…")`,
 tx [`4wF4n3vq…`](https://testnet.nearblocks.io/txns/4wF4n3vq9Rb1uXNqoPuRccXQ1sPbyh2J974YPAindyTW); a second
 `--send` of the same line was refused as already recorded. Mainnet: dry-run + `--preflight` only (Keychain
 key matches the onchain key; nothing sent).
 
-### NEAR AI Cloud client (`src/rs_agent/nearai.py`) — UNCONFIGURED
+### NEAR AI Cloud client (`src/rs_agent/nearai.py`)
 
 OpenAI-compatible gateway `https://cloud-api.near.ai/v1` (docs.near.ai, checked 2026-11-03). Per call:
 kill switch → upper-bound estimate (prompt chars/3 tokens + `max_tokens`, at the public `/v1/model/list`
@@ -205,6 +235,7 @@ price) → daily + per-report cap → `POST /v1/chat/completions` → cost = the
 `POST /v1/billing/costs` for the `inference-id` header, else usage × list price → booked in the spend ledger
 (`kind=inference`, model, tokens, inference id, cost source). A timeout is booked at the estimate; an HTTP
 error books nothing; an unpriced model is refused. Default model `zai-org/GLM-5.1-FP8`.
+An empty or `finish_reason=length` reply is still booked but flagged (`_rs_result.empty/truncated`, ledger meta, stderr WARNING); report code must use `nearai.text_of()`, which raises `EmptyCompletion` instead of shipping it.
 
 **What the operator must provide**: a NEAR AI Cloud API key (cloud.near.ai → Credits → API Keys; set a
 spend limit on the key there as a second cap), stored as a **protected secret**
@@ -213,3 +244,375 @@ the gateway's secrets CLI), with the Gateway egress proxy enabled. The agent pro
 sentinel in `NEAR_AI_CLOUD_API_KEY`; the proxy substitutes the real key on the way out. Never in a file, `.env`
 or chat. Until then `chat()` raises `NotConfigured` before anything is spent, and `operator-rules status`
 says `UNCONFIGURED`.
+
+**Status (2026-11-04):** configured. The key is held as a protected secret, swapped in by the egress proxy; the
+client only sees a sentinel. Live calls are booked with `cost_source=billing` (the billed `costNanoUsd`).
+
+## Report writer (v0.3.0)
+
+`bin/write-report` is the "agent buys its own inference to write the report" step (ARCHITECTURE.md §3.4–3.5). It
+writes a report's narrative from a **cached result pack** with paid NEAR AI Cloud inference. It runs no BigQuery query.
+
+```bash
+bin/write-report --order <id> --pack ../rs-reports/reports/near-users-vs-bots \
+                 [--question "..."] [--model anthropic/claude-haiku-5-5] [--out DIR] \
+                 [--max-tokens 8000] [--max-usd 1.00] [--param 30] [--force]
+```
+
+A pack is a directory with `manifest.json` (`result_sha256`/`sql_sha256` per query), `results/<q>.csv` and
+`queries/<q>.sql` (the `-- question:` header becomes the query's description). The question defaults to the pack's
+`REPORT.md` title, and its `params:` front matter declares the query parameters (window length, thresholds) that the
+prose may cite.
+
+### What one run does
+
+1. **Pack**: every CSV and SQL file is hashed and must match the manifest. Otherwise the run is refused (exit 1) and nothing is paid.
+2. **Rules before any paid call**: `config.yaml` is re-read; kill switch, `per_report_cost_cap_usd` and
+   `max_inference_usd_per_day` are checked for the **worst case of both attempts** (prompt estimate + `max_tokens`
+   at list price, the retry carrying a full draft back). That worst case must also fit `--max-usd` (default $1).
+   `nearai.Client.chat` re-checks before each call.
+3. **Prompt = structured data only**: the question, window, params and every result table as JSON. The pack's
+   existing prose never reaches the model. The system prompt forbids any number that isn't a cell or a param:
+   no sums, ratios, "3x", "million" or approximations.
+4. **Sections (Track 02)**: the model writes `Claim · Evidence for · Evidence against · What would change the
+   conclusion`. The parser requires exactly these headings, in order, with a bold claim sentence and no sub-headings or
+   code. Chatter before the first heading is dropped. **`## Queries` is generated from the pack** (id, question, SQL
+   file, rows, result SHA-256), never by the model.
+5. **`nearai.text_of()`**: an empty or `finish_reason=length` reply raises `EmptyCompletion`. It is still booked, but it can't ship.
+6. **Number post-check**: rs-reports `tools/check_numbers.check_text(..., rounding=True)`. Every number in the prose
+   must be a result cell or a declared param. A decimal cell may be rounded to the decimals shown (93.03 → 93), but
+   whole-number cells are never rounded. Integers of 5+ digits get thousands separators (the check ignores them).
+7. **One regeneration**: if a draft has untraced numbers, bad structure or an empty reply, it is sent back once
+   with the problems listed (each offending number and its line). If the second draft fails too, the run exits **6**
+   and **nothing is written**. Both paid calls stay in the ledger.
+8. **Output** (default `~/.local/state/rs-agent/reports/<order>/`): `report.md` and `meta.json`. `meta.json` has the
+   question, claim, model, per-attempt tokens / inference id / billed cost / spend-ledger seq + line hash / outcome,
+   totals, the order's ledger total, every result and SQL hash, the number-check result and `report_sha256`. Files
+   are written atomically, `report.md` last. An existing `report.md` is never overwritten without `--force`.
+
+All inference is booked under `--order` (`kind=inference`, `source=nearai`). Mirror a line onchain with
+`bin/record-cost --from-line <seq> [--send]`.
+
+| Exit | Meaning |
+|---:|---|
+| 0 | report written |
+| 1 | pack/hash error, NEAR AI error, not configured (nothing paid) |
+| 5 | refused by config.yaml or `--max-usd` (nothing paid) |
+| 6 | paid, but the narrative failed the checks twice: no report |
+
+### Model: `anthropic/claude-haiku-5-5`
+
+Picked from `GET /v1/model/list` (2026-11-04) by sending one sample prompt (the q3 bucket table, "Claim + two
+evidence items") to the cheapest chat models:
+
+| model | $/M in · out | sample | verdict |
+|---|---|---|---|
+| `openai/gpt-5-nano` | 0.05 · 0.40 | 4,000 of 4,000 tokens went to reasoning, **empty reply** ($0.001635) | reasons first, unreliable |
+| `google/gemini-2.5-flash-lite` | 0.10 · 0.40 | 157 tokens, $0.000143. Correct numbers, but it calls it "potential bot activity" | cheapest usable; flatter, less careful |
+| `anthropic/claude-haiku-5-5` | 0.10 · 0.50 | 950 tokens (~700 hidden reasoning), $0.000572. *"…points to high-frequency, likely automated, signers rather than typical users, but the data cannot confirm which accounts are bots."* | **chosen**: the most careful Track-02 prose |
+
+Haiku 5.5 spends hidden reasoning tokens, so the default `max_tokens` is 8000. A full report costs about **$0.002–0.004**,
+under 0.05% of the $10 per-report cap. `--model google/gemini-2.5-flash-lite` is the fallback.
+
+### First real report: `demo-report-1` (2026-11-04)
+
+`bin/write-report --order demo-report-1 --pack ../rs-reports/reports/near-users-vs-bots` produced
+[`examples/demo-report-1/report.md`](examples/demo-report-1/report.md) and its
+[`meta.json`](examples/demo-report-1/meta.json). Attempt 1 was rejected for text before the first heading (now
+dropped instead). Attempt 2 passed the number check: 25 numbers, 0 untraced. In total: 6,868 + 5,168 tokens,
+**$0.003272 billed** (spend seq 6 `3bc82be2…`, seq 7 `5a33c2bf…`). The example predates the thousands-separator and
+blank-line polish, so it is kept byte-identical to the delivered file (`report_sha256` in meta).
+
+### Tests
+
+`tests/test_report_writer.py` (offline; the real `nearai.Client` behind a scripted fake cloud, so rules and ledger
+booking are the real code): pack loading + tamper refusal, prompt = data only, retry feedback, section parsing,
+Queries from the pack, pass / fail→regenerate→pass / fail twice (nothing written, both calls booked), bad structure,
+dropped preamble, empty and truncated replies, kill switch / per-report cap / daily cap / `--max-usd` refusals with
+zero calls, never overwriting, unconfigured key, CLI exit codes. Needs the rs-reports checkout next to this repo
+(or `$RS_REPORTS_DIR`) at `tools-v0.3.0` or later.
+
+The order loop below does all of this (v0.4.0).
+
+## Order loop + testnet demo (v0.4.0)
+
+```bash
+make demo-setup     # once: creates + funds demo-customer.nearbi-agent.testnet (145 USDCm = five Quick Answers)
+make demo           # the whole loop on NEAR testnet, < 2 min (bin/demo)
+make demo-record    # same, transcript saved to docs/demo-run-<UTC>.txt
+make test           # offline tests
+```
+
+### `make demo` (bin/demo): seven timestamped steps
+
+| # | Step | What runs |
+|---:|---|---|
+| 1 | Rules check | the **operator's `config.yaml` kill switch** (on, or the file invalid → `REFUSED`, exit 5, nothing else runs); the demo rules `demo/config.testnet.yaml` (`network: testnet`; same caps, prices and split as the operator's, a difference is printed); `quick_answer` $29 ≥ floor; `splitter-v2.get_config` == the configured 10 / 90 split; `forwarder-v2` forwards into `splitter-v2`; today's testnet spend vs cap |
+| 2 | Sale | `bin/order-loop`'s store gets order `qa-<UTC>` (awaiting payment); rs-payments `bin/demo-intents.sh` (`PAYER=demo-customer… PRICE=29000000 QUICK=1`): the customer's plain `ft_transfer` of 29 USDCm to `forwarder-v2` (**1Click has no testnet**: this transfer stands in for the 1Click withdrawal; everything after it is the production path), then `forward(order, 29000000)` with the forwarder's function-call key; `splitter-v2` pays 2.9 / 26.1 in the same tx. Balance deltas of customer, forwarder, splitter, contributors and treasury are checked exactly |
+| 3 | Order loop | payment read from the chain (`forwarder-v2.get_order == forwarded`, ≥ min price), product → pack + question, `bin/write-report` (real NEAR AI inference, booked in `spend-ledger.testnet.jsonl`, `--max-usd 0.25`) |
+| 4 | Delivery | `report.md`, `meta.json`, the pack (manifest, results, SQL), `checksums.sha256`, `delivery.json` → the customer inbox `~/.local/state/rs-agent/inbox.testnet/<order>/`; every copy re-hashed against `meta.json` / `manifest.json` first |
+| 5 | Onchain | `bin/record-cost --from-line <seq> --send` per inference line, then `anchor_report(<order>, sha256(report.md))` with the splitter function-call key; both verified by their events |
+| 6 | Public ledger | rs-ledger `bin/publish --network testnet-v2` → https://nearbi.ai/ledger/testnet-v2/; the demo checks the rebuilt ledger has the order's sale, 2 payouts, cost and anchor rows |
+| 7 | Summary | revenue, payouts, inference cost, margin, per-step and total wall time; **exit 1 if > 120 s**, if the split or a ledger row is missing |
+
+Recorded runs (full transcripts in `docs/`): **76.3 s** (`docs/demo-run-20261104T1207Z.txt`) and 76.6 s
+(`docs/demo-run-20261104T1206Z.txt`). Best run, order `qa-20261104T120735Z`:
+
+| Step | s | |
+|---|---:|---|
+| 1 rules | 1.9 | split 1000/9000 bps onchain == config |
+| 2 sale | 19.6 | [delivery `3WmRkSN6…`](https://testnet.nearblocks.io/txns/3WmRkSN6Hgd3zGV2FxnXWHp9ibTTpmENvH4BFZn1q7PW), [forward → split `4LN3GQE3…`](https://testnet.nearblocks.io/txns/4LN3GQE3ERW9LAiXwJXr5E6c3U1BnBkjJaafzAEqZfHr): customer −29, contributors +2.9, treasury +26.1, forwarder/splitter ±0 |
+| 3 order loop | 20.3 | Haiku 5.5, 2,790 + 3,043 tokens, **$0.001801 billed**, number check passed first attempt |
+| 4 delivery | 0.0 | 11 files checksummed ([example](examples/demo-order-qa-20261104T120735Z/)) |
+| 5 onchain | 15.3 | [record_cost `6JKgniNT…`](https://testnet.nearblocks.io/txns/6JKgniNTWEewKMYakFM7LC5TmoufEgEByiecyTkLVccj), [anchor_report `6QAbryiX…`](https://testnet.nearblocks.io/txns/6QAbryiXAYoZ28dUwMZithyNkT4kNbmmPa66guHhb36w) |
+| 6 ledger | 19.3 | published, all 5 rows of the order present |
+| total | **76.3** | margin 26.098199 = treasury share − inference (89.99 % of revenue; testnet gas not counted) |
+
+Needs: `make demo-setup` once; rs-payments and rs-ledger checked out next to this repo; the NEAR AI Cloud key
+(protected secret); Docker running (rs-ledger `bin/py`; `colima start`); AWS credentials (profile `nearbi-agent`) for the ledger
+upload (`--no-publish` skips step 6). Mainnet is never touched: every account is `*.testnet`, the rules file says
+`network: testnet`, and forwarder-runner is not used (it stays mainnet-only).
+
+**Egress proxy.** near-cli-rs and the aws-crt S3 client don't trust the gateway's TLS-intercepting egress proxy CA, so
+`onchain.near_cli_env()` drops `HTTPS_PROXY`/`HTTP_PROXY` for near-cli (record_cost, anchor_report, the rs-payments
+scripts) and for the ledger upload. Neither needs a proxied secret; NEAR AI Cloud calls keep the proxy, which swaps in
+the key. `RS_AGENT_NEAR_CLI_PROXY=1` keeps the proxy for near-cli. forwarder-runner's own signer was not changed.
+
+### bin/order-loop
+
+```bash
+bin/order-loop [--config F] [--kill-switch-config F ...] new --order <id> --product quick_answer --price 29 --customer <acct>
+bin/order-loop [--config F] [--kill-switch-config F ...] run [--order <id>] [--onchain send|dry-run|off] [--max-usd 0.25]
+bin/order-loop [--config F] status
+```
+
+`src/rs_agent/order_loop.py`; one JSON file per order in `$RS_AGENT_STATE_DIR/orders.<network>/`:
+
+```
+awaiting_payment ──forwarder.get_order == forwarded, amount ≥ min_price (+ slippage)──▶ paid
+paid ──write-report exit 0──▶ delivered (inbox) ──record_cost per inference line + anchor_report──▶ done
+paid ──write-report exit 6 │ below the floor │ deep_dive (no cached pack) │ unknown product/topic │ 2 errors──▶ needs_human (never delivered)
+```
+
+- **Payment comes from the chain**, not from the order file: the forwarder of the rules file's `network`. On mainnet
+  that is `forwarder.nearbi.near`, where forwarder-runner forwards each 1Click payment under its payment id, so the loop
+  runs unchanged there; v0.5.0 feeds it from the app's DynamoDB table (see "Live orders" below).
+- **Product map** (`PRODUCTS`): `quick_answer` → cached pack `near-users-vs-bots` by default, or `near-oct-cohort-retention`
+  (topic picked by the DynamoDB source's matcher; question = the pack's title);
+  `deep_dive` → needs a human (new queries); `subscription` → no report (nearbi-app grants access).
+- **Rules at every decision point**: the loop's rules file and every `--kill-switch-config` are re-read before the
+  payment check, before write-report, and before each onchain send. write-report exit 5 (cap/kill switch) stops the pass
+  with the order still `paid`.
+- Idempotent: a `done` order is skipped; record_cost lines and anchors are journaled
+  (`record-cost-onchain.<net>.jsonl`, `anchor-onchain.<net>.jsonl`) and never sent twice; a delivered `report.md` is
+  never overwritten.
+- Exit codes: 0 ok, 1 error, 2 an order needs a human, 5 refused.
+
+### Tests
+
+`tests/test_order_loop.py` (23, offline: the forwarder view, write-report, record-cost and anchor_report are fakes
+injected into `Loop`; rules, store, spend ledger, delivery and checksums are real): product mapping; happy path
+(statuses, inbox checksums, record_cost per line, anchor args) and idempotent rerun; not paid yet; dry-run sends
+nothing; **needs-human** for write-report exit 6 (nothing delivered, both calls stay booked, never retried), below-floor
+payment, deep_dive / unknown topic, two errors, a tampered report; **kill switch** in the loop config, in the
+operator's config, flipped after the payment check and before the onchain sends; `bin/demo` refuses with the
+operator's kill switch on, an invalid operator config or a mainnet demo config; the CLI; the proxy-free near-cli env;
+anchor args + event verification.
+
+## Live orders: DynamoDB order source + agent-tick (v0.5.0, resume v0.5.2)
+
+The order loop above, fed by the live nearbi-app table instead of local files. A paid one-off order is written,
+delivered on nearbi.ai, cost-recorded and anchored with no human in the loop. Deep dives and anything the agent
+can't match go to a human.
+
+```bash
+bin/agent-tick                 # one pass: forwarder-runner --once, then agent-orders; exit (scheduler-friendly)
+bin/agent-tick --dry-run       # the same, every read and check, nothing written, signed, paid or sent
+bin/agent-orders --status      # open orders + the agent's status (customer text is never printed)
+bin/forwarder-runner --mark-forwarded <paymentId> [--tx <hash>] [--dry-run]   # backfill forwardedTx (see below)
+bin/test-dynamo-local.sh       # the conditions against DynamoDB Local (Docker), no AWS
+```
+
+### What the app stores and what the customer sees
+
+| Product | Customer supplies | App on 1Click SUCCESS | Promise | Agent |
+|---|---|---|---|---|
+| `subscription` $49 | nothing (signed-in NEAR account) | `FWDQ` + extends the subscription | gated reports + registry for a month | nothing to fulfil: the app grants access; no ORDER exists |
+| `quick_answer` $29 | `brief.question` (≤ 2,000), optional `contact` (email/Telegram) | `FWDQ` + `ACCT#<acct>/ORDER#<id>` (`paid`) + `ORDERQ` | answer within 24 h | best-matching cached pack → automatic |
+| `deep_dive` $499 | `question`, optional `contact`, optional `scope` | same as Quick Answer | report within 48 h | always **needs_human** |
+
+The buyer sees "Your orders" on `/members` (status paid → in progress → delivered, the delivery link, and for an order
+deliverable its title, summary and **Open report**). A deliverable lives in the private content bucket under
+`reports/<slug>/` and only its buyer can open `/reports/<slug>/` (everyone else gets 404). Nothing emails or messages
+the customer, and this repo doesn't either.
+
+### One pass of `bin/agent-orders` (`src/rs_agent/dynamo_orders.py`)
+
+1. `config.yaml` re-read (kill switch, `network: mainnet`), SSO check, then `Query ORDERQ` + consistent `GetItem` of
+   each `ORDER` and `PAY#` item, oldest first. The rules are re-read again before every order.
+2. **Eligible** = ORDER `paid`/`in_progress`; PAY# `live`, `paid`, `intentsStatus SUCCESS`, recipient
+   `forwarder.nearbi.near`, USDC, and the same product, account and price as the ORDER; **`forwardedTx` set** (the
+   revenue split happened onchain first). Not forwarded yet → wait for forwarder-runner. A mismatch → needs_human.
+3. **Plan**: `quick_answer` → `match_pack(question)`: keyword phrases per cached pack (`PACK_KEYWORDS`), ≥ 2 hits and
+   a clear lead, else needs_human. Enabled packs: `near-users-vs-bots`, `near-oct-cohort-retention`. `deep_dive` and
+   anything else → needs_human. The customer's text is matched locally and is **never sent to the model**:
+   write-report answers the pack's own question, and the delivery page shows the buyer's question above it
+   (escaped) with a note that it was answered from the closest cached study.
+4. **Caps** before claiming: `rules.check_job` for the write-report worst case (`--max-usd`, default $0.25): daily cap
+   → the pass stops (exit 5, nothing claimed); per-report cap → needs_human. At most `--max-orders` (default 3)
+   automatic orders per pass.
+5. **Claim**: conditional `UpdateItem PAY#<id> SET agentClaim, agentClaimUntil` (condition: paid, `forwardedTx` set
+   and not NULL, `agentStatus` not `done`/`needs_human`, no live claim by someone else). A claim lasts 30 min; a
+   crashed tick's claim is then taken over. Released at the end of the order.
+6. **Run** (`order_loop.Loop` for this one order, `DynamoLoop`): `POST /billing/admin/orders/<id> {status: in_progress}`
+   → forwarder `get_order == forwarded` and ≥ min price → `bin/write-report` (paid NEAR AI) → local inbox copy with
+   checksums → **publish**: `report.md`, `pack/…`, `delivery.json`, `checksums.sha256` and `index.html` to
+   `s3://nearbi-content/reports/qa-<id>/` (never overwriting different content, each upload re-checked) →
+   `POST … {status: delivered, deliverable: {slug: qa-<id>, title: "Quick Answer: <pack title>", summary: <claim>}}`
+   → `record_cost` per inference line → `anchor_report(<id>, sha256(report.md))`.
+7. **Status back** on `PAY#<id>`: `agentStatus` (`running`, `waiting`, `paid`, `delivered`, `done`, `needs_human`),
+   `agentNote`, `agentUpdatedAt`, and on done `agentReportSha256`, `agentAnchorTx`, `agentSlug`. Only the claim
+   holder can write them. `done`/`needs_human` are never picked up again; anything else resumes next tick from the
+   local order file (a publish that failed is retried before the onchain step; write-report is never paid twice).
+8. **Resume off the queue** (v0.5.2): the app removes an order from `ORDERQ` as soon as it is marked delivered, which is
+   before `record_cost`/`anchor_report`. Orders the local order store (`orders.mainnet/`) has as `delivered` but
+   `ORDERQ` no longer lists are claimed and finish their onchain step the same way (no write-report, no re-delivery).
+   If the app POST landed but the tick died before saving it, the ORDER item (delivered, slug `qa-<id>`) is the proof;
+   anything else is `ATTENTION` (exit 2). `--status` lists them. Resumes are not limited by `--max-orders`.
+
+**Ordering with the forwarder** (explicit): the app queues `FWDQ` and creates ORDER + `ORDERQ` on 1Click `SUCCESS`;
+`agent-tick` runs forwarder-runner first, and the order step only claims a payment whose `forwardedTx` is set (claim
+condition) and whose forwarder `get_order` is `forwarded` (the loop's payment check). So a report is written only
+after the payment was forwarded and split onchain; an order whose forward hasn't happened waits, unclaimed.
+**At most once**: the `agent-tick` lock (one host), the conditional claim on `PAY#<id>` (one runner per order, 30 min),
+the local order store (write-report and delivery happen once per order) and the onchain journals (each `record_cost`
+line and the anchor are sent once).
+
+The admin token is read from SSM `/nearbi/app/ADMIN_TOKEN` into memory for the API call (header only; never printed,
+logged or written). The content bucket is `nearbi-content`, prefix empty (`dynamo_orders.CONTENT_BUCKET`/`CONTENT_PREFIX`,
+the Lambda's `CONTENT_BUCKET`/`CONTENT_PREFIX`; override with `NEARBI_CONTENT_BUCKET`/`NEARBI_CONTENT_PREFIX`, or
+`NEARBI_CONTENT_FROM_LAMBDA=1` to read them from the Lambda with the operator's SSO; the agent's IAM user can't, because
+`lambda:GetFunctionConfiguration` would expose every app secret). S3, DynamoDB, SSM and the admin API go
+direct (`egress.direct_env`, no proxy); NEAR AI Cloud keeps the proxy.
+
+**needs_human**: the order stays `paid` on the customer's page and on `bin/list-orders` (nearbi-app). Fulfil it by
+hand (`bin/update-order`), as before. `agentNote` says why. Exit 2 is raised only when an order is newly marked.
+
+Proven on the live table 2026-11-04 (v0.5.2) with a synthetic, test-prefixed order (`00000000-7e57-…`, account
+`zz-e2e-test-synthetic.near`, shielded from the live tick by a pre-set claim, no `FWDQ` entry): dry-run pick-up, a
+second runner's claim refused, a real pass (claim → `in_progress` → publish 13 files → `delivered` buyer-only, anon
+`/reports/qa-…/` → login redirect) with the forwarder view and write-report faked and the onchain step in dry-run,
+then the orphan (off `ORDERQ`, onchain unfinished) found and resumed. All items and S3 objects deleted afterwards.
+
+### forwardedTx was never written (fixed in v0.5.0)
+
+nearbi-app stores `forwardedTx: null` on every payment (a DynamoDB NULL attribute). forwarder-runner ≤ v0.4.1 marked
+with `attribute_not_exists(forwardedTx)`, which is false for a NULL attribute, so the mark always failed ("already
+set (concurrent runner?)") and the queue entry was deleted anyway: every forwarded payment kept `forwardedTx: null`.
+The condition is now `attribute_not_exists(forwardedTx) OR attribute_type(forwardedTx, NULL)` (proven on DynamoDB
+Local). Payments forwarded before the fix: `agent-orders` backfills an open order automatically when the forwarder
+journal holds a tx that verifies onchain (forwarded + sale events, onchain amount); otherwise
+`bin/forwarder-runner --mark-forwarded <id> [--tx <hash>]`. The one live case is `b2d28dc7…` (forwarded by
+`DZVmjroxaRey1i26btYBHzbxwbo4PMgivtVMkNHwBCKU`, delivered by hand; `--dry-run` verifies it).
+
+### bin/agent-tick
+
+| Exit | Meaning |
+|---:|---|
+| 0 | done / nothing to do |
+| 1 | an error (either step); read the log |
+| 2 | a payment or order needs a human (`ATTENTION` lines) |
+| 3 | AWS credentials invalid or missing (`nearbi-agent` key revoked/deleted → [rotate](#rotate-or-revoke-the-key); `AWS_PROFILE=nearbi`: SSO expired); the tick stops before the order step |
+| 4 | top up `forwarder.nearbi.near` (forwarder-runner); the order step still ran |
+| 5 | refused by config.yaml (kill switch, split mismatch, daily cap, network); the tick stops there |
+
+Most urgent wins: 3 > 5 > 1 > 4 > 2 > 0. A lock file makes an overlapping tick exit 0. Nothing is scheduled by this
+repo (no launchd/cron); run `bin/agent-tick` every 2–5 minutes from the scheduler.
+
+### Tests
+
+`tests/test_dynamo_orders.py` (offline, 60; resume off the queue since v0.5.2; `FakeDdb` evaluates exactly the module's condition expressions; S3/API
+fakes; rules, store, ledger, delivery, HTML real): pack matching and plans; payment checks; happy path (in_progress →
+write-report → S3 files + checksums → delivered with a buyer-only deliverable → record_cost → anchor → `done`, claim
+released, customer text not in the prompt or the log, token not logged); idempotent rerun; resume after a failed
+publish; **claim race**, held claim, expired claim, claim refused for unforwarded/unpaid/terminal; **already
+processed**; **needs_human** (deep_dive, unmatched, payment mismatch, **write-report exit 6** with nothing delivered,
+below-floor amount); **kill switch** (before the pass, mid-pass, before write-report); **daily cap** refusal (nothing
+claimed), per-report cap, `--max-orders`, mainnet only, SSO exit 3; forwardedTx backfill (verified / no journal / bad
+tx); **dry-run writes nothing**; aws CLI argv + direct egress; admin API token handling; S3 never overwrites; HTML
+escaping; agent-tick exit priority; `forwarder-runner --mark-forwarded` (dry-run, verify, kill switch). `tests/test_dynamo_local.py` (7, `bin/test-dynamo-local.sh`): the same
+conditions on DynamoDB Local, including the old forwarder condition failing on the app's NULL.
+
+## Agent identity: AWS (v0.5.1)
+
+The unattended agent (`bin/agent-tick`, `bin/forwarder-runner`, `bin/agent-orders`, rs-ledger `bin/publish`, and the ledger
+step of `bin/demo`) uses the IAM user **`nearbi-agent`**, AWS profile `nearbi-agent`. It doesn't need anyone to log in
+and has no expiry. The operator's SSO profile `nearbi` (AdministratorAccess) is no longer used by default: `AWS_PROFILE=nearbi`
+(or `--profile nearbi`) still selects it.
+
+- **IAM**: nearbi-infra `tofu/agent.tf` (user + inline policy `nearbi-agent-least-privilege`; no console login, no group).
+  The policy allows only the aws CLI calls these scripts make:
+
+  | Statement | Actions | Resource / condition |
+  |---|---|---|
+  | TableRead | `dynamodb:Query`, `dynamodb:GetItem` | table `nearbi`; `dynamodb:LeadingKeys` ∈ `FWDQ`, `ORDERQ`, `PAY#*`, `ACCT#*` |
+  | PaymentUpdate | `dynamodb:UpdateItem` | table `nearbi`; LeadingKeys `PAY#*` |
+  | ForwardQueueDelete | `dynamodb:DeleteItem` | table `nearbi`; LeadingKeys `FWDQ` |
+  | AdminTokenRead | `ssm:GetParameter` | `parameter/nearbi/app/ADMIN_TOKEN` (aws/ssm key: its key policy covers the decrypt) |
+  | AdminTokenPresence | `ssm:DescribeParameters` | `*` (no resource-level support; metadata only; dry-run check) |
+  | DeliverableWrite | `s3:GetObject`, `s3:PutObject` | `nearbi-content/reports/qa-*` |
+  | DeliverableList | `s3:ListBucket` | `nearbi-content` (so HeadObject of a missing key is 404, not 403) |
+  | LedgerWrite | `s3:PutObject`, `s3:DeleteObject` | `nearbi-site/ledger/*` |
+  | LedgerList | `s3:ListBucket` | `nearbi-site`, `s3:prefix` `ledger/`, `ledger/*` |
+  | LedgerInvalidate | `cloudfront:CreateInvalidation`, `cloudfront:GetInvalidation` | distribution `E2UZ7XHTGD4UEU` |
+  | Identity | `sts:GetCallerIdentity` | `*` (always allowed anyway) |
+
+  Everything else is denied, e.g. `dynamodb:DeleteTable`/`Scan`/`PutItem`, `UpdateItem` outside `PAY#`, other SSM
+  parameters (`SESSION_SECRET`), `lambda:*`, `iam:*`, other S3 keys and buckets, the tofu state bucket (verified 2026-11-04).
+- **Key**: one access key, created with `aws iam create-access-key` (not by tofu, so the secret is not in the tofu state)
+  and piped directly into the gateway user's **login Keychain**: generic password, service `nearbi-agent-aws`, account
+  `nearbi-agent`, value `<AccessKeyId>:<SecretAccessKey>`. It is never on disk, argv or in logs.
+- **Profile** (`~/.aws/config`):
+
+  ```ini
+  [profile nearbi-agent]
+  credential_process = /path/to/rs-agent/bin/aws-keychain-credentials nearbi-agent-aws
+  region = us-east-1
+  output = json
+  ```
+
+  `bin/aws-keychain-credentials` reads the item with `security find-generic-password -w` and prints the
+  `credential_process` JSON (Version 1) to the aws CLI's pipe. On any failure it prints a one-line reason with no secret
+  and exits 1.
+- **Exit 3** now means the key is invalid or missing: rs-agent matches `InvalidClientTokenId`, `SignatureDoesNotMatch`,
+  `Unable to locate credentials`, a failing `credential_process` and the SSO patterns. A valid key that lacks a
+  permission (`AccessDenied`) is exit 1, which points to a policy problem.
+
+Check: `aws sts get-caller-identity --profile nearbi-agent` → `arn:aws:iam::916489698349:user/nearbi-agent`.
+
+### Rotate or revoke the key
+
+Run with the operator's SSO (`AWS_PROFILE=nearbi`). An IAM user can hold 2 keys, so rotation causes no downtime:
+
+```bash
+export AWS_PROFILE=nearbi
+aws iam list-access-keys --user-name nearbi-agent                 # note the current AccessKeyId (OLD)
+# 1. new key -> Keychain, secret only through pipes (python reads the JSON, `security -i` reads the command on stdin)
+aws iam create-access-key --user-name nearbi-agent --output json | python3 -c '
+import json, subprocess, sys
+k = json.load(sys.stdin)["AccessKey"]
+cmd = "add-generic-password -U -a nearbi-agent -s nearbi-agent-aws -l \"nearbi-agent AWS access key\" -w \"%s:%s\"\n" % (k["AccessKeyId"], k["SecretAccessKey"])
+r = subprocess.run(["/usr/bin/security", "-i"], input=cmd, text=True, capture_output=True)
+print("stored", k["AccessKeyId"] if r.returncode == 0 else "FAILED: delete that key")'
+# 2. prove the new key (IAM is eventually consistent: allow ~10 s)
+AWS_PROFILE=nearbi-agent aws sts get-caller-identity && bin/agent-tick --dry-run
+# 3. retire the old one
+aws iam update-access-key --user-name nearbi-agent --access-key-id OLD --status Inactive   # reversible
+aws iam delete-access-key --user-name nearbi-agent --access-key-id OLD                     # after a few good ticks
+```
+
+`-U` replaces the existing Keychain item in place. **Revoke** at once (suspected leak):
+`aws iam update-access-key --user-name nearbi-agent --access-key-id <id> --status Inactive` (or `delete-access-key`).
+The agent then exits 3 on its next tick and the shop stops acting. Meanwhile `AWS_PROFILE=nearbi bin/agent-tick`
+runs under the operator's SSO. To remove the identity completely: delete the keys, then remove `tofu/agent.tf` in
+nearbi-infra and apply. Last-used check: `aws iam get-access-key-last-used --access-key-id <id>`.

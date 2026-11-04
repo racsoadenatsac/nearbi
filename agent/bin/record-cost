@@ -9,7 +9,8 @@
         mirror an existing spend-ledger line onchain (e.g. one the NEAR AI client booked); refuses if sent
   bin/record-cost ... --dry-run [--preflight]
         write nothing at all: show the ledger line and the onchain call that would be made; --preflight also
-        checks the onchain key, the local secret (in memory) and the gas, and still sends nothing
+        checks the onchain key, the local secret (in memory) and the gas, then has near-cli-rs sign the exact
+        call and only display it (signed tx discarded), and still sends nothing
 
 The network (and so which splitter and which key) comes from config.yaml `network`. Mainnet key: macOS
 Keychain nearbi-mainnet-fc-splitter.nearbi.near, read into memory only. kill_switch: true still lets you book
@@ -101,12 +102,14 @@ def main() -> int:
     print(onchain.dry_run_text(cfg, args, sending=a.send), flush=True)
     if a.preflight and not a.send:
         try:
-            onchain.preflight(cfg, fw.Rpc(cfg.net["rpc"]), onchain.SplitterSigner(cfg, near_cli()))
+            signer = onchain.SplitterSigner(cfg, near_cli())
+            onchain.preflight(cfg, fw.Rpc(cfg.net["rpc"]), signer)
+            onchain.sign_check(cfg, signer, "record_cost", args)
         except fw.Stop as s:
             fw.log(f"STOP: {s}")
             return s.code
         fw.log(f"preflight ok: {cfg.net['splitter_fc_public_key']} is a record_cost key on {cfg.net['splitter']}, "
-               f"the local secret matches it, gas and allowance suffice (nothing sent)")
+               f"the local secret matches it, gas and allowance suffice; near-cli-rs signed the call (display only, NOT broadcast)")
     if not a.send:
         return fw.EXIT_OK
     try:

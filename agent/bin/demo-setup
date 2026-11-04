@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# One-time (idempotent) TESTNET setup for `make demo`: the demo customer account.
+#   creates demo-customer.nearbi-agent.testnet (0.3 NEAR from the agent; its full-access key goes to the
+#   near-cli legacy keychain ~/.near-credentials/testnet/, chmod 600, never printed), registers it on
+#   usdc-mock and gives it 145 USDCm (five $29 Quick Answers) so a timed run needs no drip.
+# Uses rs-payments/bin/lib.sh (testnet-pinned helpers). Never touches mainnet.
+set -euo pipefail
+RS_PAYMENTS="${RS_PAYMENTS_DIR:-$(cd "$(dirname "$0")/../.." && pwd)/rs-payments}"
+export NEARBI_SPLITTER=splitter-v2.nearbi-agent.testnet NEARBI_FORWARDER=forwarder-v2.nearbi-agent.testnet
+# near-cli-rs does not trust the gateway egress proxy CA; NEAR RPC goes direct (no secrets are proxied for it)
+unset HTTPS_PROXY HTTP_PROXY ALL_PROXY NODE_USE_ENV_PROXY https_proxy http_proxy all_proxy node_use_env_proxy  # = rs_agent.egress.PROXY_VARS
+source "$RS_PAYMENTS/bin/lib.sh"
+CUSTOMER="${DEMO_CUSTOMER:-demo-customer.$AGENT}"
+FUND="${DEMO_CUSTOMER_FUND:-145000000}"
+require_testnet "$CUSTOMER"
+
+if account_exists "$CUSTOMER"; then
+  echo "customer $CUSTOMER exists"
+else
+  echo "creating $CUSTOMER (0.3 NEAR from $AGENT)"
+  near_run account create-account fund-myself "$CUSTOMER" '0.3 NEAR' autogenerate-new-keypair save-to-legacy-keychain \
+    sign-as "$AGENT" network-config "$NETWORK" sign-with-legacy-keychain send
+  echo "  tx $EXPLORER/$(last_tx)"
+fi
+if [ "$(view "$TOKEN" storage_balance_of "{\"account_id\":\"$CUSTOMER\"}")" = "null" ]; then
+  call "$CUSTOMER" "$TOKEN" storage_deposit "{\"account_id\":\"$CUSTOMER\",\"registration_only\":true}" '0.0125 NEAR' '30 Tgas'
+  echo "registered on $TOKEN: $EXPLORER/$(last_tx)"
+fi
+BAL="$(ft_balance "$CUSTOMER")"
+if [ "$BAL" -lt "$FUND" ]; then
+  call "$AGENT" "$TOKEN" ft_transfer "{\"receiver_id\":\"$CUSTOMER\",\"amount\":\"$((FUND - BAL))\",\"memo\":\"demo customer funding\"}" '1 yoctoNEAR' '30 Tgas'
+  echo "funded $(fmt_usdc $((FUND - BAL))) USDCm: $EXPLORER/$(last_tx)"
+fi
+echo "customer $CUSTOMER holds $(fmt_usdc "$(ft_balance "$CUSTOMER")") USDCm"

@@ -5,7 +5,8 @@ Runs on the operator's Mac. The forwarder's function-call key (methods [forward]
 forwarder.nearbi.near, no deposit) is read from the macOS Keychain into process memory and handed to
 near-cli through an anonymous pipe (/dev/fd/N): it is never written to disk, never on argv, never logged.
 
-Stdlib only (Python 3.9+). External tools: `aws` (SSO profile `nearbi`), `security`, near-cli-rs.
+Stdlib only (Python 3.9+). External tools: `aws` (profile `nearbi-agent`: IAM user key from the Keychain via
+`bin/aws-keychain-credentials`; `AWS_PROFILE=nearbi` = the operator's SSO), `security`, near-cli-rs.
 See README.md for the full procedure, exit codes and limits.
 """
 from __future__ import annotations
@@ -25,7 +26,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from . import rules
+from . import egress, rules
 
 # ------------------------------------------------------------------------------------------ constants
 FORWARDER = "forwarder.nearbi.near"
@@ -49,8 +50,39 @@ B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 EXIT_OK, EXIT_ERROR, EXIT_ATTENTION, EXIT_SSO, EXIT_TOPUP, EXIT_REFUSED = 0, 1, 2, 3, 4, 5  # 5 = an operator rule (config.yaml) refused
 
 
+# ------------------------------------------------------------------------------------------ AWS identity
+# Default: the unattended IAM user nearbi-agent (nearbi-infra tofu/agent.tf), whose access key lives only in the
+# Keychain item nearbi-agent-aws and reaches the aws CLI through credential_process (bin/aws-keychain-credentials).
+# AWS_PROFILE (or --profile) overrides it, e.g. AWS_PROFILE=nearbi for the operator's SSO session.
+DEFAULT_AWS_PROFILE = "nearbi-agent"
+SSO_AWS_PROFILE = "nearbi"
+AGENT_KEYCHAIN_ITEM = "nearbi-agent-aws"
+# stderr of an aws call whose credentials are expired, invalid, revoked or missing (exit 3). AccessDenied is not
+# here: a valid key without permission is a policy problem (exit 1).
+CREDS_ERR_RE = re.compile(
+    r"Token has expired|SSO session|sso.*(expired|login)|UnauthorizedSSOToken|refresh failed|ExpiredToken|"
+    r"InvalidClientTokenId|SignatureDoesNotMatch|security token included in the request is (invalid|expired)|"
+    r"Unable to locate credentials|credential_process|custom-process|Error when retrieving credentials|"
+    r"aws-keychain-credentials|InvalidAccessKeyId|AuthFailure", re.I)
+
+
+def aws_profile() -> str:
+    """The AWS profile the agent uses: $AWS_PROFILE if set, else nearbi-agent."""
+    return os.environ.get("AWS_PROFILE") or DEFAULT_AWS_PROFILE
+
+
+def creds_message(profile: str) -> str:
+    """The exit-3 line: what is wrong and who fixes it."""
+    if profile == SSO_AWS_PROFILE:
+        return f"SSO expired (profile {profile}): the operator runs `aws sso login --profile {profile}` (the agent never does)"
+    if profile == DEFAULT_AWS_PROFILE:
+        return (f"AWS key invalid or missing (profile {profile}: IAM user nearbi-agent, Keychain item {AGENT_KEYCHAIN_ITEM}); "
+                f"the operator rotates it (README \"Agent identity\"), or runs with AWS_PROFILE={SSO_AWS_PROFILE} meanwhile")
+    return f"AWS credentials invalid, expired or missing (profile {profile})"
+
+
 class Stop(Exception):
-    """Abort the whole run (preflight failure, SSO expired, top-up needed)."""
+    """Abort the whole run (preflight failure, AWS credentials invalid/expired, top-up needed)."""
 
     def __init__(self, code: int, message: str):
         super().__init__(message)
@@ -133,11 +165,17 @@ class Rpc:
         return self.call("EXPERIMENTAL_tx_status", {"tx_hash": tx_hash, "sender_account_id": sender, "wait_until": "FINAL"})
 
 
-class Dynamo:
-    """DynamoDB through the aws CLI (operator SSO profile). Read: FWDQ queue + PAY# items. Write: mark forwarded."""
+MARK_FORWARDED_CONDITION = "attribute_exists(PK) AND (attribute_not_exists(forwardedTx) OR attribute_type(forwardedTx, :nul))"
 
-    def __init__(self, profile: str = "nearbi", table: str = TABLE, region: str = REGION):
-        self.env = {**os.environ, "AWS_PROFILE": profile, "AWS_REGION": region, "AWS_PAGER": ""}
+
+class Dynamo:
+    """DynamoDB through the aws CLI (profile nearbi-agent by default). Read: FWDQ queue + PAY# items.
+    Write: mark forwarded (UpdateItem PAY#), dequeue (DeleteItem FWDQ)."""
+
+    def __init__(self, profile: Optional[str] = None, table: str = TABLE, region: str = REGION):
+        # direct egress: DynamoDB/STS need no proxied secret (rs_agent.egress)
+        self.profile = profile = profile or aws_profile()
+        self.env = egress.direct_env(AWS_PROFILE=profile, AWS_REGION=region, AWS_PAGER="")
         self.table = table
 
     def _aws(self, *args: str) -> Any:
@@ -145,8 +183,8 @@ class Dynamo:
                            capture_output=True, text=True, env=self.env, timeout=60)
         if p.returncode != 0:
             err = p.stderr.strip()
-            if re.search(r"Token has expired|SSO session|sso.*(expired|login)|UnauthorizedSSOToken|refresh failed|ExpiredToken", err, re.I):
-                raise Stop(EXIT_SSO, "SSO expired")
+            if CREDS_ERR_RE.search(err):
+                raise Stop(EXIT_SSO, creds_message(self.profile))
             if "ConditionalCheckFailedException" in err:
                 raise ConditionFailed(err[:300])
             raise RuntimeError(f"aws dynamodb {args[0]}: {err[:400]}")
@@ -155,7 +193,7 @@ class Dynamo:
     def check_sso(self) -> None:
         p = subprocess.run(["aws", "sts", "get-caller-identity", "--output", "json"], capture_output=True, text=True, env=self.env, timeout=60)
         if p.returncode != 0:
-            raise Stop(EXIT_SSO, "SSO expired")
+            raise Stop(EXIT_SSO, creds_message(self.profile))
 
     def forward_queue(self) -> list[dict]:
         out = self._aws("query", "--key-condition-expression", "PK = :pk",
@@ -167,12 +205,15 @@ class Dynamo:
         return unmarshal(out["Item"]) if out.get("Item") else None
 
     def mark_forwarded(self, pid: str, tx: str, amount: str, now: int) -> bool:
-        """Conditional: never overwrites an existing forwardedTx. Returns False if it was already set."""
+        """Conditional: never overwrites an existing forwardedTx. Returns False if it was already set.
+        nearbi-app writes `forwardedTx: null` (a NULL attribute) on every payment, so "not set yet" means missing OR
+        NULL; `attribute_not_exists` alone never matched an app-written payment and nothing was ever marked."""
         try:
             self._aws("update-item", "--key", json.dumps({"PK": {"S": f"PAY#{pid}"}, "SK": {"S": "PAYMENT"}}),
                       "--update-expression", "SET forwardedTx = :tx, forwardedAt = :at, forwardedAmount = :amt",
-                      "--condition-expression", "attribute_exists(PK) AND attribute_not_exists(forwardedTx)",
-                      "--expression-attribute-values", json.dumps({":tx": {"S": tx}, ":at": {"N": str(now)}, ":amt": {"S": amount}}))
+                      "--condition-expression", MARK_FORWARDED_CONDITION,
+                      "--expression-attribute-values", json.dumps({":tx": {"S": tx}, ":at": {"N": str(now)}, ":amt": {"S": amount},
+                                                                   ":nul": {"S": "NULL"}}))
             return True
         except ConditionFailed:
             return False
@@ -244,8 +285,14 @@ class Signer:
         finally:
             sk = ""  # noqa: F841
 
-    def forward(self, order_id: str, amount: str) -> tuple[int, str]:
+    def forward_cmd(self, order_id: str, amount: str, fd: int, broadcast: bool = True) -> list[str]:
+        """near-cli-rs argv for forward(); broadcast=False ends in `display` (sign offline, print, never send)."""
         args = json.dumps({"order_id": order_id, "amount": amount}, separators=(",", ":"))
+        return [self.near, "contract", "call-function", "as-transaction", FORWARDER, "forward", "json-args", args,
+                "prepaid-gas", f"{PREPAID_GAS_TGAS} Tgas", "attached-deposit", "0 NEAR", "sign-as", FORWARDER,
+                "network-config", NEAR_NETWORK, "sign-with-access-key-file", f"/dev/fd/{fd}", "send" if broadcast else "display"]
+
+    def forward(self, order_id: str, amount: str, broadcast: bool = True) -> tuple[int, str]:
         r, w = os.pipe()
         try:
             sk = self.secret()
@@ -253,10 +300,9 @@ class Signer:
             sk = ""  # noqa: F841
             os.close(w)
             w = -1
-            cmd = [self.near, "contract", "call-function", "as-transaction", FORWARDER, "forward", "json-args", args,
-                   "prepaid-gas", f"{PREPAID_GAS_TGAS} Tgas", "attached-deposit", "0 NEAR", "sign-as", FORWARDER,
-                   "network-config", NEAR_NETWORK, "sign-with-access-key-file", f"/dev/fd/{r}", "send"]
-            p = subprocess.run(cmd, capture_output=True, text=True, pass_fds=(r,), timeout=180)
+            cmd = self.forward_cmd(order_id, amount, r, broadcast)
+            # direct egress: near-cli-rs rejects the gateway proxy CA (UnknownIssuer); NEAR RPC needs no proxied secret
+            p = subprocess.run(cmd, capture_output=True, text=True, pass_fds=(r,), timeout=180, env=egress.direct_env())
             return p.returncode, scrub(p.stdout + "\n" + p.stderr)
         finally:
             if w != -1:
@@ -486,6 +532,27 @@ class Runner:
         log(f"{pid}: forwarded {int(amount) / 1e6:.6f} USDC into {SPLITTER}; tx {tx_hash} https://nearblocks.io/txns/{tx_hash}")
         return "forwarded"
 
+    def sign_check(self, order_id: Optional[str] = None, amount: str = "1") -> str:
+        """Exercise the real signing path short of broadcast: rules gate + preflight, then near-cli-rs signs
+        forward(<fresh random order id>, 1) with the Keychain key, fetching nonce and block hash over NEAR RPC, and
+        ends in `display` (never `send`). The signed transaction is checked in memory and discarded, never printed."""
+        import uuid
+        self.rules_gate("sign check")
+        self.preflight()
+        oid = order_id or str(uuid.uuid4())
+        assert self.signer.forward_cmd(oid, amount, 0, broadcast=False)[-1] == "display"
+        rc, out = self.signer.forward(oid, amount, broadcast=False)
+        blob = signed_blob(out)
+        safe = SIGNED_RE.sub(r"\1<signed tx withheld>", out)
+        if rc != 0 or blob is None:
+            raise Stop(EXIT_ERROR, f"sign check: near-cli rc={rc}, no signed transaction:\n{safe[-800:]}")
+        problems = [w for w, ok in (("public key", FC_PUBLIC_KEY in out), ("signer/receiver", FORWARDER.encode() in blob),
+                                    ("method", b"forward" in blob), ("order id", oid.encode() in blob)) if not ok]
+        blob = b""  # noqa: F841  (discard the signed tx)
+        if problems:
+            raise Stop(EXIT_ERROR, f"sign check: signed tx does not match the request ({', '.join(problems)})")
+        return oid
+
     def journal_tx(self, pid: str) -> Optional[str]:
         """Last tx hash this machine recorded for a forward of `pid` (forwarded or forward_problem)."""
         if not self.journal.exists():
@@ -516,6 +583,39 @@ class Runner:
         self.db.dequeue(pid)
         log(f"{pid}: recovered: forwarded by {tx_hash}, marked in DynamoDB")
         return "recovered"
+
+    def mark_forwarded(self, pid: str, tx_hash: Optional[str] = None) -> str:
+        """Set forwardedTx on a payment that is forwarded onchain but was never marked in DynamoDB (forwarder-runner
+        <= v0.4.1: the app's `forwardedTx: null` made every mark fail its condition). The tx (given, or the last one
+        in the journal) must verify as this order's forward with the onchain forwarded amount. Respects --dry-run."""
+        if not ORDER_ID_RE.match(pid):
+            raise Stop(EXIT_ERROR, f"bad payment id {pid!r}")
+        self.rules_gate(f"marking {pid} forwarded")
+        self.db.check_sso()
+        pay = self.db.payment(pid)
+        if pay is None:
+            raise Stop(EXIT_ERROR, f"payment {pid} not found")
+        if pay.get("forwardedTx"):
+            log(f"{pid}: forwardedTx already set ({pay['forwardedTx']}); nothing to do")
+            return "already-done"
+        st = self.rpc.view(FORWARDER, "get_order", {"order_id": pid})
+        if not st or st.get("status") != "forwarded":
+            raise Stop(EXIT_ERROR, f"{pid}: not forwarded onchain (get_order: {(st or {}).get('status', 'none')}); nothing to mark")
+        amount = str(st.get("forwarded_amount"))
+        tx_hash = tx_hash or self.journal_tx(pid)
+        if not tx_hash:
+            raise Stop(EXIT_ERROR, f"{pid}: no forward tx in {self.journal}; pass --tx <hash> (find it on nearblocks)")
+        problems = verify_forward_tx(self.rpc.tx_final(tx_hash, FORWARDER), pid, amount)
+        if problems:
+            raise Stop(EXIT_ERROR, f"{pid}: tx {tx_hash} does not verify as forward({pid}, {amount}): {'; '.join(problems)}")
+        if self.dry_run:
+            log(f"{pid}: DRY RUN, would set forwardedTx={tx_hash} forwardedAmount={amount} (tx verified: forwarded + sale events)")
+            return "dry-run"
+        if not self.db.mark_forwarded(pid, tx_hash, amount, self.now()):
+            raise Stop(EXIT_ERROR, f"{pid}: conditional update refused (forwardedTx set meanwhile?)")
+        self.record(event="marked_forwarded", order_id=pid, amount=amount, tx=tx_hash)
+        log(f"{pid}: forwardedTx={tx_hash} forwardedAmount={amount} written (verified onchain)")
+        return "marked"
 
     def run_once(self, manual: Optional[dict] = None) -> int:
         lock = open(state_dir() / "forwarder-runner.lock", "w")
@@ -549,6 +649,20 @@ class Runner:
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
             lock.close()
+
+
+SIGNED_RE = re.compile(r"(Signed transaction \(serialized as base64\):[^\S\n]*\n\s*)([A-Za-z0-9+/=]{40,})")
+
+
+def signed_blob(out: str) -> Optional[bytes]:
+    """The borsh bytes of the signed transaction near-cli `display` printed, or None."""
+    m = SIGNED_RE.search(out)
+    if not m:
+        return None
+    try:
+        return base64.b64decode(m.group(2), validate=True)
+    except ValueError:
+        return None
 
 
 def manual_entry(db: Dynamo, order_id: str, amount: str) -> dict:

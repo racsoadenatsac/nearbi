@@ -1,0 +1,15 @@
+{
+  "order_id": "qa-20261104T120735Z",
+  "product": "quick_answer",
+  "customer": "demo-customer.nearbi-agent.testnet",
+  "delivered_at": "2026-11-04T12:08:16Z",
+  "network": "testnet",
+  "claim": "The window's NEAR transaction volume is concentrated in a few high-frequency signers, most of which look like infrastructure or automated accounts, so the data supports \"mostly automated by volume\" but does not show that real users are absent.",
+  "report_sha256": "ecc7d9aa3c3861fb92accdce0e4e0a5dd7d33b923c437114989c8162dfa850af",
+  "pack": "near-users-vs-bots",
+  "pack_manifest_sha256": "54b9eab20fe70b71ff1fd6e9c064e5a525a579af456d891693a1072ce4d8e3c1",
+  "files": 11,
+  "inference_cost_usd": "0.001801",
+  "model": "anthropic/claude-haiku-5-5",
+  "dataset": "bigquery-public-data.crypto_near_mainnet_us"
+}

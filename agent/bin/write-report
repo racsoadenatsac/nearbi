@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""write-report: write a report's narrative with paid NEAR AI Cloud inference, from a cached result pack.
+
+  bin/write-report --order <id> --pack <pack dir> [--question "..."] [--model M] [--out DIR]
+                   [--max-tokens N] [--max-usd 1.00] [--param 30 ...] [--force]
+
+A pack is a directory with manifest.json (result_sha256 per query), results/<query>.csv and queries/<query>.sql,
+e.g. ../rs-reports/reports/near-users-vs-bots. No BigQuery query is run. The question defaults to the pack's title.
+
+Before any paid call: pack hashes verified, config.yaml re-read (kill switch, per_report_cost_cap_usd,
+max_inference_usd_per_day) for the worst case of two attempts, and that worst case must fit --max-usd.
+Every call is booked in the spend ledger under --order. The narrative must pass the rs-reports number check
+(every number traces to a result cell, rounding allowed); one regeneration with the offending numbers fed back,
+then exit 6 with nothing written.
+
+Output (default $RS_AGENT_STATE_DIR/reports/<order>, i.e. ~/.local/state/rs-agent/reports/<order>):
+  report.md   Claim · Evidence for · Evidence against · What would change the conclusion · Queries (from the pack)
+  meta.json   model, tokens, billed cost, spend-ledger line hashes, result hashes, number-check result
+
+Exit codes: 0 written, 1 error (pack, network, NEAR AI), 5 refused by config.yaml / --max-usd (nothing paid),
+6 report failed the checks after one regeneration (paid, nothing written).
+"""
+import argparse
+import os
+import sys
+from decimal import Decimal
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from rs_agent import nearai, report_writer as rw, rules, spend  # noqa: E402
+
+
+def log(msg: str) -> None:
+    print(f"write-report: {msg}", file=sys.stderr, flush=True)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--order", required=True, help="order id the inference cost is booked under")
+    ap.add_argument("--pack", required=True, help="cached result pack directory")
+    ap.add_argument("--question", help="the question the report answers (default: the pack's title)")
+    ap.add_argument("--model", default=rw.DEFAULT_MODEL, help=f"NEAR AI Cloud model id (default {rw.DEFAULT_MODEL})")
+    ap.add_argument("--out", help="output directory (default: $RS_AGENT_STATE_DIR/reports/<order>)")
+    ap.add_argument("--max-tokens", type=int, default=rw.DEFAULT_MAX_TOKENS)
+    ap.add_argument("--max-usd", default=str(rw.DEFAULT_MAX_USD), help="ceiling for this run's worst case (both attempts), USD")
+    ap.add_argument("--param", action="append", default=[], help="extra query parameter a number may cite (repeatable)")
+    ap.add_argument("--force", action="store_true", help="replace an existing report.md in --out")
+    ap.add_argument("--config", help="operator rules file (default: $RS_AGENT_CONFIG or <repo>/config.yaml)")
+    a = ap.parse_args()
+
+    state = Path(os.environ.get("RS_AGENT_STATE_DIR", Path.home() / ".local/state/rs-agent"))
+    out = Path(a.out) if a.out else state / "reports" / a.order
+    try:
+        meta = rw.write_report(order_id=a.order, pack_dir=Path(a.pack), out_dir=out, client=nearai.Client(a.config),
+                               question=a.question, model=a.model, max_tokens=a.max_tokens, max_usd=Decimal(a.max_usd),
+                               extra_params=tuple(a.param), cfg_path=a.config, force=a.force, log=log)
+    except rules.Refused as r:
+        log(str(r))
+        return 5
+    except spend.LedgerCorrupt as e:
+        log(f"REFUSED (spend_ledger): {e}")
+        return 5
+    except (rw.PackError, ValueError) as e:
+        log(f"ERROR: {e}")
+        return 1
+    except rw.ReportFailed as e:
+        for at in e.attempts:
+            log(f"  attempt {at['attempt']}: {at.get('outcome')} {at.get('untraced') or at.get('problem') or ''} "
+                f"${at.get('cost_usd')} spend {str(at.get('spend_line_hash'))[:16]}")
+        log(f"FAILED: {e}")
+        return rw.EXIT_FAILED
+    except (nearai.InferenceError, nearai.NotConfigured) as e:
+        log(f"ERROR: {e}")
+        return 1
+    print(f"wrote {out / 'report.md'} (sha256 {meta['report_sha256'][:16]}…) + meta.json")
+    print(f"claim: {meta['claim']}")
+    print(f"model {meta['model']}: {meta['usage']['prompt_tokens']}+{meta['usage']['completion_tokens']} tokens, "
+          f"${meta['cost_usd']} ({'/'.join(meta['cost_sources'])}) in {len(meta['attempts'])} attempt(s); "
+          f"number check {meta['number_check']['numbers_checked']} numbers, 0 untraced; "
+          f"spend lines {', '.join(h[:16] for h in meta['spend_ledger']['lines'])}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
