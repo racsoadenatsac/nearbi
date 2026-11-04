@@ -55,3 +55,7 @@ output "ssm_secret_parameters" {
 output "payment_sweep_schedule" {
   value = aws_scheduler_schedule.payment_sweep.name
 }
+
+output "agent_user_arn" {
+  value = aws_iam_user.agent.arn
+}
