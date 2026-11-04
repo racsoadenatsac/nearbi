@@ -57,6 +57,11 @@ from . import order_loop as ol
 from . import report_html, rules
 
 TABLE, REGION, FUNCTION = "nearbi", "us-east-1", "nearbi-app"
+# The deployed Lambda's CONTENT_BUCKET / CONTENT_PREFIX (nearbi-infra var.content_bucket_name / var.content_prefix).
+# Fixed here so the agent needs no lambda:GetFunctionConfiguration (which would expose every app secret in the
+# Lambda environment); NEARBI_CONTENT_BUCKET / NEARBI_CONTENT_PREFIX override, NEARBI_CONTENT_FROM_LAMBDA=1 reads the
+# Lambda (operator SSO only).
+CONTENT_BUCKET, CONTENT_PREFIX = "nearbi-content", ""
 APP_URL = "https://nearbi.ai"
 ADMIN_TOKEN_PARAM = "/nearbi/app/ADMIN_TOKEN"
 CLAIM_SECONDS = 1800  # a claim older than this is considered abandoned (crashed tick) and may be taken over
@@ -124,11 +129,12 @@ def plan(order: dict) -> dict:
 
 # ------------------------------------------------------------------------------------------ DynamoDB (aws CLI)
 class AwsTable:
-    """Generic DynamoDB access through the aws CLI, direct egress (rs_agent.egress), SSO profile `nearbi`.
+    """Generic DynamoDB access through the aws CLI, direct egress (rs_agent.egress), profile nearbi-agent by default.
     `endpoint` points at DynamoDB Local for the integration test; `run` is injectable for offline tests."""
 
-    def __init__(self, profile: str = "nearbi", table: str = TABLE, region: str = REGION, endpoint: Optional[str] = None,
+    def __init__(self, profile: Optional[str] = None, table: str = TABLE, region: str = REGION, endpoint: Optional[str] = None,
                  run: Callable[..., Any] = subprocess.run):
+        self.profile = profile = profile or fw.aws_profile()
         self.env = egress.direct_env(AWS_PROFILE=profile, AWS_REGION=region, AWS_PAGER="")
         self.table, self.endpoint, self.run = table, endpoint, run
 
@@ -139,8 +145,8 @@ class AwsTable:
         p = self.run(cmd, capture_output=True, text=True, env=self.env, timeout=60)
         if p.returncode != 0:
             err = (p.stderr or "").strip()
-            if re.search(r"Token has expired|SSO session|sso.*(expired|login)|UnauthorizedSSOToken|refresh failed|ExpiredToken", err, re.I):
-                raise fw.Stop(EXIT_SSO, "SSO expired")
+            if fw.CREDS_ERR_RE.search(err):
+                raise fw.Stop(EXIT_SSO, fw.creds_message(self.profile))
             if "ConditionalCheckFailed" in err:
                 raise fw.ConditionFailed(err[:300])
             raise RuntimeError(f"aws {service} {args[0] if args else ''}: {err[:400]}")
@@ -151,7 +157,7 @@ class AwsTable:
             return
         p = self.run(["aws", "sts", "get-caller-identity", "--output", "json"], capture_output=True, text=True, env=self.env, timeout=60)
         if p.returncode != 0:
-            raise fw.Stop(EXIT_SSO, "SSO expired")
+            raise fw.Stop(EXIT_SSO, fw.creds_message(self.profile))
 
     def query_pk(self, pk: str) -> list[dict]:
         items, start = [], None
@@ -291,10 +297,13 @@ class AppDelivery:
         self._token: Optional[str] = None
 
     def content_location(self) -> tuple[str, str]:
-        """CONTENT_BUCKET + CONTENT_PREFIX of the deployed Lambda (only these two values are read)."""
+        """CONTENT_BUCKET + CONTENT_PREFIX of the deployed Lambda: the constants above (env overrides), or with
+        NEARBI_CONTENT_FROM_LAMBDA=1 read from the Lambda (only these two values are queried)."""
         if self._bucket is None:
             b = os.environ.get("NEARBI_CONTENT_BUCKET")
             p = os.environ.get("NEARBI_CONTENT_PREFIX")
+            if b is None and os.environ.get("NEARBI_CONTENT_FROM_LAMBDA") != "1":
+                b, p = CONTENT_BUCKET, CONTENT_PREFIX if p is None else p
             if b is None:
                 out = self.t.aws("lambda", "get-function-configuration", "--function-name", FUNCTION, "--query",
                                  "[Environment.Variables.CONTENT_BUCKET, Environment.Variables.CONTENT_PREFIX]", table=False)

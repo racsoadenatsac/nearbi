@@ -13,7 +13,7 @@
 
 Testnet only (mock USDC); mainnet is never touched. Needs: bin/demo-setup once (demo customer), the rs-payments
 and rs-ledger checkouts next to this repo, the NEAR AI Cloud key (protected secret), Docker (rs-ledger bin/py)
-and the `nearbi` AWS SSO session for the ledger upload. Exit: 0 ok, 1 failed step, 5 refused by the rules.
+and AWS credentials for the ledger upload (profile nearbi-agent, or AWS_PROFILE=nearbi). Exit: 0 ok, 1 failed step, 5 refused by the rules.
 """
 import argparse
 import json
@@ -211,14 +211,14 @@ def main():
     else:
         out.step(6, f"Public ledger: rs-ledger bin/publish --network {LEDGER_NETWORK}")
         # direct egress like near-cli: the aws-crt S3 client rejects the gateway proxy's TLS CA, and S3 needs no proxied secret
-        lenv = egress.direct_env(AWS_PROFILE=os.environ.get("AWS_PROFILE", "nearbi"), LEDGER_CUTOFF_BLOCKS="1",
+        lenv = egress.direct_env(AWS_PROFILE=fw.aws_profile(), LEDGER_CUTOFF_BLOCKS="1",
                     PUBLISH_NO_WAIT="1", LEDGER_EXTRA_TXS=",".join(h for _, h in links))
         want = {"sale": 1, "payout": 2, "cost": len(order["onchain"]["record_cost"]), "report_anchor": 1}
         for attempt in (1, 2):
             rc, lines = stream(["bin/publish", "--network", LEDGER_NETWORK], out, env=lenv, cwd=RS_LEDGER,
                                keep=lambda l: re.match(r"^(network|append-only|published|invalidation|\d{3} https|reconcile|build:|SSO|upload|.*FAILED|.*mismatch)", l.strip()) is not None)
             if rc != 0:
-                out(f"  ERROR: bin/publish exit {rc} ({'SSO expired: the operator runs aws sso login --profile nearbi' if rc == 3 else 'see above'})")
+                out(f"  ERROR: bin/publish exit {rc} ({fw.creds_message(fw.aws_profile()) if rc == 3 else 'see above'})")
                 ledger_ok = False
                 break
             rows = [json.loads(l) for l in (RS_LEDGER / f"out/{LEDGER_NETWORK}/ledger/ledger.jsonl").read_text().splitlines() if l.strip()]

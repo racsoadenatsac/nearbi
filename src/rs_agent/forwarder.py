@@ -5,7 +5,8 @@ Runs on the operator's Mac. The forwarder's function-call key (methods [forward]
 forwarder.nearbi.near, no deposit) is read from the macOS Keychain into process memory and handed to
 near-cli through an anonymous pipe (/dev/fd/N): it is never written to disk, never on argv, never logged.
 
-Stdlib only (Python 3.9+). External tools: `aws` (SSO profile `nearbi`), `security`, near-cli-rs.
+Stdlib only (Python 3.9+). External tools: `aws` (profile `nearbi-agent`: IAM user key from the Keychain via
+`bin/aws-keychain-credentials`; `AWS_PROFILE=nearbi` = the operator's SSO), `security`, near-cli-rs.
 See README.md for the full procedure, exit codes and limits.
 """
 from __future__ import annotations
@@ -49,8 +50,39 @@ B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 EXIT_OK, EXIT_ERROR, EXIT_ATTENTION, EXIT_SSO, EXIT_TOPUP, EXIT_REFUSED = 0, 1, 2, 3, 4, 5  # 5 = an operator rule (config.yaml) refused
 
 
+# ------------------------------------------------------------------------------------------ AWS identity
+# Default: the unattended IAM user nearbi-agent (nearbi-infra tofu/agent.tf), whose access key lives only in the
+# Keychain item nearbi-agent-aws and reaches the aws CLI through credential_process (bin/aws-keychain-credentials).
+# AWS_PROFILE (or --profile) overrides it, e.g. AWS_PROFILE=nearbi for the operator's SSO session.
+DEFAULT_AWS_PROFILE = "nearbi-agent"
+SSO_AWS_PROFILE = "nearbi"
+AGENT_KEYCHAIN_ITEM = "nearbi-agent-aws"
+# stderr of an aws call whose credentials are expired, invalid, revoked or missing (exit 3). AccessDenied is not
+# here: a valid key without permission is a policy problem (exit 1).
+CREDS_ERR_RE = re.compile(
+    r"Token has expired|SSO session|sso.*(expired|login)|UnauthorizedSSOToken|refresh failed|ExpiredToken|"
+    r"InvalidClientTokenId|SignatureDoesNotMatch|security token included in the request is (invalid|expired)|"
+    r"Unable to locate credentials|credential_process|custom-process|Error when retrieving credentials|"
+    r"aws-keychain-credentials|InvalidAccessKeyId|AuthFailure", re.I)
+
+
+def aws_profile() -> str:
+    """The AWS profile the agent uses: $AWS_PROFILE if set, else nearbi-agent."""
+    return os.environ.get("AWS_PROFILE") or DEFAULT_AWS_PROFILE
+
+
+def creds_message(profile: str) -> str:
+    """The exit-3 line: what is wrong and who fixes it."""
+    if profile == SSO_AWS_PROFILE:
+        return f"SSO expired (profile {profile}): the operator runs `aws sso login --profile {profile}` (the agent never does)"
+    if profile == DEFAULT_AWS_PROFILE:
+        return (f"AWS key invalid or missing (profile {profile}: IAM user nearbi-agent, Keychain item {AGENT_KEYCHAIN_ITEM}); "
+                f"the operator rotates it (README \"Agent identity\"), or runs with AWS_PROFILE={SSO_AWS_PROFILE} meanwhile")
+    return f"AWS credentials invalid, expired or missing (profile {profile})"
+
+
 class Stop(Exception):
-    """Abort the whole run (preflight failure, SSO expired, top-up needed)."""
+    """Abort the whole run (preflight failure, AWS credentials invalid/expired, top-up needed)."""
 
     def __init__(self, code: int, message: str):
         super().__init__(message)
@@ -137,10 +169,12 @@ MARK_FORWARDED_CONDITION = "attribute_exists(PK) AND (attribute_not_exists(forwa
 
 
 class Dynamo:
-    """DynamoDB through the aws CLI (operator SSO profile). Read: FWDQ queue + PAY# items. Write: mark forwarded."""
+    """DynamoDB through the aws CLI (profile nearbi-agent by default). Read: FWDQ queue + PAY# items.
+    Write: mark forwarded (UpdateItem PAY#), dequeue (DeleteItem FWDQ)."""
 
-    def __init__(self, profile: str = "nearbi", table: str = TABLE, region: str = REGION):
+    def __init__(self, profile: Optional[str] = None, table: str = TABLE, region: str = REGION):
         # direct egress: DynamoDB/STS need no proxied secret (rs_agent.egress)
+        self.profile = profile = profile or aws_profile()
         self.env = egress.direct_env(AWS_PROFILE=profile, AWS_REGION=region, AWS_PAGER="")
         self.table = table
 
@@ -149,8 +183,8 @@ class Dynamo:
                            capture_output=True, text=True, env=self.env, timeout=60)
         if p.returncode != 0:
             err = p.stderr.strip()
-            if re.search(r"Token has expired|SSO session|sso.*(expired|login)|UnauthorizedSSOToken|refresh failed|ExpiredToken", err, re.I):
-                raise Stop(EXIT_SSO, "SSO expired")
+            if CREDS_ERR_RE.search(err):
+                raise Stop(EXIT_SSO, creds_message(self.profile))
             if "ConditionalCheckFailedException" in err:
                 raise ConditionFailed(err[:300])
             raise RuntimeError(f"aws dynamodb {args[0]}: {err[:400]}")
@@ -159,7 +193,7 @@ class Dynamo:
     def check_sso(self) -> None:
         p = subprocess.run(["aws", "sts", "get-caller-identity", "--output", "json"], capture_output=True, text=True, env=self.env, timeout=60)
         if p.returncode != 0:
-            raise Stop(EXIT_SSO, "SSO expired")
+            raise Stop(EXIT_SSO, creds_message(self.profile))
 
     def forward_queue(self) -> list[dict]:
         out = self._aws("query", "--key-condition-expression", "PK = :pk",

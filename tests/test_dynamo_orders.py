@@ -588,7 +588,7 @@ class AwsTableAdapter(unittest.TestCase):
         self.assertEqual(cmd[:3], ["aws", "dynamodb", "update-item"])
         self.assertIn(do.CLAIM_CONDITION, cmd)
         self.assertNotIn("HTTPS_PROXY", kw["env"])
-        self.assertEqual(kw["env"]["AWS_PROFILE"], "nearbi")
+        self.assertEqual(kw["env"]["AWS_PROFILE"], os.environ.get("AWS_PROFILE") or "nearbi-agent")
         vals = json.loads(cmd[cmd.index("--expression-attribute-values") + 1])
         self.assertEqual(vals[":nul"], {"S": "NULL"})
         self.assertEqual(vals[":until"], {"N": str(5 + do.CLAIM_SECONDS)})
@@ -723,7 +723,7 @@ class Tick(unittest.TestCase):
 
     def test_help_documents_exit_codes(self):
         out = subprocess.run([sys.executable, str(ROOT / "bin/agent-tick"), "--help"], capture_output=True, text=True).stdout
-        for s in ("3 SSO expired", "5 refused", "4 top up", "2 a payment"):
+        for s in ("3 AWS credentials invalid", "5 refused", "4 top up", "2 a payment"):
             self.assertIn(s, out)
 
 
@@ -766,6 +766,72 @@ class MarkForwardedCli(Base):
         with self.assertRaises(fw.Stop) as c:
             r.mark_forwarded(PID)
         self.assertEqual(c.exception.code, 5)
+
+
+# ------------------------------------------------------------------------------------------ AWS identity (v0.5.1)
+class AwsIdentity(unittest.TestCase):
+    def setUp(self):
+        self._prof = os.environ.pop("AWS_PROFILE", None)
+
+    def tearDown(self):
+        os.environ.pop("AWS_PROFILE", None)
+        if self._prof is not None:
+            os.environ["AWS_PROFILE"] = self._prof
+
+    def fake(self, rc, err):
+        return lambda cmd, **kw: SimpleNamespace(returncode=rc, stdout="", stderr=err)
+
+    def test_default_profile_is_nearbi_agent_and_overridable(self):
+        self.assertEqual(fw.aws_profile(), "nearbi-agent")
+        self.assertEqual(do.AwsTable().env["AWS_PROFILE"], "nearbi-agent")
+        self.assertEqual(fw.Dynamo().env["AWS_PROFILE"], "nearbi-agent")
+        os.environ["AWS_PROFILE"] = "nearbi"
+        self.assertEqual(do.AwsTable().env["AWS_PROFILE"], "nearbi")
+        self.assertEqual(fw.Dynamo().env["AWS_PROFILE"], "nearbi")
+        self.assertEqual(do.AwsTable(profile="x").env["AWS_PROFILE"], "x")
+
+    def test_invalid_or_missing_key_is_exit_3_with_rotation_hint(self):
+        for err in ("An error occurred (InvalidClientTokenId) when calling the Query operation: The security token included in the request is invalid.",
+                    "Error when retrieving credentials from custom-process: aws-keychain-credentials: Keychain item nearbi-agent-aws not readable",
+                    "Unable to locate credentials. You can configure credentials by running \"aws configure\".",
+                    "An error occurred (SignatureDoesNotMatch) when calling the GetItem operation"):
+            t = do.AwsTable(run=self.fake(255, err))
+            with self.assertRaises(fw.Stop) as c:
+                t.query_pk("ORDERQ")
+            self.assertEqual(c.exception.code, 3, err)
+            self.assertIn("AWS key invalid or missing", str(c.exception))
+            self.assertIn("nearbi-agent-aws", str(c.exception))
+
+    def test_sso_profile_keeps_the_sso_message(self):
+        t = do.AwsTable(profile="nearbi", run=self.fake(255, "Error when retrieving token from sso: Token has expired and refresh failed"))
+        with self.assertRaises(fw.Stop) as c:
+            t.check_sso()
+        self.assertEqual(c.exception.code, 3)
+        self.assertIn("aws sso login --profile nearbi", str(c.exception))
+
+    def test_access_denied_is_an_error_not_exit_3(self):
+        t = do.AwsTable(run=self.fake(254, "An error occurred (AccessDeniedException) when calling the Scan operation: User: "
+                                           "arn:aws:iam::1:user/nearbi-agent is not authorized to perform: dynamodb:Scan"))
+        with self.assertRaises(RuntimeError):
+            t.query_pk("ORDERQ")
+
+    def test_content_location_needs_no_lambda_call(self):
+        calls = []
+        t = do.AwsTable(run=lambda cmd, **kw: calls.append(cmd) or SimpleNamespace(returncode=0, stdout="[]", stderr=""))
+        for k in ("NEARBI_CONTENT_BUCKET", "NEARBI_CONTENT_PREFIX", "NEARBI_CONTENT_FROM_LAMBDA"):
+            os.environ.pop(k, None)
+        self.assertEqual(do.AppDelivery(t).content_location(), ("nearbi-content", ""))
+        self.assertEqual(calls, [])
+
+    def test_keychain_helper_fails_closed_without_output(self):
+        p = subprocess.run([sys.executable, str(Path(__file__).resolve().parent.parent / "bin/aws-keychain-credentials"),
+                            "rs-agent-test-no-such-item"], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 1)
+        self.assertEqual(p.stdout, "")
+        self.assertIn("not readable", p.stderr)
+        p = subprocess.run([sys.executable, str(Path(__file__).resolve().parent.parent / "bin/aws-keychain-credentials"),
+                            "bad name;rm"], capture_output=True, text=True)
+        self.assertEqual((p.returncode, p.stdout), (1, ""))
 
 
 if __name__ == "__main__":

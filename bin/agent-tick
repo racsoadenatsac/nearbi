@@ -7,11 +7,12 @@
                               write, no signing broadcast, no paid inference
 Options: --max-orders N, --max-usd X (passed to agent-orders), --config F (both steps), --skip-forwarder.
 
-Step 2 always runs after step 1, except when step 1 says SSO expired (3) or refused by config.yaml (5): then
+Step 2 always runs after step 1, except when step 1 says AWS credentials invalid (3) or refused by config.yaml (5): then
 the tick stops there. Orders are only fulfilled once forwardedTx is set, so a forwarder problem (1, 2, 4)
 can delay an order but never lets one through unsplit.
 
-Exit code (most urgent first): 3 SSO expired (operator: `aws sso login --profile nearbi`) > 5 refused by
+Exit code (most urgent first): 3 AWS credentials invalid/missing (profile nearbi-agent: rotate the Keychain key,
+README "Agent identity"; AWS_PROFILE=nearbi: `aws sso login --profile nearbi`) > 5 refused by
 config.yaml (kill switch, split mismatch, daily cap) > 1 error > 4 top up forwarder.nearbi.near > 2 a payment
 or order needs a human > 0 ok / nothing to do. The log prints each step's own code.
 A lock (~/.local/state/rs-agent/agent-tick.lock) makes an overlapping tick exit 0 at once. No launchd/cron is
