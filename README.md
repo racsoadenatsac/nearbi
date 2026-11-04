@@ -8,6 +8,7 @@ contracts, published per network:
 |---|---|---|---|
 | **mainnet** (default, live, real USDC) | `splitter.nearbi.near` + `forwarder.nearbi.near`, token Circle USDC `17208628…6133a1` | **https://nearbi.ai/ledger/** | `data/mainnet/` |
 | testnet (demo, mock USDC) | `splitter.nearbi-agent.testnet` | https://nearbi.ai/ledger/testnet/ | `data/testnet/` |
+| testnet-v2 (`make demo`, mock USDC) | `splitter-v2.nearbi-agent.testnet` + `forwarder-v2.nearbi-agent.testnet` | https://nearbi.ai/ledger/testnet-v2/ | `data/testnet-v2/` |
 
 Part of the NEAR Hackathon one-agent research shop (Track 04: "log every sale, cost and payout to a
 public ledger page"). See `rs-docs/ARCHITECTURE.md` and `rs-payments/README.md` for the contract.
@@ -139,7 +140,25 @@ There is no scheduler in this repo; the agent calls publish after anything that 
 cd ~/projects/research-shop/rs-ledger && AWS_PROFILE=nearbi bin/publish      # mainnet (sales, forwards, costs)
 ```
 
-(testnet only changes if someone runs the testnet demo again: `bin/publish --network testnet`.)
+(testnet only changes if someone runs the old testnet demo again: `bin/publish --network testnet`.)
+
+### testnet-v2: the `make demo` ledger (v0.3.0)
+
+rs-agent `make demo` runs the whole shop on the v2 testnet contracts (rs-payments `deploy/testnet-v2.json`) and ends
+with `bin/publish --network testnet-v2` → **https://nearbi.ai/ledger/testnet-v2/**. It is a separate page and chain
+(`data/testnet-v2/`, S3 prefix `ledger/testnet-v2/`), so the published v1 testnet ledger stays untouched and
+append-only. Like mainnet it includes the forwarder's events and the forwarder reconciliation; RPC is FastNEAR
+(`rpc.testnet.fastnear.com`, archival fallback), because the rate-limited `rpc.testnet.near.org` made a cold build take
+over 2 minutes (warm: ~6 s). The demo calls publish with:
+
+- `LEDGER_EXTRA_TXS=<hash,…>`: the txs it just sent are unioned into discovery as seeds, so a cost or anchor row is not
+  missed while FastNEAR's index catches up (those rows don't move `get_stats()`, so reconciliation alone would not notice);
+- `LEDGER_CUTOFF_BLOCKS=1`: every demo tx is already `FINAL`;
+- `PUBLISH_NO_WAIT=1`: the CloudFront invalidation is created but not awaited (files are `max-age=60`).
+
+`verify_ledger.py` infers `testnet-v2` from the `-v2.nearbi-agent.testnet` accounts in the rows (`--network` overrides).
+Note: the gateway's TLS-intercepting egress proxy breaks the aws-crt S3 upload (`AWS_IO_TLS_ERROR_NEGOTIATION_FAILURE`);
+run publish with `HTTPS_PROXY`/`HTTP_PROXY` unset there (the demo does).
 
 - run it after the sale's tx is final (`demo.sh` and the agent already wait for `FINAL`); the cutoff
   and retries cover indexer lag, so a publish right after a sale may need up to ~1-2 minutes

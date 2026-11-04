@@ -3,7 +3,10 @@
 #
 #   AWS_PROFILE=nearbi bin/publish                      # mainnet -> https://nearbi.ai/ledger/
 #   AWS_PROFILE=nearbi bin/publish --network testnet    # testnet -> https://nearbi.ai/ledger/testnet/
+#   AWS_PROFILE=nearbi bin/publish --network testnet-v2 # make demo deployment -> https://nearbi.ai/ledger/testnet-v2/
 #   bin/publish [--network …] --dry-run                 # build + show what would be uploaded
+# Env: PUBLISH_NO_WAIT=1 skips waiting for the CloudFront invalidation; LEDGER_EXTRA_TXS=<hash,…> seeds discovery
+# with txs just sent; LEDGER_CUTOFF_BLOCKS / LEDGER_RETRIES as in bin/build-ledger.
 #
 # Order of operations (nothing is uploaded unless every step passes):
 #   1. AWS identity check; an expired SSO session exits 3 with "SSO expired" (never logs in)
@@ -83,7 +86,11 @@ path="/${PREFIX%/}"
 inv=$(aws cloudfront create-invalidation --distribution-id "$DIST" --paths "$path/*" "$path" \
   --query 'Invalidation.Id' --output text) || { echo "invalidation failed" >&2; exit 2; }
 echo "invalidation $inv"
-aws cloudfront wait invalidation-completed --distribution-id "$DIST" --id "$inv" || true
+if [ "${PUBLISH_NO_WAIT:-0}" = 1 ]; then
+  echo "invalidation not awaited (PUBLISH_NO_WAIT=1): the edge serves the new files within ~1 min"
+else
+  aws cloudfront wait invalidation-completed --distribution-id "$DIST" --id "$inv" || true
+fi
 for p in "" ledger.jsonl ledger.json verify_ledger.py; do
   printf '%s %s\n' "$(curl -s -o /dev/null -w '%{http_code}' "$SITE$p")" "$SITE$p"
 done
