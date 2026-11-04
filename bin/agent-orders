@@ -7,10 +7,10 @@
 
 Options: --max-orders N (orders auto-fulfilled per pass, default 3), --max-usd X (write-report worst case per
 order, default 0.25), --config F (operator rules, default <repo>/config.yaml; must say network: mainnet),
---profile P (AWS SSO profile, default nearbi), --app-url U (default https://nearbi.ai).
+--profile P (AWS profile, default $AWS_PROFILE or nearbi-agent; nearbi = operator SSO), --app-url U (default https://nearbi.ai).
 
-Exit codes: 0 ok / nothing to do, 1 error, 2 an order newly needs a human, 3 SSO expired
-(`aws sso login --profile nearbi`, by the operator), 5 refused by config.yaml (kill switch, daily cap, network).
+Exit codes: 0 ok / nothing to do, 1 error, 2 an order newly needs a human, 3 AWS credentials
+invalid/missing (nearbi-agent key: rotate, README "Agent identity"; AWS_PROFILE=nearbi: SSO expired), 5 refused by config.yaml (kill switch, daily cap, network).
 See README "DynamoDB order source".
 """
 import argparse
@@ -35,7 +35,7 @@ def main() -> int:
     ap.add_argument("--max-orders", type=int, default=3)
     ap.add_argument("--max-usd", default="0.25")
     ap.add_argument("--config")
-    ap.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "nearbi"))
+    ap.add_argument("--profile", default=fw.aws_profile())
     ap.add_argument("--app-url", default=os.environ.get("NEARBI_URL", do.APP_URL))
     a = ap.parse_args()
 

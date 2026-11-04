@@ -33,8 +33,9 @@ bin/forwarder-runner --order <paymentId> --amount <USDC base units>   # a paymen
 bin/forwarder-runner --sign-check          # preflight + near-cli signs forward(<random id>, 1), display only, never sent
 ```
 
-Needs: macOS `security` (Keychain item `nearbi-mainnet-fc-forwarder.nearbi.near`), `aws` CLI with the SSO
-profile `nearbi` (`AWS_PROFILE`, default `nearbi`), near-cli-rs (`NEAR_CLI`, default
+Needs: macOS `security` (Keychain item `nearbi-mainnet-fc-forwarder.nearbi.near`), `aws` CLI with the profile
+`nearbi-agent` (`AWS_PROFILE`, default `nearbi-agent`, see [Agent identity](#agent-identity-aws-v051); `AWS_PROFILE=nearbi`
+= the operator's SSO), near-cli-rs (`NEAR_CLI`, default
 `../rs-payments/.tools/bin/near`), Python ≥ 3.9 (stdlib only). Nothing is installed as a service: no
 launchd/cron here, the main agent owns scheduling (e.g. `--once` every 1–5 minutes).
 
@@ -43,7 +44,7 @@ launchd/cron here, the main agent owns scheduling (e.g. `--once` every 1–5 min
 | 0 | done, or nothing to do | |
 | 1 | stopped on an error (config mismatch, paused contract, Keychain key mismatch, near-cli gave no tx hash) | read the log; check `get_order` before rerunning |
 | 2 | at least one order needs a human (`ATTENTION:` lines); the others were processed | see below |
-| 3 | `SSO expired` | the operator runs `aws sso login --profile nearbi` (the agent never does) |
+| 3 | AWS credentials invalid or missing | profile `nearbi-agent`: the Keychain key was revoked/deleted/rotated away → [rotate](#rotate-or-revoke-the-key); with `AWS_PROFILE=nearbi`: SSO expired → the operator runs `aws sso login --profile nearbi` (the agent never does) |
 | 4 | **top up forwarder.nearbi.near** (free NEAR < 0.16), or the key allowance is < 0.15 NEAR | send NEAR to `forwarder.nearbi.near` from any account; allowance: see Limits |
 | 5 | **refused by config.yaml**: kill switch on, split mismatch (`ALERT:`), `network` not mainnet, invalid config | read the `REFUSED (<rule>)` line; see [Operator rules](#operator-rules-configyaml). `--loop` keeps running and resumes by itself |
 
@@ -77,7 +78,7 @@ the DynamoDB writes (`UpdateItem`/`DeleteItem`).
 
 ### What one pass does
 
-1. **Preflight**: SSO valid; `forwarder.get_config()` has splitter `splitter.nearbi.near`, token USDC, agent
+1. **Preflight**: AWS credentials valid; `forwarder.get_config()` has splitter `splitter.nearbi.near`, token USDC, agent
    = itself, not paused (a pending timelocked change is printed as a warning); the splitter accepts USDC and
    isn't paused; the onchain access key `ed25519:5xFkg…wSi` is a function-call key for `[forward]` on the
    forwarder; the Keychain secret's public half equals that key (checked in memory, nothing printed).
@@ -114,12 +115,10 @@ Journal: `~/.local/state/rs-agent/forwarder-journal.jsonl` (no secrets): `forwar
 
 ### Write path and IAM
 
-The runner uses the operator's SSO session (`AWS_PROFILE=nearbi`, AdministratorAccess). Its only writes
-are the conditional `UpdateItem` on `PAY#<id>` (`forwardedTx`, `forwardedAt`, `forwardedAmount`) and
-`DeleteItem` on `FWDQ/PAY#<id>`. No long-lived IAM user or access key was created for it, so it stops with
-`SSO expired` (exit 3) when the session ends and the operator logs in again. A narrower role
-(`dynamodb:Query/GetItem` on the table, `UpdateItem` on `PAY#*`, `DeleteItem` on `FWDQ`) would be the next
-step if it runs unattended for long. The journal is the local record if DynamoDB is unreachable.
+Since v0.5.1 the runner uses the IAM user `nearbi-agent` (see [Agent identity](#agent-identity-aws-v051)), not the
+operator's SSO session. Its only writes are the conditional `UpdateItem` on `PAY#<id>` (`forwardedTx`,
+`forwardedAt`, `forwardedAmount`) and `DeleteItem` on `FWDQ/PAY#<id>`, and that is all IAM lets it write
+(`dynamodb:LeadingKeys` conditions). The journal is the local record if DynamoDB is unreachable.
 
 ### Inference / BigQuery cost (`record_cost`)
 
@@ -370,7 +369,7 @@ Recorded runs (full transcripts in `docs/`): **76.3 s** (`docs/demo-run-20261104
 | total | **76.3** | margin 26.098199 = treasury share − inference (89.99 % of revenue; testnet gas not counted) |
 
 Needs: `make demo-setup` once; rs-payments and rs-ledger checked out next to this repo; the NEAR AI Cloud key
-(protected secret); Docker running (rs-ledger `bin/py`; `colima start`); the `nearbi` AWS SSO session for the ledger
+(protected secret); Docker running (rs-ledger `bin/py`; `colima start`); AWS credentials (profile `nearbi-agent`) for the ledger
 upload (`--no-publish` skips step 6). Mainnet is never touched: every account is `*.testnet`, the rules file says
 `network: testnet`, and forwarder-runner is not used (it stays mainnet-only).
 
@@ -477,7 +476,10 @@ the customer, and this repo doesn't either.
    local order file (a publish that failed is retried before the onchain step; write-report is never paid twice).
 
 The admin token is read from SSM `/nearbi/app/ADMIN_TOKEN` into memory for the API call (header only; never printed,
-logged or written). S3, DynamoDB, SSM, Lambda (only `CONTENT_BUCKET`/`CONTENT_PREFIX` are read) and the admin API go
+logged or written). The content bucket is `nearbi-content`, prefix empty (`dynamo_orders.CONTENT_BUCKET`/`CONTENT_PREFIX`,
+the Lambda's `CONTENT_BUCKET`/`CONTENT_PREFIX`; override with `NEARBI_CONTENT_BUCKET`/`NEARBI_CONTENT_PREFIX`, or
+`NEARBI_CONTENT_FROM_LAMBDA=1` to read them from the Lambda with the operator's SSO; the agent's IAM user can't, because
+`lambda:GetFunctionConfiguration` would expose every app secret). S3, DynamoDB, SSM and the admin API go
 direct (`egress.direct_env`, no proxy); NEAR AI Cloud keeps the proxy.
 
 **needs_human**: the order stays `paid` on the customer's page and on `bin/list-orders` (nearbi-app). Fulfil it by
@@ -501,7 +503,7 @@ journal holds a tx that verifies onchain (forwarded + sale events, onchain amoun
 | 0 | done / nothing to do |
 | 1 | an error (either step); read the log |
 | 2 | a payment or order needs a human (`ATTENTION` lines) |
-| 3 | SSO expired: the operator runs `aws sso login --profile nearbi`; the tick stops before the order step |
+| 3 | AWS credentials invalid or missing (`nearbi-agent` key revoked/deleted → [rotate](#rotate-or-revoke-the-key); `AWS_PROFILE=nearbi`: SSO expired); the tick stops before the order step |
 | 4 | top up `forwarder.nearbi.near` (forwarder-runner); the order step still ran |
 | 5 | refused by config.yaml (kill switch, split mismatch, daily cap, network); the tick stops there |
 
@@ -521,3 +523,77 @@ claimed), per-report cap, `--max-orders`, mainnet only, SSO exit 3; forwardedTx 
 tx); **dry-run writes nothing**; aws CLI argv + direct egress; admin API token handling; S3 never overwrites; HTML
 escaping; agent-tick exit priority; `forwarder-runner --mark-forwarded` (dry-run, verify, kill switch). `tests/test_dynamo_local.py` (6, `bin/test-dynamo-local.sh`): the same
 conditions on DynamoDB Local, including the old forwarder condition failing on the app's NULL.
+
+## Agent identity: AWS (v0.5.1)
+
+The unattended agent (`bin/agent-tick`, `bin/forwarder-runner`, `bin/agent-orders`, rs-ledger `bin/publish`, and the ledger
+step of `bin/demo`) uses the IAM user **`nearbi-agent`**, AWS profile `nearbi-agent`. It doesn't need anyone to log in
+and has no expiry. The operator's SSO profile `nearbi` (AdministratorAccess) is no longer used by default: `AWS_PROFILE=nearbi`
+(or `--profile nearbi`) still selects it.
+
+- **IAM**: nearbi-infra `tofu/agent.tf` (user + inline policy `nearbi-agent-least-privilege`; no console login, no group).
+  The policy allows only the aws CLI calls these scripts make:
+
+  | Statement | Actions | Resource / condition |
+  |---|---|---|
+  | TableRead | `dynamodb:Query`, `dynamodb:GetItem` | table `nearbi`; `dynamodb:LeadingKeys` ∈ `FWDQ`, `ORDERQ`, `PAY#*`, `ACCT#*` |
+  | PaymentUpdate | `dynamodb:UpdateItem` | table `nearbi`; LeadingKeys `PAY#*` |
+  | ForwardQueueDelete | `dynamodb:DeleteItem` | table `nearbi`; LeadingKeys `FWDQ` |
+  | AdminTokenRead | `ssm:GetParameter` | `parameter/nearbi/app/ADMIN_TOKEN` (aws/ssm key: its key policy covers the decrypt) |
+  | AdminTokenPresence | `ssm:DescribeParameters` | `*` (no resource-level support; metadata only; dry-run check) |
+  | DeliverableWrite | `s3:GetObject`, `s3:PutObject` | `nearbi-content/reports/qa-*` |
+  | DeliverableList | `s3:ListBucket` | `nearbi-content` (so HeadObject of a missing key is 404, not 403) |
+  | LedgerWrite | `s3:PutObject`, `s3:DeleteObject` | `nearbi-site/ledger/*` |
+  | LedgerList | `s3:ListBucket` | `nearbi-site`, `s3:prefix` `ledger/`, `ledger/*` |
+  | LedgerInvalidate | `cloudfront:CreateInvalidation`, `cloudfront:GetInvalidation` | distribution `E2UZ7XHTGD4UEU` |
+  | Identity | `sts:GetCallerIdentity` | `*` (always allowed anyway) |
+
+  Everything else is denied, e.g. `dynamodb:DeleteTable`/`Scan`/`PutItem`, `UpdateItem` outside `PAY#`, other SSM
+  parameters (`SESSION_SECRET`), `lambda:*`, `iam:*`, other S3 keys and buckets, the tofu state bucket (verified 2026-11-04).
+- **Key**: one access key, created with `aws iam create-access-key` (not by tofu, so the secret is not in the tofu state)
+  and piped directly into the gateway user's **login Keychain**: generic password, service `nearbi-agent-aws`, account
+  `nearbi-agent`, value `<AccessKeyId>:<SecretAccessKey>`. It is never on disk, argv or in logs.
+- **Profile** (`~/.aws/config`):
+
+  ```ini
+  [profile nearbi-agent]
+  credential_process = /path/to/rs-agent/bin/aws-keychain-credentials nearbi-agent-aws
+  region = us-east-1
+  output = json
+  ```
+
+  `bin/aws-keychain-credentials` reads the item with `security find-generic-password -w` and prints the
+  `credential_process` JSON (Version 1) to the aws CLI's pipe. On any failure it prints a one-line reason with no secret
+  and exits 1.
+- **Exit 3** now means the key is invalid or missing: rs-agent matches `InvalidClientTokenId`, `SignatureDoesNotMatch`,
+  `Unable to locate credentials`, a failing `credential_process` and the SSO patterns. A valid key that lacks a
+  permission (`AccessDenied`) is exit 1, which points to a policy problem.
+
+Check: `aws sts get-caller-identity --profile nearbi-agent` → `arn:aws:iam::916489698349:user/nearbi-agent`.
+
+### Rotate or revoke the key
+
+Run with the operator's SSO (`AWS_PROFILE=nearbi`). An IAM user can hold 2 keys, so rotation causes no downtime:
+
+```bash
+export AWS_PROFILE=nearbi
+aws iam list-access-keys --user-name nearbi-agent                 # note the current AccessKeyId (OLD)
+# 1. new key -> Keychain, secret only through pipes (python reads the JSON, `security -i` reads the command on stdin)
+aws iam create-access-key --user-name nearbi-agent --output json | python3 -c '
+import json, subprocess, sys
+k = json.load(sys.stdin)["AccessKey"]
+cmd = "add-generic-password -U -a nearbi-agent -s nearbi-agent-aws -l \"nearbi-agent AWS access key\" -w \"%s:%s\"\n" % (k["AccessKeyId"], k["SecretAccessKey"])
+r = subprocess.run(["/usr/bin/security", "-i"], input=cmd, text=True, capture_output=True)
+print("stored", k["AccessKeyId"] if r.returncode == 0 else "FAILED: delete that key")'
+# 2. prove the new key (IAM is eventually consistent: allow ~10 s)
+AWS_PROFILE=nearbi-agent aws sts get-caller-identity && bin/agent-tick --dry-run
+# 3. retire the old one
+aws iam update-access-key --user-name nearbi-agent --access-key-id OLD --status Inactive   # reversible
+aws iam delete-access-key --user-name nearbi-agent --access-key-id OLD                     # after a few good ticks
+```
+
+`-U` replaces the existing Keychain item in place. **Revoke** at once (suspected leak):
+`aws iam update-access-key --user-name nearbi-agent --access-key-id <id> --status Inactive` (or `delete-access-key`).
+The agent then exits 3 on its next tick and the shop stops acting. Meanwhile `AWS_PROFILE=nearbi bin/agent-tick`
+runs under the operator's SSO. To remove the identity completely: delete the keys, then remove `tofu/agent.tf` in
+nearbi-infra and apply. Last-used check: `aws iam get-access-key-last-used --access-key-id <id>`.
