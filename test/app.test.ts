@@ -152,6 +152,7 @@ describe("gating over HTTP", () => {
   it("presign TTL is configurable", async () => {
     const t2 = setup({ PRESIGN_TTL_SECONDS: "60" });
     t2.content.put("reports/r/x.pdf", "%PDF");
+    await t2.repo.putReport({ slug: "r", title: "R", summary: "", publishedAt: "2026-11-01", isFree: false, pdfFile: null });
     const { cookie } = await t2.signIn();
     await t2.subscribe(cookie);
     const loc = new URL((await t2.req("/reports/r/x.pdf", { cookie })).headers.get("location")!);

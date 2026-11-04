@@ -1,6 +1,6 @@
 // One behavioural contract for every Repository implementation (memory always, DynamoDB Local optionally).
 import { describe, expect, it } from "vitest";
-import type { OrderRecord, PaymentRecord, Repository } from "../../src/ports/repository";
+import { DeliverableSlugTaken, type OrderRecord, type PaymentRecord, type Repository } from "../../src/ports/repository";
 
 const pay = (id: string, accountId = "alice.near", over: Partial<PaymentRecord> = {}): PaymentRecord => ({
   id,
@@ -42,6 +42,8 @@ const order = (paymentId: string, accountId = "alice.near", over: Partial<OrderR
   amountUsd: 29,
   status: "paid",
   deliveryUrl: null,
+  deliverable: null,
+  shared: false,
   createdAt: 1100,
   updatedAt: 1100,
   ...over,
@@ -238,6 +240,42 @@ export function repositoryContract(name: string, make: () => Promise<Repository>
       await r.replaceRegistryToken(t("b1", "bob.near"));
       expect(await r.getRegistryToken("h2")).toMatchObject({ revoked: false }); // other accounts unaffected
       expect(await r.getRegistryToken("missing")).toBeNull();
+    });
+
+    it("order deliverables: attached with the order update, indexed by slug, one order per slug, renames free the old slug", async () => {
+      const r = await make();
+      for (const id of ["d1", "d2"]) {
+        await r.createPayment(oneOff(id));
+        await r.applyOrderPayment({ paymentId: id, txHash: `tx-${id}`, nowSec: 1100, order: order(id) });
+      }
+      const dl = { slug: "qa-d1", title: "T", summary: "S", contentPrefix: "reports/qa-d1/", pdfFile: "R.pdf" };
+      expect(await r.getOrderByDeliverable("qa-d1")).toBeNull();
+      const done = await r.updateOrder("d1", { status: "delivered", deliveryUrl: "/reports/qa-d1/", deliverable: dl, nowSec: 1200 });
+      expect(done).toEqual(order("d1", "alice.near", { status: "delivered", deliveryUrl: "/reports/qa-d1/", deliverable: dl, updatedAt: 1200 }));
+      expect(await r.getOrderByDeliverable("qa-d1")).toEqual(done);
+      expect(await r.getOrder("d1")).toEqual(done);
+      await expect(r.updateOrder("d2", { status: "paid", deliverable: { ...dl, title: "X" }, nowSec: 1300 })).rejects.toThrow(DeliverableSlugTaken);
+      expect((await r.getOrder("d2"))?.deliverable).toBeNull();
+      expect(await r.updateOrder("d1", { status: "delivered", shared: true, nowSec: 1400 })).toMatchObject({ shared: true, deliverable: dl });
+      expect((await r.getOrderByDeliverable("qa-d1"))?.shared).toBe(true);
+      await r.updateOrder("d1", { status: "delivered", deliverable: { ...dl, slug: "qa-d1b" }, nowSec: 1500 });
+      expect(await r.getOrderByDeliverable("qa-d1")).toBeNull();
+      expect((await r.getOrderByDeliverable("qa-d1b"))?.paymentId).toBe("d1");
+      await r.updateOrder("d2", { status: "paid", deliverable: dl, nowSec: 1600 });
+      expect((await r.getOrderByDeliverable("qa-d1"))?.paymentId).toBe("d2");
+      await r.updateOrder("d2", { status: "paid", deliverable: null, nowSec: 1700 });
+      expect(await r.getOrderByDeliverable("qa-d1")).toBeNull();
+      expect((await r.getOrder("d2"))?.deliverable).toBeNull();
+    });
+
+    it("report catalog: get and delete by slug", async () => {
+      const r = await make();
+      await r.putReport({ slug: "c", title: "C", summary: "", publishedAt: "2026-10-01", isFree: false, pdfFile: null });
+      expect(await r.getReport("c")).toMatchObject({ slug: "c", title: "C" });
+      expect(await r.getReport("nope")).toBeNull();
+      await r.deleteReport("c");
+      expect(await r.getReport("c")).toBeNull();
+      expect((await r.listReports()).map((x) => x.slug)).not.toContain("c");
     });
 
     it("report catalog lists newest first", async () => {

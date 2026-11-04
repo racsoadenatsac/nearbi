@@ -1,4 +1,6 @@
-// Seed catalog. The free sample is public (served from the static site); other reports live in S3.
+// Seed catalog: public (free) and subscriber reports only. The free ones are served from the static site;
+// subscriber reports live in S3. Reports made for one order never go here: they are stored on the order in
+// DynamoDB (see README "Order deliverables") and are readable only by the buyer.
 import type { ReportRecord } from "./ports/repository";
 
 export const SEED_REPORTS: ReportRecord[] = [

@@ -12,6 +12,8 @@ import { fakeOneClick } from "./oneclick";
 
 export const BASE_USDC = "nep141:base-0x833589fcd6edb6e08f4c7c32d4f71b54bda02913.omft.near";
 
+export const SUBSCRIBER_REPORT = { slug: "near-defi-flows", title: "NEAR DeFi flows", summary: "Subscriber report", publishedAt: "2026-11-01", isFree: false, pdfFile: "report.pdf" };
+
 export const T0 = Math.floor(Date.parse("2026-11-02T00:00:00Z") / 1000);
 export const ORIGIN = "https://nearbi.ai";
 export const TEST_ENV = { SESSION_SECRET: "test-session-secret-0123456789abcdef", ADMIN_TOKEN: "test-admin-token", APP_ORIGIN: ORIGIN };
@@ -19,7 +21,8 @@ export const TEST_ENV = { SESSION_SECRET: "test-session-secret-0123456789abcdef"
 export function setup(env: Record<string, string> = {}) {
   let clock = T0;
   const config: Config = loadConfig({ ...TEST_ENV, ...env });
-  const repo = new MemoryRepository({ reports: SEED_REPORTS });
+  // near-defi-flows: a subscriber-only catalog report used by the gating tests.
+  const repo = new MemoryRepository({ reports: [...SEED_REPORTS, SUBSCRIBER_REPORT] });
   const content = new MemoryContentStore("https://content.test", () => clock);
   const ownedKeys = new Map<string, string>(); // publicKey -> accountId: our fake chain state
   const oneclick = fakeOneClick(); // recorded 1Click fixtures, no network

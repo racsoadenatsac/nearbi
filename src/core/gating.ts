@@ -44,7 +44,9 @@ export function requiredAccess(pathname: string, freeSlugs: string | readonly st
   if (pathname === "/reports" || pathname.startsWith("/reports/")) {
     const r = parseReportPath(pathname);
     if (r && free.includes(r.slug)) return "public";
-    return "subscriber"; // unknown/invalid report paths are still gated: never leak what exists
+    // Unknown/invalid report paths are still gated: never leak what exists. For signed-in visitors the app then
+    // resolves the slug (catalog report, buyer-only order deliverable, or 404); see reportAccess in app.ts.
+    return "subscriber";
   }
   return "public";
 }

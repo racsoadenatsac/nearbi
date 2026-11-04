@@ -50,6 +50,8 @@ export function membersPage(p: {
   sub: SubscriptionState;
   priceUsd: number;
   reports: ReportRecord[];
+  /** Catalog slugs this account opened through a delivered order: no lock for them. */
+  ownedSlugs?: readonly string[];
   orders?: OrderRecord[];
   products?: ProductCatalog;
   paymentsLive?: boolean;
@@ -63,7 +65,7 @@ export function membersPage(p: {
   const subscribeLabel = sub.active ? `Add another month ($${p.priceUsd})` : `Subscribe: $${p.priceUsd}/month`;
   const rows = p.reports
     .map((r) => {
-      const locked = !r.isFree && !sub.active;
+      const locked = !r.isFree && !sub.active && !(p.ownedSlugs ?? []).includes(r.slug);
       const pdf = r.pdfFile ? ` · <a href="/reports/${esc(r.slug)}/${esc(r.pdfFile)}">PDF</a>` : "";
       return `<li class="card"><h3>${locked ? "🔒 " : ""}<a href="/reports/${esc(r.slug)}/">${esc(r.title)}</a>${r.isFree ? ' <span class="pill">Free</span>' : ""}</h3>
 <p>${esc(r.summary)}</p><p class="muted">${esc(r.publishedAt)}${locked ? "" : pdf}</p></li>`;
@@ -101,10 +103,22 @@ function ordersSection(orders: OrderRecord[], products?: ProductCatalog): string
   if (!orders.length) return `<h2 class="sec">Your orders</h2>\n<div class="panel" id="orders"><p class="muted">No orders yet.</p>${order}</div>`;
   const rows = orders
     .map((o) => {
-      const link = o.deliveryUrl ? `<a href="${esc(o.deliveryUrl)}" rel="noopener">Open delivery</a>` : `<span class="muted">-</span>`;
       const pill = o.status === "delivered" ? "pill ok" : o.status === "in_progress" ? "pill warn" : "pill";
+      const d = o.status === "delivered" ? o.deliverable : null;
+      const link = d
+        ? `<a class="btn pri" href="/reports/${esc(d.slug)}/">Open report</a>`
+        : o.deliveryUrl && o.status === "delivered"
+          ? `<a class="btn pri" href="${esc(o.deliveryUrl)}" rel="noopener">Open delivery</a>`
+          : o.deliveryUrl
+            ? `<a href="${esc(o.deliveryUrl)}" rel="noopener">Open delivery</a>`
+            : `<span class="muted">-</span>`;
+      const report = d
+        ? `<tr class="deliverable"><td colspan="4"><h3>${esc(d.title)}</h3>${d.summary ? `<p>${esc(d.summary)}</p>` : ""}${
+            d.pdfFile ? `<p class="small"><a href="/reports/${esc(d.slug)}/${esc(d.pdfFile)}">PDF</a></p>` : ""
+          }</td></tr>\n`
+        : "";
       return `<tr><td>${esc(PRODUCT_NAME[o.product] ?? o.product)}</td><td>${fmtDate(o.createdAt)}</td><td><span class="${pill}">${esc(ORDER_STATUS_LABEL[o.status] ?? o.status)}</span></td><td>${link}</td></tr>
-<tr class="brief"><td colspan="4" class="small muted">${esc(o.brief.question.length > 240 ? o.brief.question.slice(0, 240) + "…" : o.brief.question)} <span class="muted">· order <code>${esc(o.paymentId)}</code></span></td></tr>`;
+${report}<tr class="brief"><td colspan="4" class="small muted">${esc(o.brief.question.length > 240 ? o.brief.question.slice(0, 240) + "…" : o.brief.question)} <span class="muted">· order <code>${esc(o.paymentId)}</code></span></td></tr>`;
     })
     .join("\n");
   return `<h2 class="sec">Your orders</h2>
