@@ -25,6 +25,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from . import rules
+
 # ------------------------------------------------------------------------------------------ constants
 FORWARDER = "forwarder.nearbi.near"
 SPLITTER = "splitter.nearbi.near"
@@ -44,7 +46,7 @@ MIN_ALLOWANCE_YOCTO = 15 * 10**22  # allowance must cover prepaid gas x 1e9 (the
 ORDER_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
-EXIT_OK, EXIT_ERROR, EXIT_ATTENTION, EXIT_SSO, EXIT_TOPUP = 0, 1, 2, 3, 4
+EXIT_OK, EXIT_ERROR, EXIT_ATTENTION, EXIT_SSO, EXIT_TOPUP, EXIT_REFUSED = 0, 1, 2, 3, 4, 5  # 5 = an operator rule (config.yaml) refused
 
 
 class Stop(Exception):
@@ -356,9 +358,22 @@ def verify_forward_tx(tx: dict, order_id: str, amount: str) -> list[str]:
 # ------------------------------------------------------------------------------------------ runner
 class Runner:
     def __init__(self, rpc: Rpc, db: Dynamo, oneclick: OneClick, signer: Signer, dry_run: bool = False,
-                 now: Callable[[], int] = lambda: int(time.time())):
+                 now: Callable[[], int] = lambda: int(time.time()), config_path: Optional[str] = None):
         self.rpc, self.db, self.oneclick, self.signer, self.dry_run, self.now = rpc, db, oneclick, signer, dry_run, now
         self.journal = state_dir() / "forwarder-journal.jsonl"
+        self.config_path = config_path
+
+    # --- operator rules (config.yaml), re-read at every check
+    def rules_gate(self, action: str) -> "rules.Config":
+        """Re-read config.yaml; refuse (Stop EXIT_REFUSED) on kill switch, wrong network or a bad file."""
+        try:
+            cfg = rules.current(self.config_path)
+            rules.require_network(cfg, "mainnet", "forwarder-runner")
+            rules.require_active(cfg, action)
+            return cfg
+        except rules.Refused as r:
+            self.record(event="refused", rule=r.rule, reason=r.args[0])
+            raise Stop(EXIT_REFUSED, str(r)) from None
 
     def record(self, **kw: Any) -> None:
         with open(self.journal, "a") as f:
@@ -377,6 +392,11 @@ class Runner:
         scfg = self.rpc.view(SPLITTER, "get_config", {})
         if USDC not in scfg.get("accepted_tokens", []) or scfg.get("paused"):
             raise Stop(EXIT_ERROR, f"splitter not accepting USDC (paused={scfg.get('paused')})")
+        try:
+            rules.check_split(rules.current(self.config_path), scfg)
+        except rules.Refused as r:
+            self.record(event="refused", rule=r.rule, reason=r.args[0])
+            raise Stop(EXIT_REFUSED, str(r)) from None
         ak = self.rpc.access_key(FORWARDER, FC_PUBLIC_KEY)
         perm = ak.get("permission", {}).get("FunctionCall") or {}
         if perm.get("receiver_id") != FORWARDER or perm.get("method_names") != ["forward"]:
@@ -412,6 +432,12 @@ class Runner:
             return "already-done"
         amount = validate_entry(entry, pay)
         assert pay is not None
+        cfg = self.rules_gate(f"forwarding {pid}")
+        try:
+            rules.check_min_price(cfg, pay.get("product"), pay.get("amountUsd"), amount, order_id=pid)
+        except rules.Refused as r:
+            self.record(event="refused", rule=r.rule, order_id=pid, reason=r.args[0])
+            raise Skip(str(r), attention=True) from None
         check_oneclick(self.oneclick.status(pay["depositAddress"], pay.get("depositMemo")), pay, amount)
 
         order = self.rpc.view(FORWARDER, "get_order", {"order_id": pid})
@@ -439,6 +465,7 @@ class Runner:
             log(f"{pid}: DRY RUN, would call forward(order_id={pid}, amount={amount}) [balance {bal}]")
             return "dry-run"
 
+        self.rules_gate(f"forwarding {pid}")  # last check right before signing
         log(f"{pid}: forward(order_id={pid}, amount={amount}) {'(retry) ' if retry else ''}signing with the Keychain FC key")
         self.record(event="forward_sent", order_id=pid, amount=amount)
         rc, out = self.signer.forward(pid, amount)
@@ -498,6 +525,7 @@ class Runner:
             log("another forwarder-runner is running; exiting")
             return EXIT_OK
         try:
+            self.rules_gate("forwarding")
             pre = self.preflight()
             log(f"preflight ok: {FORWARDER} -> {SPLITTER}, USDC balance {pre['usdc'] / 1e6:.6f}, free NEAR {pre['free_near'] / YOCTO:.4f}, "
                 f"FC allowance {('%.4f' % (pre['allowance'] / YOCTO)) if pre['allowance'] is not None else 'unlimited'} NEAR, "
@@ -516,7 +544,7 @@ class Runner:
                 except Skip as s:
                     attention += 1 if s.attention else 0
                     log(f"{'ATTENTION' if s.attention else 'skip'}: {s}")
-            # Inference cost reporting (record_cost on the splitter) is not wired: the app reports no per-order cost yet.
+            # Per-order compute costs are booked by bin/record-cost and the NEAR AI client (spend ledger + splitter.record_cost).
             return EXIT_ATTENTION if attention else EXIT_OK
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)

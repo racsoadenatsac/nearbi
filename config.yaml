@@ -1,0 +1,73 @@
+# yaml-language-server: $schema=./config.schema.json
+#
+# NearBI operator rules. YOU (the human operator) own this file; the agent only reads it.
+#
+# The agent re-reads it before every order and every paid job, so an edit takes effect on the next check
+# (no restart). If this file is missing, unparseable, or breaks a rule below, the agent treats it as
+# kill_switch: true and refuses to act until you fix it. Check your edit with:
+#
+#     bin/operator-rules validate        # parse + validate, print the summary
+#     bin/operator-rules status          # summary, today's spend vs cap, live split check
+#
+# Format: plain YAML mappings only (key: value, nesting by 2-space indent, # comments). No lists, no
+# {flow} maps, no anchors. Unknown keys are an error, so a typo like "kill_swich: true" can't silently
+# leave the shop running. Money is in US dollars, decimals allowed (up to 6 places).
+
+# Schema version of this file. Leave at 1.
+version: 1
+
+# Which NEAR network the agent acts on: mainnet or testnet.
+#   mainnet = real money: splitter.nearbi.near / forwarder.nearbi.near.
+#   testnet = demo: splitter-v2.nearbi-agent.testnet (mock USDC). forwarder-runner is mainnet-only and
+#             refuses to run when this says testnet.
+# Spend is kept in a separate ledger per network, so testnet demos never eat the mainnet daily cap.
+network: mainnet
+
+# Emergency stop. true = the agent stops acting at its next check:
+#   - forwarder-runner forwards nothing (logs "REFUSED (kill_switch)" and exits 5),
+#   - no new paid job (BigQuery, NEAR AI inference) is started, no order is fulfilled,
+#   - no onchain record_cost is sent.
+# Costs already incurred can still be written to the local spend ledger (bookkeeping, not action).
+# Customer money is never lost by flipping this: settled USDC waits in forwarder.nearbi.near until you
+# flip it back to false.
+kill_switch: false
+
+# Daily compute budget in USD, per UTC day (resets 00:00 UTC). Counts every cost in the spend ledger:
+# NEAR AI Cloud inference AND BigQuery. A new job whose estimate would push today's total over this is
+# refused (it waits for the next UTC day or for you to raise the cap).
+max_inference_usd_per_day: 50
+
+# Maximum total compute cost (inference + BigQuery) for one order/report, in USD. A job that would take
+# one order's recorded costs over this is refused and the order needs a human. Protects the margin on a
+# $29 Quick Answer from a runaway loop.
+per_report_cost_cap_usd: 10
+
+# Minimum price per product, in USD. The agent never fulfils or forwards an order priced below these.
+# It may sell above them. Product ids are the app's (nearbi-app src/core/products.ts); an order whose
+# product isn't listed here is refused. Payments recorded before products existed count as subscription.
+min_price_usd:
+  subscription: 49      # monthly subscription (app default MONTHLY_PRICE_USD=49)
+  quick_answer: 29      # one question, answered within 24 h
+  deep_dive: 499        # full report, within 48 h
+
+# How far the settled USDC may fall below the minimum price, in percent, to absorb the 1Click swap
+# spread (a $29 order can settle as ~28.9 USDC). The order's quoted price must still be >= the minimum;
+# only the settled amount gets this tolerance. 0 = settled USDC must reach the minimum exactly.
+settlement_slippage_pct: 2
+
+# Revenue split of every sale. It is ENFORCED ONCHAIN by the splitter contract, not by the agent: this
+# section states what you expect the contract to do. Before acting the agent reads the splitter's
+# get_config over NEAR RPC and refuses to run (exit 5, "ALERT: split mismatch") if the percentages or
+# accounts differ. To change the split, change the contract first (owner call set_split /
+# set_accounts on the splitter, rs-payments README §8), then this file.
+# Rules: whole or 0.01-step percentages, contributors + treasury = 100, contributors <= 50 (contract cap).
+revenue_split:
+  contributors_pct: 10  # paid out at once to the contributors account
+  treasury_pct: 90      # the remainder, to the shop treasury
+  accounts:             # the payout accounts per network; only the one for `network` is checked
+    mainnet:
+      contributors: contributors.nearbi.near
+      treasury: nearbi.near
+    testnet:
+      contributors: contributors.nearbi-agent.testnet
+      treasury: treasury.nearbi-agent.testnet

@@ -8,6 +8,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 os.environ["RS_AGENT_STATE_DIR"] = tempfile.mkdtemp(prefix="rs-agent-test-")
+# The forwarder re-reads the operator rules; tests use a pinned copy (kill switch off) so they don't depend on
+# the operator's current config.yaml. tests/test_rules.py covers the refusals.
+_cfg = Path(os.environ["RS_AGENT_STATE_DIR"]) / "config.yaml"
+_cfg.write_text((Path(__file__).resolve().parent.parent / "config.yaml").read_text().replace("kill_switch: true", "kill_switch: false"))
+os.environ["RS_AGENT_CONFIG"] = str(_cfg)
 
 from rs_agent import forwarder as fw  # noqa: E402
 
@@ -18,7 +23,7 @@ DEP = "0xDeposit"
 def pay(**over):
     p = {"id": PID, "mode": "live", "status": "paid", "intentsStatus": "SUCCESS", "recipient": fw.FORWARDER,
          "destinationAsset": fw.USDC_ASSET, "depositAddress": DEP, "amountOut": "49000000", "settledAmountOut": "49000000",
-         "depositMemo": None, "forwardedTx": None}
+         "depositMemo": None, "forwardedTx": None, "product": None, "amountUsd": 49}
     p.update(over)
     return p
 

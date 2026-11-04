@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/racsoadenatsac/rs-agent/config.schema.json",
+  "title": "NearBI operator rules (config.yaml)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "network",
+    "kill_switch",
+    "max_inference_usd_per_day",
+    "per_report_cost_cap_usd",
+    "min_price_usd",
+    "settlement_slippage_pct",
+    "revenue_split"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "enum": [
+        1
+      ]
+    },
+    "network": {
+      "type": "string",
+      "enum": [
+        "mainnet",
+        "testnet"
+      ]
+    },
+    "kill_switch": {
+      "type": "boolean"
+    },
+    "max_inference_usd_per_day": {
+      "type": "number",
+      "minimum": 0,
+      "maxDecimals": 6
+    },
+    "per_report_cost_cap_usd": {
+      "type": "number",
+      "minimum": 0,
+      "maxDecimals": 6
+    },
+    "min_price_usd": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "subscription": {
+          "type": "number",
+          "minimum": 0,
+          "maxDecimals": 6,
+          "exclusiveMinimum": 0
+        },
+        "quick_answer": {
+          "type": "number",
+          "minimum": 0,
+          "maxDecimals": 6,
+          "exclusiveMinimum": 0
+        },
+        "deep_dive": {
+          "type": "number",
+          "minimum": 0,
+          "maxDecimals": 6,
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "settlement_slippage_pct": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 10,
+      "maxDecimals": 2
+    },
+    "revenue_split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contributors_pct",
+        "treasury_pct",
+        "accounts"
+      ],
+      "properties": {
+        "contributors_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 50,
+          "maxDecimals": 2
+        },
+        "treasury_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100,
+          "maxDecimals": 2
+        },
+        "accounts": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "mainnet": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "contributors",
+                "treasury"
+              ],
+              "properties": {
+                "contributors": {
+                  "type": "string",
+                  "pattern": "^(?=.{2,64}$)(([a-z\\d]+[-_])*[a-z\\d]+\\.)*([a-z\\d]+[-_])*[a-z\\d]+$"
+                },
+                "treasury": {
+                  "type": "string",
+                  "pattern": "^(?=.{2,64}$)(([a-z\\d]+[-_])*[a-z\\d]+\\.)*([a-z\\d]+[-_])*[a-z\\d]+$"
+                }
+              }
+            },
+            "testnet": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "contributors",
+                "treasury"
+              ],
+              "properties": {
+                "contributors": {
+                  "type": "string",
+                  "pattern": "^(?=.{2,64}$)(([a-z\\d]+[-_])*[a-z\\d]+\\.)*([a-z\\d]+[-_])*[a-z\\d]+$"
+                },
+                "treasury": {
+                  "type": "string",
+                  "pattern": "^(?=.{2,64}$)(([a-z\\d]+[-_])*[a-z\\d]+\\.)*([a-z\\d]+[-_])*[a-z\\d]+$"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
