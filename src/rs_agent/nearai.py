@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -47,6 +48,23 @@ class NotConfigured(RuntimeError):
 
 class InferenceError(RuntimeError):
     pass
+
+
+class EmptyCompletion(InferenceError):
+    """A paid call that produced no usable text (e.g. every max_tokens went to reasoning)."""
+
+
+def text_of(resp: dict, allow_truncated: bool = False) -> str:
+    """The reply text of a chat() result, for report generation. Raises EmptyCompletion if the (already paid)
+    call returned no text, or was cut off at max_tokens (finish_reason=length) unless allow_truncated."""
+    r = resp.get("_rs_result") or {}
+    text = r.get("text", "")
+    if r.get("empty") or not text.strip():
+        raise EmptyCompletion(f"empty completion (finish_reason={r.get('finish_reason')}, reasoning_tokens="
+                              f"{r.get('reasoning_tokens')}); raise max_tokens or lower reasoning_effort")
+    if r.get("truncated") and not allow_truncated:
+        raise EmptyCompletion(f"completion truncated at max_tokens (finish_reason=length, {len(text)} chars)")
+    return text
 
 
 def urllib_http(method: str, url: str, headers: dict, body: Optional[bytes], timeout: int) -> tuple[int, dict, bytes]:
@@ -140,6 +158,12 @@ class Client:
         usage = resp.get("usage") or {}
         pin, pout = self.prices(model)
         list_nano = int(usage.get("prompt_tokens", 0)) * pin + int(usage.get("completion_tokens", 0)) * pout
+        choice = (resp.get("choices") or [{}])[0]
+        text = (choice.get("message") or {}).get("content") or ""
+        finish = choice.get("finish_reason")
+        reasoning = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
+        result = {"text": text, "finish_reason": finish, "truncated": finish == "length", "empty": not text.strip(),
+                  "reasoning_tokens": reasoning}
         inference_id = hdrs.get("inference-id")
         billed = self.billed_nano(inference_id) if inference_id else None
         nano, source = (billed, "billing") if billed is not None else (list_nano, "list_price" if usage else "estimate")
@@ -147,6 +171,13 @@ class Client:
         rec = sl.append(order_id=order_id, kind="inference", usd=usd, note=f"{model} {usage.get('prompt_tokens', '?')}+{usage.get('completion_tokens', '?')} tok",
                         source="nearai", meta={"model": model, "inference_id": inference_id, "cost_source": source,
                                                "usage": {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens", "total_tokens")},
-                                               "estimate_usd": str(est), "list_price_nano": list_nano, "billed_nano": billed})
+                                               "estimate_usd": str(est), "list_price_nano": list_nano, "billed_nano": billed,
+                                               "finish_reason": finish, "reasoning_tokens": reasoning,
+                                               "truncated": result["truncated"], "empty": result["empty"]})
+        if result["empty"] or result["truncated"]:
+            print(f"WARNING nearai: order {order_id} {model}: {'EMPTY' if result['empty'] else 'TRUNCATED'} completion "
+                  f"(finish_reason={finish}, completion_tokens={usage.get('completion_tokens')}, reasoning_tokens={reasoning}); "
+                  f"paid ${rec['usd']} for it. Use nearai.text_of() so it can't ship.", file=sys.stderr)
+        resp["_rs_result"] = result
         resp["_rs_cost"] = {"usd": rec["usd"], "source": source, "spend_line": rec["line_hash"], "budget_before": budget}
         return resp
