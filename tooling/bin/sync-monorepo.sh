@@ -57,6 +57,21 @@ filtered_reports_src() {  # $1 = rs-reports path; prints the path of a filtered 
   echo "$tmp/rs-reports"
 }
 
+# app/: paid order deliverables once sat in nearbi-app's src/catalog.ts (title = the buyer's question, summary =
+# the answer). The monorepo's history was purged of them with git filter-repo --replace-text using
+# tooling/purge/app-replace-text.txt; nearbi-app goes through the same deterministic pass before the pull, so
+# the filtered commits keep the ids already in this monorepo and the paid text cannot come back.
+APP_REPLACE_TEXT="$ROOT/tooling/purge/app-replace-text.txt"
+
+filtered_app_src() {  # $1 = nearbi-app path; prints the path of a filtered clone
+  command -v git-filter-repo >/dev/null || { echo "!! git-filter-repo is required (brew install git-filter-repo)" >&2; return 1; }
+  local tmp; tmp=$(mktemp -d "${TMPDIR:-/tmp}/nearbi-app.XXXXXX")
+  git clone -q --no-local --single-branch --branch main "$1" "$tmp/nearbi-app" >&2
+  git -C "$tmp/nearbi-app" filter-repo --force --quiet --replace-text "$APP_REPLACE_TEXT" >&2
+  echo "   app: applied $(basename "$APP_REPLACE_TEXT")" >&2
+  echo "$tmp/nearbi-app"
+}
+
 want=("$@")
 selected() {
   [ ${#want[@]} -eq 0 ] && return 0
@@ -74,6 +89,8 @@ for entry in "${MAP[@]}"; do
   fi
   if [ "$prefix" = reports ]; then
     src=$(filtered_reports_src "$src") || { fail=1; continue; }
+  elif [ "$prefix" = app ]; then
+    src=$(filtered_app_src "$src") || { fail=1; continue; }
   fi
   before=$(git rev-parse HEAD)
   if out=$(git subtree pull --prefix="$prefix" "$src" "$branch" \
@@ -89,7 +106,7 @@ for entry in "${MAP[@]}"; do
     git merge --abort 2>/dev/null || true
     fail=1
   fi
-  case "$src" in "${TMPDIR:-/tmp}"/nearbi-reports.*) rm -rf "$(dirname "$src")" ;; esac
+  case "$src" in "${TMPDIR:-/tmp}"/nearbi-reports.*|"${TMPDIR:-/tmp}"/nearbi-app.*) rm -rf "$(dirname "$src")" ;; esac
 done
 
 # Paid / buyer report packs must never ship: refuse to leave one in reports/.
@@ -98,6 +115,12 @@ if [ -n "$paid" ]; then
   echo "!! reports/ now contains report packs that are not on the free allowlist:" >&2
   echo "$paid" | sed 's/^/   /' >&2
   echo "   Remove them (and purge from history) before pushing." >&2
+  fail=1
+fi
+
+# Paid deliverable text must never ship in app/ either (it lives in DynamoDB on the order, not in source).
+if git grep -qE 'slug: "near-oct-cohort-retention"' -- app/; then
+  echo "!! app/ contains a paid order deliverable entry; purge it (tooling/purge/app-replace-text.txt) before pushing." >&2
   fail=1
 fi
 
