@@ -27,6 +27,17 @@ MIN_ALLOWANCE_YOCTO = 3 * 10**21  # 0.003 NEAR, the hold for 30 Tgas
 MIN_FREE_NEAR_YOCTO = 10**22  # 0.01 NEAR on the splitter account for gas
 MAX_REF = 256  # splitter MAX_TEXT_LEN
 KIND_MAX = 64
+SLUG_MAX = 128  # splitter MAX_ORDER_ID_LEN (anchor_report slug)
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PROXY_VARS = ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy")
+
+
+def near_cli_env() -> dict:
+    """Environment for near-cli-rs: without the gateway egress proxy, whose TLS-intercepting CA near-cli-rs
+    (rustls, built-in roots) does not trust. NEAR RPC needs no proxied secret. RS_AGENT_NEAR_CLI_PROXY=1 keeps it."""
+    if os.environ.get("RS_AGENT_NEAR_CLI_PROXY") == "1":
+        return dict(os.environ)
+    return {k: v for k, v in os.environ.items() if k not in PROXY_VARS}
 
 
 def build_ref(order_id: str, line_hash: str, note: str = "") -> str:
@@ -41,12 +52,18 @@ def call_args(kind: str, usd_micros: int, ref: str) -> dict:
     return {"kind": kind, "amount_usd_micros": str(int(usd_micros)), "ref": ref}
 
 
-def dry_run_text(cfg: Config, args: dict, sending: bool = False) -> str:
+def anchor_args(slug: str, report_sha256: str) -> dict:
+    if not slug or len(slug) > SLUG_MAX or not SHA256_RE.match(report_sha256 or ""):
+        raise ValueError("anchor_report: slug 1-128 chars, sha256 = 64 lowercase hex")
+    return {"slug": slug, "manifest_sha256": report_sha256}
+
+
+def dry_run_text(cfg: Config, args: dict, sending: bool = False, method: str = "record_cost") -> str:
     n = cfg.net
     return "\n".join([
-        f"DRY RUN onchain record_cost ({cfg.network}{', REAL MONEY ACCOUNT' if cfg.network == 'mainnet' else ''}):",
+        f"DRY RUN onchain {method} ({cfg.network}{', REAL MONEY ACCOUNT' if cfg.network == 'mainnet' else ''}):",
         f"  receiver   {n['splitter']}",
-        f"  method     record_cost",
+        f"  method     {method}",
         f"  args       {json.dumps(args, separators=(',', ':'))}",
         f"  gas        {PREPAID_GAS_TGAS} Tgas, deposit 0 NEAR",
         f"  signer     {n['splitter']} with function-call key {n['splitter_fc_public_key']}",
@@ -100,7 +117,7 @@ class SplitterSigner:
                    json.dumps(args, separators=(",", ":")), "prepaid-gas", f"{PREPAID_GAS_TGAS} Tgas", "attached-deposit", "0 NEAR",
                    "sign-as", self.account, "network-config", self.cfg.net["near_cli_network"],
                    "sign-with-access-key-file", f"/dev/fd/{r}", "send"]
-            p = subprocess.run(cmd, capture_output=True, text=True, pass_fds=(r,), timeout=180)
+            p = subprocess.run(cmd, capture_output=True, text=True, pass_fds=(r,), timeout=180, env=near_cli_env())
             return p.returncode, fw.scrub(p.stdout + "\n" + p.stderr)
         finally:
             if w != -1:
@@ -108,14 +125,14 @@ class SplitterSigner:
             os.close(r)
 
 
-def preflight(cfg: Config, rpc: Any, signer: SplitterSigner) -> None:
-    """The onchain key must be a function-call key for record_cost on the splitter, the local secret must be
+def preflight(cfg: Config, rpc: Any, signer: SplitterSigner, method: str = "record_cost") -> None:
+    """The onchain key must be a function-call key for `method` on the splitter, the local secret must be
     its private half, and the account must afford the gas."""
     acct = cfg.net["splitter"]
     ak = rpc.access_key(acct, signer.public_key)
     perm = (ak.get("permission") or {}).get("FunctionCall") or {}
-    if perm.get("receiver_id") != acct or "record_cost" not in (perm.get("method_names") or []):
-        raise fw.Stop(fw.EXIT_ERROR, f"{acct} access key {signer.public_key} is not a record_cost function-call key: {json.dumps(ak.get('permission'))[:200]}")
+    if perm.get("receiver_id") != acct or method not in (perm.get("method_names") or []):
+        raise fw.Stop(fw.EXIT_ERROR, f"{acct} access key {signer.public_key} is not a {method} function-call key: {json.dumps(ak.get('permission'))[:200]}")
     if perm.get("allowance") is not None and int(perm["allowance"]) < MIN_ALLOWANCE_YOCTO:
         raise fw.Stop(fw.EXIT_TOPUP, f"{acct} function-call key allowance {int(perm['allowance']) / fw.YOCTO:.4f} NEAR < 0.003")
     free = fw.free_near(rpc.account(acct), rpc.storage_price())
@@ -148,6 +165,54 @@ def send(cfg: Config, rpc: Any, signer: SplitterSigner, args: dict) -> str:
     if problems:
         raise fw.Stop(fw.EXIT_ERROR, f"record_cost tx {tx_hash} did not verify: {'; '.join(problems)}")
     return tx_hash
+
+
+def verify_anchor_tx(tx: dict, splitter: str, args: dict) -> list[str]:
+    problems = []
+    if "Failure" in tx.get("status", {}):
+        problems.append(f"tx failed: {json.dumps(tx['status'])[:300]}")
+    ok = [e for x, e in fw.events(tx) if x == splitter and e.get("standard") == "nearbi_splitter" and e.get("event") == "report_anchor"
+          and any(d.get("slug") == args["slug"] and d.get("manifest_sha256") == args["manifest_sha256"] for d in e.get("data", []))]
+    if not ok:
+        problems.append("no nearbi_splitter 'report_anchor' event with these args")
+    return problems
+
+
+def send_anchor(cfg: Config, rpc: Any, signer: SplitterSigner, args: dict) -> str:
+    """anchor_report(slug, manifest_sha256) with the splitter function-call key; verified like record_cost."""
+    preflight(cfg, rpc, signer, "anchor_report")
+    rc, out = signer.call("anchor_report", args)
+    m = re.findall(r"Transaction ID:\s*([1-9A-HJ-NP-Za-km-z]{40,})", out)
+    if not m:
+        raise fw.Stop(fw.EXIT_ERROR, f"near-cli rc={rc} without a tx hash:\n{out[-800:]}")
+    tx_hash = m[-1]
+    problems = verify_anchor_tx(rpc.tx_final(tx_hash, cfg.net["splitter"]), cfg.net["splitter"], args)
+    if problems:
+        raise fw.Stop(fw.EXIT_ERROR, f"anchor_report tx {tx_hash} did not verify: {'; '.join(problems)}")
+    return tx_hash
+
+
+def anchor_journal_path(cfg: Config) -> Path:
+    return fw.state_dir() / f"anchor-onchain.{cfg.network}.jsonl"
+
+
+def anchored_tx(cfg: Config, slug: str, report_sha256: str) -> Optional[str]:
+    p = anchor_journal_path(cfg)
+    if not p.exists():
+        return None
+    for raw in p.read_text().splitlines():
+        try:
+            r = json.loads(raw)
+        except ValueError:
+            continue
+        if r.get("slug") == slug and r.get("sha256") == report_sha256 and r.get("tx"):
+            return r["tx"]
+    return None
+
+
+def anchor_journal(cfg: Config, **kw: Any) -> None:
+    with open(anchor_journal_path(cfg), "a") as f:
+        f.write(json.dumps(kw, sort_keys=True) + "\n")
 
 
 def journal_path(cfg: Config) -> Path:

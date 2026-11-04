@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""demo: the shop's whole loop on NEAR TESTNET in under 2 minutes (`make demo`; ARCHITECTURE.md §3.7, Track 04).
+
+  1 rules     operator config.yaml kill switch (refuses if on), demo rules (demo/config.testnet.yaml), split onchain
+  2 sale      a demo customer pays 29 mock USDC for a Quick Answer -> forwarder-v2 -> splitter-v2 (10 % / 90 %)
+  3 order     bin/order-loop logic: payment seen onchain -> pack + question -> write-report (real NEAR AI inference)
+  4 delivery  report.md + pack + checksums -> the customer inbox
+  5 onchain   record_cost per inference line + anchor_report(sha256(report.md))
+  6 ledger    rs-ledger bin/publish --network testnet-v2 -> https://nearbi.ai/ledger/testnet-v2/
+  7 summary   revenue, inference cost, payouts, margin, wall time (fails if > 120 s)
+
+  bin/demo [--transcript FILE] [--no-publish] [--customer ACCOUNT]
+
+Testnet only (mock USDC); mainnet is never touched. Needs: bin/demo-setup once (demo customer), the rs-payments
+and rs-ledger checkouts next to this repo, the NEAR AI Cloud key (protected secret), Docker (rs-ledger bin/py)
+and the `nearbi` AWS SSO session for the ledger upload. Exit: 0 ok, 1 failed step, 5 refused by the rules.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from decimal import Decimal
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from rs_agent import forwarder as fw  # noqa: E402
+from rs_agent import onchain  # noqa: E402
+from rs_agent import order_loop as ol  # noqa: E402
+from rs_agent import rules, spend  # noqa: E402
+
+DEMO_CONFIG = Path(os.environ.get("RS_AGENT_DEMO_CONFIG") or ROOT / "demo/config.testnet.yaml")
+RS_PAYMENTS = Path(os.environ.get("RS_PAYMENTS_DIR") or ROOT.parent / "rs-payments")
+RS_LEDGER = Path(os.environ.get("RS_LEDGER_DIR") or ROOT.parent / "rs-ledger")
+LEDGER_NETWORK = "testnet-v2"
+LEDGER_URL = "https://nearbi.ai/ledger/testnet-v2/"
+PRODUCT, PRICE_USD = "quick_answer", Decimal("29")
+BUDGET_S = 120
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+ACCT = "https://testnet.nearblocks.io/address/"
+
+
+class Out:
+    def __init__(self, transcript):
+        self.t0 = time.time()
+        self.f = open(transcript, "w") if transcript else None
+        self.steps = []
+
+    def __call__(self, line=""):
+        line = ANSI.sub("", str(line))
+        print(line, flush=True)
+        if self.f:
+            self.f.write(line + "\n")
+            self.f.flush()
+
+    def el(self):
+        return time.time() - self.t0
+
+    def step(self, n, title):
+        now = self.el()
+        if self.steps:
+            self.steps[-1]["end"] = now
+        self.steps.append({"n": n, "title": title, "start": now})
+        self(f"\n[{now:6.1f}s  {time.strftime('%H:%M:%S', time.gmtime())}Z]  STEP {n}/7  {title}")
+        self("-" * 100)
+
+    def finish(self):
+        if self.steps and "end" not in self.steps[-1]:
+            self.steps[-1]["end"] = self.el()
+
+
+def stream(cmd, out, env=None, cwd=None, keep=lambda l: True, indent="    "):
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env, cwd=cwd)
+    lines = []
+    for raw in p.stdout:
+        line = fw.scrub(ANSI.sub("", raw.rstrip("\n")))
+        lines.append(line)
+        if line.strip() and keep(line):
+            out(indent + line.lstrip("\n"))
+    return p.wait(), lines
+
+
+def usdc(v):
+    return f"{Decimal(int(v)) / Decimal(10**6):.6f}"
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--transcript", help="also write the output (no colours) to this file")
+    ap.add_argument("--no-publish", action="store_true", help="skip step 6 (e.g. AWS SSO expired)")
+    ap.add_argument("--customer", default=os.environ.get("DEMO_CUSTOMER", "demo-customer.nearbi-agent.testnet"))
+    a = ap.parse_args()
+    out = Out(a.transcript)
+    order_id = "qa-" + time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    links = []
+
+    out(f"NearBI research shop - full loop on NEAR TESTNET (mock USDC, no real value)   {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime())} UTC")
+    out(f"order {order_id}: {PRODUCT} ${PRICE_USD} for {a.customer}")
+
+    # ------------------------------------------------------------------ 1 rules
+    out.step(1, "Rules check (operator config.yaml + demo rules + onchain split)")
+    op_path = rules.config_path()
+    try:
+        op = rules.current(op_path)
+        rules.require_active(op, "running the demo")
+    except rules.Refused as r:
+        out(f"  {r}")
+        out("  demo refused: the operator's kill switch (or an invalid config.yaml) stops every action, testnet included")
+        return 5
+    out(f"  operator {op_path.name}: kill_switch off (network {op.network}; never edited by the demo)")
+    try:
+        cfg = rules.current(DEMO_CONFIG)
+        rules.require_network(cfg, "testnet", "the demo")
+        rules.require_active(cfg, "running the demo")
+    except rules.Refused as r:
+        out(f"  {r}")
+        return 5
+    diffs = [k for k in ("max_inference_usd_per_day", "per_report_cost_cap_usd", "min_price_usd", "settlement_slippage_pct",
+                         "contributors_bps", "treasury_bps") if getattr(cfg, k) != getattr(op, k)]
+    out(f"  demo rules {DEMO_CONFIG.relative_to(ROOT)}: network testnet, kill_switch off"
+        + (f"; WARNING differs from the operator's in {diffs}" if diffs else "; caps, prices and split = the operator's"))
+    try:
+        rules.check_min_price(cfg, PRODUCT, PRICE_USD, order_id=order_id)
+    except rules.Refused as r:
+        out(f"  {r}")
+        return 5
+    out(f"  min price: {PRODUCT} ${PRICE_USD} >= floor ${cfg.min_price_usd[PRODUCT]} (settled USDC may be {cfg.settlement_slippage_pct}% lower)")
+    rpc = fw.Rpc(cfg.net["rpc"])
+    try:
+        split = rules.fetch_split(cfg, rpc)
+        rules.check_split(cfg, split)
+    except rules.Refused as r:
+        out(f"  {r}")
+        return 5
+    out(f"  split: {cfg.net['splitter']}.get_config = {split['split_bps_contributors']}/{split['split_bps_treasury']} bps "
+        f"-> {split['contributors']} / {split['treasury']}, paused={split['paused']}  == config {cfg.contributors_bps // 100}% / {cfg.treasury_bps // 100}%  OK")
+    fcfg = rpc.view(cfg.net["forwarder"], "get_config", {})
+    if fcfg["splitter"] != cfg.net["splitter"] or fcfg["token"] != ol.TOKENS["testnet"] or fcfg["paused"]:
+        out(f"  ALERT: {cfg.net['forwarder']} config {json.dumps(fcfg)[:200]} does not forward into {cfg.net['splitter']}")
+        return 5
+    out(f"  forwarder: {cfg.net['forwarder']} -> {fcfg['splitter']} (token {fcfg['token']}, paused={fcfg['paused']}, "
+        f"change delay {fcfg['change_delay_sec']} s)")
+    sl = rules.ledger(cfg)
+    today = sl.day_total()
+    out(f"  caps: today's testnet compute ${spend.fmt_usd(today)} of ${cfg.max_inference_usd_per_day}/day, per order "
+        f"${cfg.per_report_cost_cap_usd}; this order's write-report worst case is capped at $0.25 (ledger {sl.path.name})")
+    out(f"  contracts: {ACCT}{cfg.net['splitter']}  {ACCT}{cfg.net['forwarder']}")
+    if not a.no_publish and subprocess.run(["docker", "info"], capture_output=True).returncode != 0:
+        out("  ERROR: Docker is not running (rs-ledger bin/py needs it): start it (colima start) or pass --no-publish")
+        return 1
+
+    # ------------------------------------------------------------------ 2 sale
+    out.step(2, f"Sale: {a.customer} pays {PRICE_USD} USDCm for a Quick Answer -> forwarder-v2 -> splitter-v2")
+    store = ol.OrderStore.default(cfg.network)
+    store.create(order_id=order_id, network="testnet", product=PRODUCT, price_usd=PRICE_USD, customer=a.customer,
+                 topic="near-users-vs-bots", question="Is NEAR activity real users or bots?")
+    out(f"  order {order_id} created: awaiting_payment ({store.path(order_id)})")
+    out("  NOTE: NEAR Intents 1Click has no testnet. The customer's plain ft_transfer to the forwarder stands in for the")
+    out("        1Click withdrawal (exactly what 1Click sends on mainnet); everything after it is the production path.")
+    result = Path(fw.state_dir()) / f"demo-sale-{order_id}.json"
+    env = {k: v for k, v in onchain.near_cli_env().items()}
+    env.update(NEARBI_SPLITTER=cfg.net["splitter"], NEARBI_FORWARDER=cfg.net["forwarder"], PRICE=str(int(PRICE_USD * 10**6)),
+               PAYER=a.customer, DRIP="auto", QUICK="1", RESULT_JSON=str(result), ORDER_ID=order_id, DEMO_T0=str(int(out.t0)))
+    rc, _ = stream(["bash", str(RS_PAYMENTS / "bin/demo-intents.sh")], out, env=env,
+                   keep=lambda l: not l.startswith("  sale done") and not re.match(r"^\s{2}\S.*https://", l))
+    if rc != 0 or not result.exists():
+        out(f"  ERROR: sale failed (rs-payments bin/demo-intents.sh exit {rc})")
+        return 1
+    sale = json.loads(result.read_text())
+    d, e = sale["delta"], sale["expected"]
+    price = int(sale["price"])
+    out("  split verification (balance deltas read before/after over RPC):")
+    for who, acct, exp in (("customer", sale["payer"], -price), ("forwarder", sale["forwarder"], 0), ("splitter", sale["splitter"], 0),
+                           ("contributors 10%", sale["contributors"], int(e["contributors"])), ("treasury 90%", sale["treasury"], int(e["treasury"]))):
+        got = int(d[acct])
+        out(f"    {who:17s} {acct:40s} {'+' if got >= 0 else '-'}{usdc(abs(got)):>10s}  expected {'+' if exp >= 0 else '-'}{usdc(abs(exp)):>10s}  {'OK' if got == exp else 'MISMATCH'}")
+    if not sale["split_ok"]:
+        out("  ERROR: SPLIT MISMATCH")
+        return 1
+    out(f"  SPLIT OK: {usdc(price)} = {usdc(e['contributors'])} contributors + {usdc(e['treasury'])} treasury, paid onchain by the splitter")
+    for label, h in sale["txs"].items():
+        links.append((label, h))
+    order = store.load(order_id)
+    order["payment_tx"] = sale["txs"].get("forward -> splitter")
+    store.save(order)
+
+    # ------------------------------------------------------------------ 3-5 order loop
+    phase_step = {"payment": (3, "Order loop: detect the paid order, map product -> pack + question, write-report"),
+                  "deliver": (4, "Delivery: report.md + pack checksums -> customer inbox"),
+                  "onchain": (5, "Onchain: record_cost for the order's inference lines + anchor_report(sha256(report.md))")}
+    loop = ol.Loop(cfg_path=str(DEMO_CONFIG), kill_switch_configs=(str(op_path),), store=store, onchain_mode="send",
+                   max_usd="0.25", emit=out, on_phase=lambda p: p in phase_step and out.step(*phase_step[p]))
+    rc = loop.run_once(order_id)
+    order = store.load(order_id)
+    if rc != 0 or order["status"] != "done":
+        out(f"  order {order_id} ended {order['status']} (order-loop exit {rc}): {order['history'][-1]['note']}")
+        out.finish()
+        return 5 if rc == 5 else 1
+    meta = json.loads((Path(order["report"]["dir"]) / "meta.json").read_text())
+    for seq, h in order["onchain"]["record_cost"].items():
+        links.append((f"record_cost (spend seq {seq})", h))
+    links.append(("anchor_report", order["onchain"]["anchor"]))
+
+    # ------------------------------------------------------------------ 6 ledger
+    ledger_ok = None
+    if a.no_publish:
+        out.step(6, "Public ledger: SKIPPED (--no-publish)")
+    else:
+        out.step(6, f"Public ledger: rs-ledger bin/publish --network {LEDGER_NETWORK}")
+        # direct egress like near-cli: the aws-crt S3 client rejects the gateway proxy's TLS CA, and S3 needs no proxied secret
+        lenv = dict(onchain.near_cli_env(), AWS_PROFILE=os.environ.get("AWS_PROFILE", "nearbi"), LEDGER_CUTOFF_BLOCKS="1",
+                    PUBLISH_NO_WAIT="1", LEDGER_EXTRA_TXS=",".join(h for _, h in links))
+        want = {"sale": 1, "payout": 2, "cost": len(order["onchain"]["record_cost"]), "report_anchor": 1}
+        for attempt in (1, 2):
+            rc, lines = stream(["bin/publish", "--network", LEDGER_NETWORK], out, env=lenv, cwd=RS_LEDGER,
+                               keep=lambda l: re.match(r"^(network|append-only|published|invalidation|\d{3} https|reconcile|build:|SSO|upload|.*FAILED|.*mismatch)", l.strip()) is not None)
+            if rc != 0:
+                out(f"  ERROR: bin/publish exit {rc} ({'SSO expired: the operator runs aws sso login --profile nearbi' if rc == 3 else 'see above'})")
+                ledger_ok = False
+                break
+            rows = [json.loads(l) for l in (RS_LEDGER / f"out/{LEDGER_NETWORK}/ledger/ledger.jsonl").read_text().splitlines() if l.strip()]
+            mine = [r for r in rows if r.get("order_id") == order_id or order_id in json.dumps(r.get("data"))]
+            got = {k: sum(1 for r in mine if r["kind"] == k) for k in want}
+            ledger_ok = got == want
+            out(f"  ledger rows for {order_id}: " + ", ".join(f"{k} {got[k]}/{want[k]}" for k in want)
+                + f"  ({len(rows)} rows total, chain head {rows[-1]['line_hash'][:16]}…)")
+            if ledger_ok or attempt == 2:
+                break
+            out("  indexer lag: not every row is final yet; publishing once more")
+        out(f"  public ledger: {LEDGER_URL}  (raw: {LEDGER_URL}ledger.jsonl, verifier: {LEDGER_URL}verify_ledger.py)")
+
+    # ------------------------------------------------------------------ 7 summary
+    out.step(7, "Summary")
+    out.finish()
+    cost = Decimal(meta["cost_usd"])
+    contrib, treas = Decimal(int(e["contributors"])) / 10**6, Decimal(int(e["treasury"])) / 10**6
+    revenue = Decimal(price) / 10**6
+    margin = treas - cost
+    out(f"  revenue        {revenue:>12.6f} USDCm  (Quick Answer, mock USDC on testnet)")
+    out(f"  payouts        {contrib:>12.6f} contributors (10%) + {treas:.6f} treasury (90%), paid by splitter-v2 in the sale tx")
+    out(f"  inference      {cost:>12.6f} USD   {meta['model']} via NEAR AI Cloud, {meta['usage']['prompt_tokens']}+"
+        f"{meta['usage']['completion_tokens']} tokens, {len(meta['attempts'])} attempt(s), "
+        + ("billed cost from NEAR AI Cloud /v1/billing/costs" if meta["cost_sources"] == ["billing"] else f"cost source {'/'.join(meta['cost_sources'])}"))
+    out(f"  shop margin    {margin:>12.6f}       = treasury share - inference ({margin / revenue * 100:.2f}% of revenue; testnet gas not counted)")
+    out(f"  report claim   {meta['claim']}")
+    inbox = next((h["inbox"] for h in order["history"] if h.get("inbox")), "")
+    out(f"  delivered      {inbox}/report.md  sha256 {meta['report_sha256']}")
+    for s in out.steps:
+        out(f"  step {s['n']}  {s['end'] - s['start']:6.1f}s  {s['title']}")
+    for label, h in links:
+        out(f"  tx  {label:28s} {cfg.net['explorer_tx']}{h}")
+    if ledger_ok is not None:
+        out(f"  ledger {LEDGER_URL}  ({'published; all rows for this order present' if ledger_ok else 'NOT published / rows missing: FAIL'})")
+    total = out.el()
+    out(f"\n  TOTAL WALL TIME {total:.1f} s (budget {BUDGET_S} s) -> {'PASS' if total <= BUDGET_S else 'FAIL'}")
+    if total > BUDGET_S or ledger_ok is False:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

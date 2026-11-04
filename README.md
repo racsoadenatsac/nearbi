@@ -1,6 +1,7 @@
 # rs-agent
 
-The shop agent: order intake, config.yaml rules (spend cap, min price, split, kill switch), NEAR AI Cloud inference.
+The shop agent: order intake, config.yaml rules (spend cap, min price, split, kill switch), NEAR AI Cloud inference,
+the order loop and the `make demo` testnet run of the whole shop.
 
 Part of the NEAR Hackathon one-agent research shop. See `rs-docs/ARCHITECTURE.md`.
 
@@ -302,9 +303,88 @@ dropped preamble, empty and truncated replies, kill switch / per-report cap / da
 zero calls, never overwriting, unconfigured key, CLI exit codes. Needs the rs-reports checkout next to this repo
 (or `$RS_REPORTS_DIR`) at `tools-v0.3.0` or later.
 
-### Left for the order loop
+The order loop below does all of this (v0.4.0).
 
-- `write-report` is a single-order command. The order loop has to call it for a paid order, map the order's product to a pack/question, and deliver `report.md` + the pack.
-- Exit 6 should mark the order "needs a human" (escalation, §3.4).
-- Mirror the order's cost lines onchain (`record-cost --from-line --send`) and anchor `report_sha256` (`anchor_report`).
-- Testnet demo (§3.7): set `network: testnet` so demo spend books in `spend-ledger.testnet.jsonl`.
+## Order loop + testnet demo (v0.4.0)
+
+```bash
+make demo-setup     # once: creates + funds demo-customer.nearbi-agent.testnet (145 USDCm = five Quick Answers)
+make demo           # the whole loop on NEAR testnet, < 2 min (bin/demo)
+make demo-record    # same, transcript saved to docs/demo-run-<UTC>.txt
+make test           # offline tests
+```
+
+### `make demo` (bin/demo): seven timestamped steps
+
+| # | Step | What runs |
+|---:|---|---|
+| 1 | Rules check | the **operator's `config.yaml` kill switch** (on, or the file invalid → `REFUSED`, exit 5, nothing else runs); the demo rules `demo/config.testnet.yaml` (`network: testnet`; same caps, prices and split as the operator's, a difference is printed); `quick_answer` $29 ≥ floor; `splitter-v2.get_config` == the configured 10 / 90 split; `forwarder-v2` forwards into `splitter-v2`; today's testnet spend vs cap |
+| 2 | Sale | `bin/order-loop`'s store gets order `qa-<UTC>` (awaiting payment); rs-payments `bin/demo-intents.sh` (`PAYER=demo-customer… PRICE=29000000 QUICK=1`): the customer's plain `ft_transfer` of 29 USDCm to `forwarder-v2` (**1Click has no testnet**: this transfer stands in for the 1Click withdrawal; everything after it is the production path), then `forward(order, 29000000)` with the forwarder's function-call key; `splitter-v2` pays 2.9 / 26.1 in the same tx. Balance deltas of customer, forwarder, splitter, contributors and treasury are checked exactly |
+| 3 | Order loop | payment read from the chain (`forwarder-v2.get_order == forwarded`, ≥ min price), product → pack + question, `bin/write-report` (real NEAR AI inference, booked in `spend-ledger.testnet.jsonl`, `--max-usd 0.25`) |
+| 4 | Delivery | `report.md`, `meta.json`, the pack (manifest, results, SQL), `checksums.sha256`, `delivery.json` → the customer inbox `~/.local/state/rs-agent/inbox.testnet/<order>/`; every copy re-hashed against `meta.json` / `manifest.json` first |
+| 5 | Onchain | `bin/record-cost --from-line <seq> --send` per inference line, then `anchor_report(<order>, sha256(report.md))` with the splitter function-call key; both verified by their events |
+| 6 | Public ledger | rs-ledger `bin/publish --network testnet-v2` → https://nearbi.ai/ledger/testnet-v2/; the demo checks the rebuilt ledger has the order's sale, 2 payouts, cost and anchor rows |
+| 7 | Summary | revenue, payouts, inference cost, margin, per-step and total wall time; **exit 1 if > 120 s**, if the split or a ledger row is missing |
+
+Recorded runs (full transcripts in `docs/`): **76.3 s** (`docs/demo-run-20261104T1207Z.txt`) and 76.6 s
+(`docs/demo-run-20261104T1206Z.txt`). Best run, order `qa-20261104T120735Z`:
+
+| Step | s | |
+|---|---:|---|
+| 1 rules | 1.9 | split 1000/9000 bps onchain == config |
+| 2 sale | 19.6 | [delivery `3WmRkSN6…`](https://testnet.nearblocks.io/txns/3WmRkSN6Hgd3zGV2FxnXWHp9ibTTpmENvH4BFZn1q7PW), [forward → split `4LN3GQE3…`](https://testnet.nearblocks.io/txns/4LN3GQE3ERW9LAiXwJXr5E6c3U1BnBkjJaafzAEqZfHr): customer −29, contributors +2.9, treasury +26.1, forwarder/splitter ±0 |
+| 3 order loop | 20.3 | Haiku 5.5, 2,790 + 3,043 tokens, **$0.001801 billed**, number check passed first attempt |
+| 4 delivery | 0.0 | 11 files checksummed ([example](examples/demo-order-qa-20261104T120735Z/)) |
+| 5 onchain | 15.3 | [record_cost `6JKgniNT…`](https://testnet.nearblocks.io/txns/6JKgniNTWEewKMYakFM7LC5TmoufEgEByiecyTkLVccj), [anchor_report `6QAbryiX…`](https://testnet.nearblocks.io/txns/6QAbryiXAYoZ28dUwMZithyNkT4kNbmmPa66guHhb36w) |
+| 6 ledger | 19.3 | published, all 5 rows of the order present |
+| total | **76.3** | margin 26.098199 = treasury share − inference (89.99 % of revenue; testnet gas not counted) |
+
+Needs: `make demo-setup` once; rs-payments and rs-ledger checked out next to this repo; the NEAR AI Cloud key
+(protected secret); Docker running (rs-ledger `bin/py`; `colima start`); the `nearbi` AWS SSO session for the ledger
+upload (`--no-publish` skips step 6). Mainnet is never touched: every account is `*.testnet`, the rules file says
+`network: testnet`, and forwarder-runner is not used (it stays mainnet-only).
+
+**Egress proxy.** near-cli-rs and the aws-crt S3 client don't trust the gateway's TLS-intercepting egress proxy CA, so
+`onchain.near_cli_env()` drops `HTTPS_PROXY`/`HTTP_PROXY` for near-cli (record_cost, anchor_report, the rs-payments
+scripts) and for the ledger upload. Neither needs a proxied secret; NEAR AI Cloud calls keep the proxy, which swaps in
+the key. `RS_AGENT_NEAR_CLI_PROXY=1` keeps the proxy for near-cli. forwarder-runner's own signer was not changed.
+
+### bin/order-loop
+
+```bash
+bin/order-loop [--config F] [--kill-switch-config F ...] new --order <id> --product quick_answer --price 29 --customer <acct>
+bin/order-loop [--config F] [--kill-switch-config F ...] run [--order <id>] [--onchain send|dry-run|off] [--max-usd 0.25]
+bin/order-loop [--config F] status
+```
+
+`src/rs_agent/order_loop.py`; one JSON file per order in `$RS_AGENT_STATE_DIR/orders.<network>/`:
+
+```
+awaiting_payment ──forwarder.get_order == forwarded, amount ≥ min_price (+ slippage)──▶ paid
+paid ──write-report exit 0──▶ delivered (inbox) ──record_cost per inference line + anchor_report──▶ done
+paid ──write-report exit 6 │ below the floor │ deep_dive (no cached pack) │ unknown product/topic │ 2 errors──▶ needs_human (never delivered)
+```
+
+- **Payment comes from the chain**, not from the order file: the forwarder of the rules file's `network`. On mainnet
+  that is `forwarder.nearbi.near`, where forwarder-runner forwards each 1Click payment under its payment id, so the loop
+  runs unchanged there once the app writes orders into the store (or a DynamoDB adapter replaces `OrderStore`).
+- **Product map** (`PRODUCTS`): `quick_answer` → cached pack `near-users-vs-bots` (question = the pack's title);
+  `deep_dive` → needs a human (new queries); `subscription` → no report (nearbi-app grants access).
+- **Rules at every decision point**: the loop's rules file and every `--kill-switch-config` are re-read before the
+  payment check, before write-report, and before each onchain send. write-report exit 5 (cap/kill switch) stops the pass
+  with the order still `paid`.
+- Idempotent: a `done` order is skipped; record_cost lines and anchors are journaled
+  (`record-cost-onchain.<net>.jsonl`, `anchor-onchain.<net>.jsonl`) and never sent twice; a delivered `report.md` is
+  never overwritten.
+- Exit codes: 0 ok, 1 error, 2 an order needs a human, 5 refused.
+
+### Tests
+
+`tests/test_order_loop.py` (23, offline: the forwarder view, write-report, record-cost and anchor_report are fakes
+injected into `Loop`; rules, store, spend ledger, delivery and checksums are real): product mapping; happy path
+(statuses, inbox checksums, record_cost per line, anchor args) and idempotent rerun; not paid yet; dry-run sends
+nothing; **needs-human** for write-report exit 6 (nothing delivered, both calls stay booked, never retried), below-floor
+payment, deep_dive / unknown topic, two errors, a tampered report; **kill switch** in the loop config, in the
+operator's config, flipped after the payment check and before the onchain sends; `bin/demo` refuses with the
+operator's kill switch on, an invalid operator config or a mainnet demo config; the CLI; the proxy-free near-cli env;
+anchor args + event verification.
