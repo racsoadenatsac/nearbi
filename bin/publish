@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Build, reconcile and publish a public ledger.
 #
-#   AWS_PROFILE=nearbi bin/publish                      # mainnet -> https://nearbi.ai/ledger/
-#   AWS_PROFILE=nearbi bin/publish --network testnet    # testnet -> https://nearbi.ai/ledger/testnet/
-#   AWS_PROFILE=nearbi bin/publish --network testnet-v2 # make demo deployment -> https://nearbi.ai/ledger/testnet-v2/
+#   bin/publish                                         # mainnet -> https://nearbi.ai/ledger/
+#   bin/publish --network testnet                       # testnet -> https://nearbi.ai/ledger/testnet/
+#   bin/publish --network testnet-v2                    # make demo deployment -> https://nearbi.ai/ledger/testnet-v2/
+# AWS profile: $AWS_PROFILE, default nearbi-agent (rs-agent's IAM user; key in the Keychain item nearbi-agent-aws via
+# credential_process); AWS_PROFILE=nearbi uses the operator's SSO session.
 #   bin/publish [--network …] --dry-run                 # build + show what would be uploaded
 # Env: PUBLISH_NO_WAIT=1 skips waiting for the CloudFront invalidation; LEDGER_EXTRA_TXS=<hash,…> seeds discovery
 # with txs just sent; LEDGER_CUTOFF_BLOCKS / LEDGER_RETRIES as in bin/build-ledger.
 #
 # Order of operations (nothing is uploaded unless every step passes):
-#   1. AWS identity check; an expired SSO session exits 3 with "SSO expired" (never logs in)
+#   1. AWS identity check; invalid/missing credentials (revoked key, expired SSO) exit 3 (never logs in)
 #   2. download the live ledger.jsonl of this network; it must stay a prefix of the new one (append-only).
 #      A live file from another network (ledger.json "network" differs, e.g. the old testnet ledger that
 #      used to live at /ledger/) is not a reference and is replaced.
@@ -18,7 +20,7 @@
 #      for mainnet, excludes testnet/*)
 #   5. CloudFront invalidation, then 200 checks on the live page
 #
-# Exit codes: 0 published, 1 build/reconcile/verify failed, 2 upload failed, 3 SSO expired.
+# Exit codes: 0 published, 1 build/reconcile/verify failed, 2 upload failed, 3 AWS credentials invalid/missing.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -35,14 +37,18 @@ done
 cfg() { python3 -c 'import json,sys; c=json.load(open("config.json"))["networks"][sys.argv[1]]; print(c.get(sys.argv[2]) or "")' "$NET" "$1"; }
 SITE="$(cfg site_url)"; PREFIX="$(cfg s3_prefix)"; EXCLUDE="$(cfg s3_exclude)"
 [ -n "$SITE" ] && [ -n "$PREFIX" ] || { echo "network $NET not in config.json" >&2; exit 1; }
-export AWS_PROFILE="${AWS_PROFILE:-nearbi}"
+export AWS_PROFILE="${AWS_PROFILE:-nearbi-agent}"
 BUCKET="${NEARBI_SITE_BUCKET:-nearbi-site}"
 DIST="${NEARBI_CF_DIST:-E2UZ7XHTGD4UEU}"
 OUTD="out/$NET/ledger"
 echo "network $NET -> $SITE (s3://$BUCKET/$PREFIX)"
 
 if ! aws sts get-caller-identity >/dev/null 2>&1; then
-  echo "SSO expired (aws sts get-caller-identity failed for profile $AWS_PROFILE); not publishing" >&2
+  if [ "$AWS_PROFILE" = nearbi ]; then
+    echo "SSO expired (aws sts get-caller-identity failed for profile nearbi): the operator runs aws sso login --profile nearbi; not publishing" >&2
+  else
+    echo "AWS credentials invalid or missing (aws sts get-caller-identity failed for profile $AWS_PROFILE; nearbi-agent: Keychain item nearbi-agent-aws, rotate per rs-agent README \"Agent identity\"); not publishing" >&2
+  fi
   exit 3
 fi
 

@@ -14,7 +14,7 @@
       "explorer_account": "https://nearblocks.io/address/",
       "site_url": "https://nearbi.ai/ledger/",
       "s3_prefix": "ledger/",
-      "s3_exclude": "testnet/*",
+      "s3_exclude": "testnet*",
       "other_label": "Testnet ledger (demo, mock USDC)",
       "other_url": "/ledger/testnet/"
     },
