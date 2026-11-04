@@ -197,7 +197,7 @@ tx [`4wF4n3vq…`](https://testnet.nearblocks.io/txns/4wF4n3vq9Rb1uXNqoPuRccXQ1s
 `--send` of the same line was refused as already recorded. Mainnet: dry-run + `--preflight` only (Keychain
 key matches the onchain key; nothing sent).
 
-### NEAR AI Cloud client (`src/rs_agent/nearai.py`) — UNCONFIGURED
+### NEAR AI Cloud client (`src/rs_agent/nearai.py`)
 
 OpenAI-compatible gateway `https://cloud-api.near.ai/v1` (docs.near.ai, checked 2026-11-03). Per call:
 kill switch → upper-bound estimate (prompt chars/3 tokens + `max_tokens`, at the public `/v1/model/list`
@@ -214,3 +214,97 @@ the gateway's secrets CLI), with the Gateway egress proxy enabled. The agent pro
 sentinel in `NEAR_AI_CLOUD_API_KEY`; the proxy substitutes the real key on the way out. Never in a file, `.env`
 or chat. Until then `chat()` raises `NotConfigured` before anything is spent, and `operator-rules status`
 says `UNCONFIGURED`.
+
+**Status (2026-11-04):** configured. The key is held as a protected secret, swapped in by the egress proxy; the
+client only sees a sentinel. Live calls are booked with `cost_source=billing` (the billed `costNanoUsd`).
+
+## Report writer (v0.3.0)
+
+`bin/write-report` is the "agent buys its own inference to write the report" step (ARCHITECTURE.md §3.4–3.5). It
+writes a report's narrative from a **cached result pack** with paid NEAR AI Cloud inference. It runs no BigQuery query.
+
+```bash
+bin/write-report --order <id> --pack ../rs-reports/reports/near-users-vs-bots \
+                 [--question "..."] [--model anthropic/claude-haiku-5-5] [--out DIR] \
+                 [--max-tokens 8000] [--max-usd 1.00] [--param 30] [--force]
+```
+
+A pack is a directory with `manifest.json` (`result_sha256`/`sql_sha256` per query), `results/<q>.csv` and
+`queries/<q>.sql` (the `-- question:` header becomes the query's description). The question defaults to the pack's
+`REPORT.md` title, and its `params:` front matter declares the query parameters (window length, thresholds) that the
+prose may cite.
+
+### What one run does
+
+1. **Pack**: every CSV and SQL file is hashed and must match the manifest. Otherwise the run is refused (exit 1) and nothing is paid.
+2. **Rules before any paid call**: `config.yaml` is re-read; kill switch, `per_report_cost_cap_usd` and
+   `max_inference_usd_per_day` are checked for the **worst case of both attempts** (prompt estimate + `max_tokens`
+   at list price, the retry carrying a full draft back). That worst case must also fit `--max-usd` (default $1).
+   `nearai.Client.chat` re-checks before each call.
+3. **Prompt = structured data only**: the question, window, params and every result table as JSON. The pack's
+   existing prose never reaches the model. The system prompt forbids any number that isn't a cell or a param:
+   no sums, ratios, "3x", "million" or approximations.
+4. **Sections (Track 02)**: the model writes `Claim · Evidence for · Evidence against · What would change the
+   conclusion`. The parser requires exactly these headings, in order, with a bold claim sentence and no sub-headings or
+   code. Chatter before the first heading is dropped. **`## Queries` is generated from the pack** (id, question, SQL
+   file, rows, result SHA-256), never by the model.
+5. **`nearai.text_of()`**: an empty or `finish_reason=length` reply raises `EmptyCompletion`. It is still booked, but it can't ship.
+6. **Number post-check**: rs-reports `tools/check_numbers.check_text(..., rounding=True)`. Every number in the prose
+   must be a result cell or a declared param. A decimal cell may be rounded to the decimals shown (93.03 → 93), but
+   whole-number cells are never rounded. Integers of 5+ digits get thousands separators (the check ignores them).
+7. **One regeneration**: if a draft has untraced numbers, bad structure or an empty reply, it is sent back once
+   with the problems listed (each offending number and its line). If the second draft fails too, the run exits **6**
+   and **nothing is written**. Both paid calls stay in the ledger.
+8. **Output** (default `~/.local/state/rs-agent/reports/<order>/`): `report.md` and `meta.json`. `meta.json` has the
+   question, claim, model, per-attempt tokens / inference id / billed cost / spend-ledger seq + line hash / outcome,
+   totals, the order's ledger total, every result and SQL hash, the number-check result and `report_sha256`. Files
+   are written atomically, `report.md` last. An existing `report.md` is never overwritten without `--force`.
+
+All inference is booked under `--order` (`kind=inference`, `source=nearai`). Mirror a line onchain with
+`bin/record-cost --from-line <seq> [--send]`.
+
+| Exit | Meaning |
+|---:|---|
+| 0 | report written |
+| 1 | pack/hash error, NEAR AI error, not configured (nothing paid) |
+| 5 | refused by config.yaml or `--max-usd` (nothing paid) |
+| 6 | paid, but the narrative failed the checks twice: no report |
+
+### Model: `anthropic/claude-haiku-5-5`
+
+Picked from `GET /v1/model/list` (2026-11-04) by sending one sample prompt (the q3 bucket table, "Claim + two
+evidence items") to the cheapest chat models:
+
+| model | $/M in · out | sample | verdict |
+|---|---|---|---|
+| `openai/gpt-5-nano` | 0.05 · 0.40 | 4,000 of 4,000 tokens went to reasoning, **empty reply** ($0.001635) | reasons first, unreliable |
+| `google/gemini-2.5-flash-lite` | 0.10 · 0.40 | 157 tokens, $0.000143. Correct numbers, but it calls it "potential bot activity" | cheapest usable; flatter, less careful |
+| `anthropic/claude-haiku-5-5` | 0.10 · 0.50 | 950 tokens (~700 hidden reasoning), $0.000572. *"…points to high-frequency, likely automated, signers rather than typical users, but the data cannot confirm which accounts are bots."* | **chosen**: the most careful Track-02 prose |
+
+Haiku 5.5 spends hidden reasoning tokens, so the default `max_tokens` is 8000. A full report costs about **$0.002–0.004**,
+under 0.05% of the $10 per-report cap. `--model google/gemini-2.5-flash-lite` is the fallback.
+
+### First real report: `demo-report-1` (2026-11-04)
+
+`bin/write-report --order demo-report-1 --pack ../rs-reports/reports/near-users-vs-bots` produced
+[`examples/demo-report-1/report.md`](examples/demo-report-1/report.md) and its
+[`meta.json`](examples/demo-report-1/meta.json). Attempt 1 was rejected for text before the first heading (now
+dropped instead). Attempt 2 passed the number check: 25 numbers, 0 untraced. In total: 6,868 + 5,168 tokens,
+**$0.003272 billed** (spend seq 6 `3bc82be2…`, seq 7 `5a33c2bf…`). The example predates the thousands-separator and
+blank-line polish, so it is kept byte-identical to the delivered file (`report_sha256` in meta).
+
+### Tests
+
+`tests/test_report_writer.py` (offline; the real `nearai.Client` behind a scripted fake cloud, so rules and ledger
+booking are the real code): pack loading + tamper refusal, prompt = data only, retry feedback, section parsing,
+Queries from the pack, pass / fail→regenerate→pass / fail twice (nothing written, both calls booked), bad structure,
+dropped preamble, empty and truncated replies, kill switch / per-report cap / daily cap / `--max-usd` refusals with
+zero calls, never overwriting, unconfigured key, CLI exit codes. Needs the rs-reports checkout next to this repo
+(or `$RS_REPORTS_DIR`) at `tools-v0.3.0` or later.
+
+### Left for the order loop
+
+- `write-report` is a single-order command. The order loop has to call it for a paid order, map the order's product to a pack/question, and deliver `report.md` + the pack.
+- Exit 6 should mark the order "needs a human" (escalation, §3.4).
+- Mirror the order's cost lines onchain (`record-cost --from-line --send`) and anchor `report_sha256` (`anchor_report`).
+- Testnet demo (§3.7): set `network: testnet` so demo spend books in `spend-ledger.testnet.jsonl`.
