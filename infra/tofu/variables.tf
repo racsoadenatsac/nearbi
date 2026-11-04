@@ -156,3 +156,9 @@ variable "payment_sweep_enabled" {
   type        = bool
   default     = true
 }
+
+variable "agent_user_name" {
+  description = "IAM user of the unattended rs-agent (access key in the operator Mac's Keychain, not in state)."
+  type        = string
+  default     = "nearbi-agent"
+}

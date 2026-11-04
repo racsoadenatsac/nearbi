@@ -14,6 +14,8 @@ tofu/                 one root module (state: s3://nearbi-tfstate-916489698349/n
   secrets.tf          random SESSION_SECRET / ADMIN_TOKEN / ORIGIN_VERIFY_SECRET -> SSM SecureString /nearbi/app/*
   app.tf              Lambda nearbi-app, IAM role, log group, HTTP API ($default stage + route)
   cdn.tf              CloudFront (static via OAC, app via API Gateway + x-origin-verify), index-rewrite function
+  scheduler.tf        EventBridge Scheduler payment sweep -> Lambda
+  agent.tf            IAM user nearbi-agent (rs-agent, unattended) + least-privilege inline policy
   functions/          CloudFront Function source
 bin/
   build-app.sh        builds ../nearbi-app/dist/lambda/index.mjs with the app's Docker wrapper
@@ -120,8 +122,45 @@ free tier, < $0.10/month otherwise.
 
 1Click delivers USDC to `forwarder.nearbi.near`; moving it into `splitter.nearbi.near` needs the forwarder's
 function-call key, which stays in the operator Mac's Keychain. `rs-agent bin/forwarder-runner` runs there
-with the operator's SSO profile (reads the `FWDQ` queue items and `PAY#` items, writes `forwardedTx` and
-deletes the queue item). No IAM user or access key exists for it.
+as the IAM user `nearbi-agent` (below): it reads the `FWDQ` queue items and `PAY#` items, writes `forwardedTx`
+and deletes the queue item.
+
+## Agent identity: IAM user `nearbi-agent` (`tofu/agent.tf`, applied 2026-11-04)
+
+The unattended shop agent on the operator's Mac (rs-agent `bin/agent-tick`, `bin/forwarder-runner`, `bin/agent-orders`,
+rs-ledger `bin/publish`) runs as this user instead of the operator's SSO session, so nobody has to log in again. The
+user has no console login profile and no group. Its inline policy `nearbi-agent-least-privilege` allows only the aws
+CLI calls those scripts make:
+
+- DynamoDB `nearbi`: `Query`/`GetItem` with `dynamodb:LeadingKeys` ∈ `FWDQ`, `ORDERQ`, `PAY#*`, `ACCT#*`; `UpdateItem` on
+  `PAY#*`; `DeleteItem` on `FWDQ`. The table has no indexes. No `Scan`, `PutItem` or table-level actions.
+- SSM: `GetParameter` on `/nearbi/app/ADMIN_TOKEN` only (aws/ssm key; its key policy covers the decrypt), and
+  `DescribeParameters` on `*` (no resource-level support; metadata only).
+- S3: `GetObject`/`PutObject` on `nearbi-content/<content_prefix>reports/qa-*` + `ListBucket` on `nearbi-content`
+  (HeadObject of a missing key must be 404); `PutObject`/`DeleteObject` on `nearbi-site/ledger/*` + `ListBucket` on
+  `nearbi-site` limited to `s3:prefix` `ledger/`, `ledger/*`.
+- CloudFront: `CreateInvalidation`/`GetInvalidation` on this distribution. `sts:GetCallerIdentity`.
+
+No `lambda:GetFunctionConfiguration`, because it would expose every app secret in the Lambda environment: rs-agent
+has the content bucket name built in. No `iam:*`, not even for its own keys.
+
+**The access key is deliberately not a tofu resource**, so its secret never enters the state. It was created once
+with `aws iam create-access-key` and piped into the Mac's login Keychain (item `nearbi-agent-aws`); the aws CLI reads it
+through `credential_process` (rs-agent `bin/aws-keychain-credentials`, profile `nearbi-agent`).
+
+Rotate (zero downtime, 2 keys max) / revoke, with `AWS_PROFILE=nearbi`. The full procedure is in rs-agent README
+"Rotate or revoke the key":
+
+```bash
+aws iam list-access-keys --user-name nearbi-agent
+aws iam create-access-key --user-name nearbi-agent ...   # piped into the Keychain, see rs-agent README
+aws iam update-access-key --user-name nearbi-agent --access-key-id <old> --status Inactive
+aws iam delete-access-key --user-name nearbi-agent --access-key-id <old>
+```
+
+Revoking a key (Inactive/delete) stops the agent at its next tick (exit 3). Removing the user: delete its access keys
+first (tofu does not own them, so `aws_iam_user` deletion fails while keys exist), then remove `agent.tf` and apply.
+Changing the policy: edit `agent.tf`, plan (expect only `aws_iam_user_policy.agent` to change), apply.
 
 ## Free reports (static, public)
 
