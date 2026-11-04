@@ -15,3 +15,5 @@ node_modules/
 cache/
 # local runner state (journal, lock)
 .state/
+# fetched tool data (BIP-39 wordlist for check-secrets)
+.tools/

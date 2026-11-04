@@ -3,13 +3,18 @@
 
   bin/forwarder-runner --once                 one pass over the FWDQ queue, then exit
   bin/forwarder-runner --loop [--interval 60] repeat until stopped (Ctrl-C) or a stop condition
-  bin/forwarder-runner --status               preflight + queue listing only, never signs
+  bin/forwarder-runner --status               operator rules + today's spend + preflight + queue; never signs
   bin/forwarder-runner --once --dry-run       every check, no transaction
   bin/forwarder-runner --order <paymentId> --amount <base units>   one payment not on the queue
                                               (e.g. confirmed by the admin override); same checks
 
+Operator rules (config.yaml, re-read before the run, before every order and right before signing):
+kill_switch, network must be mainnet, revenue_split must equal splitter.get_config, min_price_usd per product.
+
 Exit codes: 0 ok / nothing to do, 1 error (stopped), 2 an order needs attention (others processed),
-3 "SSO expired" (run `aws sso login --profile nearbi` yourself), 4 top up forwarder.nearbi.near / key allowance.
+3 "SSO expired" (run `aws sso login --profile nearbi` yourself), 4 top up forwarder.nearbi.near / key allowance,
+5 refused by an operator rule in config.yaml (kill switch, split mismatch, bad config; the log says which).
+--loop does not exit on 5: it logs the refusal every pass and resumes when config.yaml allows it.
 """
 import argparse
 import os
@@ -21,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from rs_agent import forwarder as fw  # noqa: E402
+from rs_agent import rules  # noqa: E402
 
 
 def near_cli() -> str:
@@ -41,14 +47,31 @@ def main() -> int:
     ap.add_argument("--interval", type=int, default=60, help="--loop: seconds between passes (min 15)")
     ap.add_argument("--dry-run", action="store_true", help="run every check but send nothing")
     ap.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "nearbi"))
+    ap.add_argument("--config", help="operator rules file (default: $RS_AGENT_CONFIG or <repo>/config.yaml)")
     a = ap.parse_args()
     if a.order and not a.amount:
         ap.error("--order needs --amount")
 
     db = fw.Dynamo(profile=a.profile)
-    runner = fw.Runner(fw.Rpc(), db, fw.OneClick(), fw.Signer(near_cli()), dry_run=a.dry_run or a.status)
+    runner = fw.Runner(fw.Rpc(), db, fw.OneClick(), fw.Signer(near_cli()), dry_run=a.dry_run or a.status, config_path=a.config)
     try:
         if a.status:
+            try:
+                cfg = rules.load(a.config)
+                for line in rules.summary(cfg):
+                    fw.log(line)
+                if cfg.network != "mainnet":
+                    fw.log(f"REFUSED (network): forwarder-runner is mainnet-only; config says {cfg.network}")
+                if cfg.kill_switch:
+                    fw.log("kill_switch is ON: --once/--loop/--order will refuse to forward")
+                rules.check_split(cfg, rules.fetch_split(cfg, fw.Rpc(cfg.net["rpc"])))
+                fw.log(f"split check ok: config.yaml revenue_split == {cfg.net['splitter']}.get_config")
+            except rules.ConfigError as e:
+                fw.log(f"REFUSED (config): {e}")
+                return fw.EXIT_REFUSED
+            except rules.Refused as r:
+                fw.log(str(r))
+                return fw.EXIT_REFUSED
             pre = runner.preflight()
             q = db.forward_queue()
             fw.log(f"{fw.FORWARDER}: USDC {pre['usdc'] / 1e6:.6f}, free NEAR {pre['free_near'] / fw.YOCTO:.4f} "
@@ -63,7 +86,13 @@ def main() -> int:
             return runner.run_once()
         interval = max(15, a.interval)
         while True:
-            rc = runner.run_once()
+            try:
+                rc = runner.run_once()
+            except fw.Stop as s:
+                if s.code != fw.EXIT_REFUSED:
+                    raise
+                fw.log(f"STOP: {s} (retrying in {interval}s)")
+                rc = fw.EXIT_OK
             if rc not in (fw.EXIT_OK, fw.EXIT_ATTENTION):
                 return rc
             time.sleep(interval)

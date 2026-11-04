@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""record-cost: book one compute cost (BigQuery, NEAR AI inference) in the spend ledger and mirror it onchain.
+
+  bin/record-cost --order <id> --usd 0.42 --kind bigquery --note "q1-q4 scan 84 GB"
+        append to the spend ledger, then print the onchain splitter.record_cost call as a DRY RUN (not sent)
+  bin/record-cost ... --send
+        append, then sign + broadcast record_cost with the splitter function-call key and verify the event
+  bin/record-cost --from-line <seq> [--send]
+        mirror an existing spend-ledger line onchain (e.g. one the NEAR AI client booked); refuses if sent
+  bin/record-cost ... --dry-run [--preflight]
+        write nothing at all: show the ledger line and the onchain call that would be made; --preflight also
+        checks the onchain key, the local secret (in memory) and the gas, and still sends nothing
+
+The network (and so which splitter and which key) comes from config.yaml `network`. Mainnet key: macOS
+Keychain nearbi-mainnet-fc-splitter.nearbi.near, read into memory only. kill_switch: true still lets you book
+a cost that already happened (bookkeeping), but refuses --send. A cost that takes today over the cap is still
+booked (the money is spent) and printed as a WARNING.
+
+Exit codes: 0 ok, 1 error, 4 top up the splitter account / key allowance, 5 refused by config.yaml.
+"""
+import argparse
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from rs_agent import forwarder as fw  # noqa: E402
+from rs_agent import onchain, rules, spend  # noqa: E402
+
+
+def near_cli() -> str:
+    p = os.environ.get("NEAR_CLI") or str(ROOT.parent / "rs-payments/.tools/bin/near")
+    if not os.access(p, os.X_OK):
+        sys.exit(f"near-cli-rs not found at {p}; set NEAR_CLI or run rs-payments/bin/fetch-near-cli.sh")
+    return p
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--order", help="order / payment id the cost belongs to (or an ops label, e.g. ops:sample-report)")
+    src.add_argument("--from-line", type=int, metavar="SEQ", help="mirror an existing spend-ledger line onchain")
+    ap.add_argument("--usd", help="cost in USD, e.g. 0.0125 (rounded up to the micro-dollar)")
+    ap.add_argument("--kind", choices=spend.KINDS)
+    ap.add_argument("--note", default="", help="free text, e.g. model + tokens or bytes scanned")
+    ap.add_argument("--send", action="store_true", help="broadcast the onchain record_cost (default: dry run only)")
+    ap.add_argument("--dry-run", action="store_true", help="write nothing, send nothing")
+    ap.add_argument("--preflight", action="store_true", help="without --send: also check the onchain key permission, the local "
+                                                               "secret (in memory) and the gas, then stop")
+    ap.add_argument("--config", help="operator rules file (default: $RS_AGENT_CONFIG or <repo>/config.yaml)")
+    a = ap.parse_args()
+    if a.order and (a.usd is None or a.kind is None):
+        ap.error("--order needs --usd and --kind")
+    if a.send and a.dry_run:
+        ap.error("--send and --dry-run are exclusive")
+
+    try:
+        cfg = rules.load(a.config)
+    except rules.ConfigError as e:
+        fw.log(f"REFUSED (config): {e}")
+        return fw.EXIT_REFUSED
+    sl = rules.ledger(cfg)
+    try:
+        lines = sl.load()
+    except spend.LedgerCorrupt as e:
+        fw.log(f"REFUSED (spend_ledger): {e}")
+        return fw.EXIT_REFUSED
+
+    if a.order:
+        try:
+            micros = spend.usd_to_micros(a.usd)
+        except ValueError as e:
+            ap.error(str(e))
+        if not spend.ORDER_RE.match(a.order):
+            ap.error("--order must be 1-128 chars of [A-Za-z0-9._:-]")
+        today, order_sum = sl.day_total(lines=lines), sl.order_total(a.order, lines)
+        if a.dry_run:
+            fw.log(f"DRY RUN spend ledger {sl.path}: would append {a.kind} ${spend.fmt_usd(micros)} for {a.order} ({a.note!r})")
+            line = {"order_id": a.order, "kind": a.kind, "usd_micros": micros, "note": a.note, "line_hash": "0" * 64}
+        else:
+            line = sl.append(order_id=a.order, kind=a.kind, usd=a.usd, note=a.note, source="record-cost")
+            fw.log(f"booked seq {line['seq']}: {a.kind} ${line['usd']} for {a.order} -> {sl.path} (line_hash {line['line_hash'][:16]})")
+        if today + micros > cfg.daily_cap_micros:
+            fw.log(f"WARNING: today's spend is now ${spend.fmt_usd(today + micros)}, over the ${cfg.max_inference_usd_per_day} daily cap; new jobs are refused until the next UTC day")
+        if order_sum + micros > cfg.report_cap_micros:
+            fw.log(f"WARNING: {a.order} costs are now ${spend.fmt_usd(order_sum + micros)}, over per_report_cost_cap_usd ${cfg.per_report_cost_cap_usd}")
+    else:
+        match = [l for l in lines if l["seq"] == a.from_line]
+        if not match:
+            fw.log(f"no spend-ledger line seq {a.from_line} in {sl.path}")
+            return fw.EXIT_ERROR
+        line = match[0]
+
+    tx = onchain.sent_tx(cfg, line["line_hash"])
+    if tx:
+        fw.log(f"seq {line.get('seq')} already recorded onchain: {cfg.net['explorer_tx']}{tx}")
+        return fw.EXIT_OK
+    args = onchain.call_args(line["kind"], line["usd_micros"], onchain.build_ref(line["order_id"], line["line_hash"], line.get("note", "")))
+    print(onchain.dry_run_text(cfg, args, sending=a.send), flush=True)
+    if a.preflight and not a.send:
+        try:
+            onchain.preflight(cfg, fw.Rpc(cfg.net["rpc"]), onchain.SplitterSigner(cfg, near_cli()))
+        except fw.Stop as s:
+            fw.log(f"STOP: {s}")
+            return s.code
+        fw.log(f"preflight ok: {cfg.net['splitter_fc_public_key']} is a record_cost key on {cfg.net['splitter']}, "
+               f"the local secret matches it, gas and allowance suffice (nothing sent)")
+    if not a.send:
+        return fw.EXIT_OK
+    try:
+        rules.require_active(cfg, "sending record_cost onchain")
+    except rules.Refused as r:
+        fw.log(str(r))
+        return fw.EXIT_REFUSED
+    signer = onchain.SplitterSigner(cfg, near_cli())
+    try:
+        tx = onchain.send(cfg, fw.Rpc(cfg.net["rpc"]), signer, args)
+    except fw.Stop as s:
+        fw.log(f"STOP: {s}")
+        return s.code
+    onchain.journal(cfg, line_hash=line["line_hash"], seq=line.get("seq"), tx=tx, args=args)
+    fw.log(f"sent + verified: record_cost on {cfg.net['splitter']} tx {cfg.net['explorer_tx']}{tx}")
+    return fw.EXIT_OK
+
+
+if __name__ == "__main__":
+    sys.exit(main())
