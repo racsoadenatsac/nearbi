@@ -125,9 +125,16 @@ bin/build-ledger                 # -> out/ledger/{index.html, ledger.jsonl, ledg
 bin/verify-ledger                # offline check of data/ledger.jsonl
 bin/verify-ledger https://nearbi.ai/ledger/ledger.jsonl --rpc
 bin/py tests/test_ledger.py
-AWS_PROFILE=nearbi bin/publish                     # mainnet -> /ledger/
-AWS_PROFILE=nearbi bin/publish --network testnet   # testnet -> /ledger/testnet/
+bin/publish                                        # mainnet -> /ledger/
+bin/publish --network testnet                      # testnet -> /ledger/testnet/
+bin/publish --dry-run                              # build + verify + `aws s3 sync --dryrun`, nothing uploaded
 ```
+
+AWS identity (v0.3.1): `$AWS_PROFILE`, default **`nearbi-agent`**, the agent's IAM user (nearbi-infra `tofu/agent.tf`;
+key in the Mac's Keychain item `nearbi-agent-aws`, read by rs-agent `bin/aws-keychain-credentials` as
+`credential_process`). It may only write `s3://nearbi-site/ledger/*`, list that prefix and invalidate the distribution.
+`AWS_PROFILE=nearbi bin/publish` still uses the operator's SSO session. Exit 3 = credentials invalid or missing (key
+revoked/rotated away, or SSO expired); rotation: rs-agent README "Agent identity".
 
 Docker image: `rs-repro:0.3.3` (Python 3.12), override with `RS_LEDGER_IMAGE`.
 
@@ -137,7 +144,7 @@ There is no scheduler in this repo; the agent calls publish after anything that 
 (a confirmed sale, a `record_cost`, an `anchor_report`):
 
 ```
-cd ~/projects/research-shop/rs-ledger && AWS_PROFILE=nearbi bin/publish      # mainnet (sales, forwards, costs)
+cd ~/projects/research-shop/rs-ledger && bin/publish      # mainnet (sales, forwards, costs); profile nearbi-agent
 ```
 
 (testnet only changes if someone runs the old testnet demo again: `bin/publish --network testnet`.)
