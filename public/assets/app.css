@@ -7,7 +7,11 @@
 .pill.ok { background:#d6f5e8; color:#05603f } .pill.warn { background:#fdecc8; color:#7a4b00 }
 .reports { list-style:none; padding:0; display:grid; gap:14px }
 .code { background:#16241c; color:#eef3ec; padding:14px; border-radius:8px; overflow-x:auto; font-size:13px; white-space:pre-wrap; word-break:break-all }
-.wallet-btn { display:block; width:100%; margin:0 0 10px; text-align:left; cursor:pointer; border:1px solid #cfcfc6; background:#fff }
+.wallet-btn { display:flex; align-items:center; justify-content:center; gap:10px; width:100%; min-height:48px; box-sizing:border-box; margin:0 0 12px; -webkit-appearance:none; appearance:none; text-align:center; font-size:17px; line-height:1.2; -webkit-tap-highlight-color:transparent; touch-action:manipulation }
+button.btn.pri.wallet-btn { color:#04140d; background:var(--acc) }
+.wallet-btn img { width:26px; height:26px; border-radius:6px; flex:none; background:#fff }
+#wallets details { margin-top:8px }
+#wallets details summary { cursor:pointer; padding:10px 0; min-height:24px }
 .live-note { border:1px solid #2e7d32; background:#edf7ee; color:#1b4d1e; padding:12px; border-radius:8px; margin:12px 0 }
 .stub-warning { border:2px solid #c0392b; background:#fdecea; color:#7b1f16; padding:12px; border-radius:8px }
 button.btn { font:inherit; cursor:pointer; border:0 }
