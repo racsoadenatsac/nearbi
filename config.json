@@ -33,6 +33,22 @@
       "s3_exclude": "",
       "other_label": "Mainnet ledger (live)",
       "other_url": "/ledger/"
+    },
+    "testnet-v2": {
+      "network": "testnet-v2",
+      "network_badge": "TESTNET v2 (demo, mock USDC, no real value)",
+      "splitter": "splitter-v2.nearbi-agent.testnet",
+      "forwarder": "forwarder-v2.nearbi-agent.testnet",
+      "token": "usdc-mock.nearbi-agent.testnet",
+      "rpc": ["https://rpc.testnet.fastnear.com", "https://archival-rpc.testnet.fastnear.com"],
+      "fastnear_tx_api": "https://tx.test.fastnear.com",
+      "explorer_tx": "https://testnet.nearblocks.io/txns/",
+      "explorer_account": "https://testnet.nearblocks.io/address/",
+      "site_url": "https://nearbi.ai/ledger/testnet-v2/",
+      "s3_prefix": "ledger/testnet-v2/",
+      "s3_exclude": "",
+      "other_label": "Mainnet ledger (live)",
+      "other_url": "/ledger/"
     }
   }
 }

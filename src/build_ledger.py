@@ -52,7 +52,7 @@ if NETWORK not in ALL["networks"]:
     sys.exit("unknown network %r (config.json has %s)" % (NETWORK, ", ".join(ALL["networks"])))
 CFG = dict(ALL["networks"][NETWORK], usd_decimals=ALL["usd_decimals"])
 SPLITTER = CFG["splitter"]
-FORWARDER = CFG.get("forwarder")  # mainnet only; testnet's ledger stays splitter-only (append-only history)
+FORWARDER = CFG.get("forwarder")  # mainnet and testnet-v2; the v1 testnet ledger stays splitter-only (append-only history)
 DATA = ROOT / "data" / NETWORK
 CACHE = ROOT / "data" / "cache" / NETWORK
 OUT = ROOT / "out" / NETWORK / "ledger"
@@ -150,6 +150,9 @@ def discover(prev_lines, allow_seed_only):
             raise
         log("discover: FastNEAR unavailable (%s); seed list + previous ledger only" % e)
         fast_ok = False
+    # tx hashes the caller just sent (e.g. bin/demo), so a fresh tx counts even before FastNEAR indexes it
+    for h in filter(None, (x.strip() for x in os.environ.get("LEDGER_EXTRA_TXS", "").split(","))):
+        sources.setdefault(h, set()).add("seed")
     seed = DATA / "seed-txs.txt"
     if seed.exists():
         for ln in seed.read_text().splitlines():
@@ -578,7 +581,7 @@ def build_once(prev_lines, allow_seed_only):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--network", choices=sorted(ALL["networks"]), default=NETWORK,
-                    help="mainnet (default; /ledger/) or testnet (/ledger/testnet/)")
+                    help="mainnet (default; /ledger/), testnet (/ledger/testnet/) or testnet-v2 (/ledger/testnet-v2/, make demo)")
     ap.add_argument("--retries", type=int, default=int(os.environ.get("LEDGER_RETRIES", "5")))
     ap.add_argument("--allow-seed-only", action="store_true", help="build without FastNEAR (seed list + ledger)")
     ap.add_argument("--rebuild-chain", action="store_true", help="ignore data/ledger.jsonl (breaks append-only)")
