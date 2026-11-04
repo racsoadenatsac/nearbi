@@ -1,24 +1,58 @@
 #!/bin/bash
-# Move a one-off order along and set its delivery link (shown to the customer under "Your orders" on /members).
+# Move a one-off order along, set its delivery link and attach its report (the order deliverable).
 #
-# Usage: AWS_PROFILE=nearbi bin/update-order <orderId> <paid|in_progress|delivered> [deliveryUrl]
+# Usage: AWS_PROFILE=nearbi bin/update-order <orderId> <paid|in_progress|delivered> [deliveryUrl] [options]
 #   bin/update-order 3f0c…-uuid in_progress
 #   bin/update-order 3f0c…-uuid delivered https://nearbi.ai/reports/qa-3f0c/
-#   ("delivered" needs a link: an https URL or a path on nearbi.ai such as /reports/<slug>/)
+#   bin/update-order 3f0c…-uuid delivered --slug qa-3f0c --title "…" --summary "…" --pdf REPORT.pdf
+# Options (attach the report made for this order; stored on the order in DynamoDB, never in src/catalog.ts):
+#   --slug <slug>        serve it at /reports/<slug>/ to the BUYER ONLY (everyone else: 404). Implies the link.
+#   --title <text>       required with --slug; shown to the buyer under "Your orders" on /members
+#   --summary <text>     optional, shown to the buyer
+#   --pdf <file.pdf>     optional PDF file name inside the content prefix
+#   --prefix <reports/…/> optional S3 key prefix (default reports/<slug>/); upload the files there first
+#   --shared             also open it to active subscribers (default: buyer only). --private turns that off.
+#   --detach             remove the deliverable from the order
 # Calls POST https://nearbi.ai/billing/admin/orders/<orderId> with the ADMIN_TOKEN. The token is read from
 # $NEARBI_ADMIN_TOKEN, or from SSM /nearbi/app/ADMIN_TOKEN (needs ssm:GetParameter + kms decrypt). Never printed.
 # Env: NEARBI_URL (default https://nearbi.ai), AWS_REGION (default us-east-1).
 set -euo pipefail
-[ $# -ge 2 ] && [ $# -le 3 ] || { sed -n '2,11p' "$0"; exit 2; }
-id="$1" status="$2" url="${3:-}"
+usage() { sed -n '2,21p' "$0"; exit 2; }
+[ $# -ge 2 ] || usage
+id="$1" status="$2"; shift 2
+url="" slug="" title="" summary="" pdf="" prefix="" shared="" detach=0
+if [ $# -gt 0 ] && [[ "$1" != --* ]]; then url="$1"; shift; fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --slug) slug="${2:?}"; shift 2 ;;
+    --title) title="${2:?}"; shift 2 ;;
+    --summary) summary="${2:?}"; shift 2 ;;
+    --pdf) pdf="${2:?}"; shift 2 ;;
+    --prefix) prefix="${2:?}"; shift 2 ;;
+    --shared) shared=true; shift ;;
+    --private) shared=false; shift ;;
+    --detach) detach=1; shift ;;
+    *) echo "unknown option: $1" >&2; usage ;;
+  esac
+done
 [[ "$id" =~ ^[0-9a-f-]{36}$ ]] || { echo "orderId must be the payment uuid" >&2; exit 2; }
 case "$status" in paid|in_progress|delivered) ;; *) echo "status must be paid, in_progress or delivered" >&2; exit 2 ;; esac
+[ -z "$slug" ] || [ -n "$title" ] || { echo "--slug needs --title" >&2; exit 2; }
+[ -z "$slug" ] || [ "$detach" = 0 ] || { echo "--slug and --detach exclude each other" >&2; exit 2; }
 base="${NEARBI_URL:-https://nearbi.ai}"
+body=$(jq -nc --arg s "$status" --arg u "$url" --arg slug "$slug" --arg t "$title" --arg sum "$summary" \
+  --arg pdf "$pdf" --arg pre "$prefix" --arg sh "$shared" --argjson detach "$detach" '
+  {status: $s}
+  + (if $u == "" then {} else {deliveryUrl: $u} end)
+  + (if $slug == "" then {} else {deliverable: ({slug: $slug, title: $t, summary: $sum}
+      + (if $pdf == "" then {} else {pdfFile: $pdf} end)
+      + (if $pre == "" then {} else {contentPrefix: $pre} end))} end)
+  + (if $detach == 1 then {deliverable: null} else {} end)
+  + (if $sh == "" then {} else {shared: ($sh == "true")} end)')
 token="${NEARBI_ADMIN_TOKEN:-}"
 if [ -z "$token" ]; then
   token=$(aws ssm get-parameter --region "${AWS_REGION:-us-east-1}" --name /nearbi/app/ADMIN_TOKEN --with-decryption --query Parameter.Value --output text)
 fi
-body=$(jq -nc --arg s "$status" --arg u "$url" '{status: $s} + (if $u == "" then {} else {deliveryUrl: $u} end)')
 # Token goes through a header file on stdin-like fd, not argv, so it doesn't show up in ps.
 curl -sS --fail-with-body -X POST "$base/billing/admin/orders/$id" \
   -H @<(printf 'authorization: Bearer %s\ncontent-type: application/json\n' "$token") \

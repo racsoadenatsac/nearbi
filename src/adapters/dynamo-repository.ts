@@ -13,6 +13,7 @@
 //   FWDQ                PAY#<paymentId> forward queue: 1Click SUCCESS, waiting for the forwarding agent
 //   ACCT#<accountId>    ORDER#<paymentId> one-off order (Quick Answer / Deep Dive), created when its payment is paid
 //   ORDERQ              ORDER#<paymentId> order awaiting delivery (status paid / in_progress; removed when delivered)
+//   DELIV#<slug>        ORDER           report slug -> the order whose deliverable it is (buyer-only /reports/<slug>/)
 //
 // Table: partition key PK (S), sort key SK (S), TTL attribute `ttl` (epoch seconds). No GSIs.
 
@@ -40,6 +41,7 @@ import {
   type ForwardQueueEntry,
   type OpenPaymentRef,
   type RegistryTokenRecord,
+  DeliverableSlugTaken,
   type ReportRecord,
   type Repository,
   type StoredChallenge,
@@ -59,6 +61,7 @@ export const keys = {
   forwardQueue: (id: string) => ({ PK: "FWDQ", SK: `PAY#${id}` }),
   order: (accountId: string, id: string) => ({ PK: `ACCT#${accountId}`, SK: `ORDER#${id}` }),
   openOrder: (id: string) => ({ PK: "ORDERQ", SK: `ORDER#${id}` }),
+  deliverable: (slug: string) => ({ PK: `DELIV#${slug}`, SK: "ORDER" }),
 };
 
 function orderFromItem(i: Record<string, any>): OrderRecord {
@@ -70,9 +73,23 @@ function orderFromItem(i: Record<string, any>): OrderRecord {
     amountUsd: i.amountUsd,
     status: i.status,
     deliveryUrl: i.deliveryUrl ?? null,
+    deliverable: i.deliverable
+      ? {
+          slug: i.deliverable.slug,
+          title: i.deliverable.title,
+          summary: i.deliverable.summary ?? "",
+          contentPrefix: i.deliverable.contentPrefix ?? `reports/${i.deliverable.slug}/`,
+          pdfFile: i.deliverable.pdfFile ?? null,
+        }
+      : null,
+    shared: i.shared === true,
     createdAt: i.createdAt,
     updatedAt: i.updatedAt,
   };
+}
+
+function reportFromItem(i: Record<string, any>): ReportRecord {
+  return { slug: i.slug, title: i.title, summary: i.summary ?? "", publishedAt: i.publishedAt, isFree: !!i.isFree, pdfFile: i.pdfFile ?? null };
 }
 
 /** Registry token items linger this long after expiry before DynamoDB TTL removes them (audit trail). */
@@ -360,31 +377,80 @@ export class DynamoRepository implements Repository {
       set += ", deliveryUrl = :url";
       values[":url"] = u.deliveryUrl;
     }
-    await this.db.send(
-      new TransactWriteCommand({
-        TransactItems: [
-          {
-            Update: {
+    if (u.deliverable !== undefined) {
+      set += ", deliverable = :dl";
+      values[":dl"] = u.deliverable;
+    }
+    if (u.shared !== undefined) {
+      set += ", #sh = :sh"; // "shared" is a DynamoDB reserved word
+      values[":sh"] = u.shared;
+    }
+    const items: any[] = [
+      {
+        Update: {
+          TableName: this.table,
+          Key: keys.order(cur.accountId, paymentId),
+          UpdateExpression: set,
+          ConditionExpression: "attribute_exists(PK)",
+          ExpressionAttributeNames: { "#st": "status", ...(u.shared !== undefined ? { "#sh": "shared" } : {}) },
+          ExpressionAttributeValues: values,
+        },
+      },
+      u.status === "delivered"
+        ? { Delete: { TableName: this.table, Key: keys.openOrder(paymentId) } }
+        : {
+            Put: {
               TableName: this.table,
-              Key: keys.order(cur.accountId, paymentId),
-              UpdateExpression: set,
-              ConditionExpression: "attribute_exists(PK)",
-              ExpressionAttributeNames: { "#st": "status" },
-              ExpressionAttributeValues: values,
+              Item: { ...keys.openOrder(paymentId), type: "orderq", paymentId, accountId: cur.accountId, createdAt: cur.createdAt },
             },
           },
-          u.status === "delivered"
-            ? { Delete: { TableName: this.table, Key: keys.openOrder(paymentId) } }
-            : {
-                Put: {
-                  TableName: this.table,
-                  Item: { ...keys.openOrder(paymentId), type: "orderq", paymentId, accountId: cur.accountId, createdAt: cur.createdAt },
-                },
-              },
-        ],
-      }),
-    );
-    return { ...cur, status: u.status, updatedAt: u.nowSec, ...(u.deliveryUrl !== undefined ? { deliveryUrl: u.deliveryUrl } : {}) };
+    ];
+    let indexAt = -1;
+    if (u.deliverable !== undefined) {
+      if (u.deliverable) {
+        indexAt = items.length;
+        items.push({
+          Put: {
+            TableName: this.table,
+            Item: { ...keys.deliverable(u.deliverable.slug), type: "deliverable", slug: u.deliverable.slug, paymentId, accountId: cur.accountId },
+            ConditionExpression: "attribute_not_exists(PK) OR paymentId = :pid",
+            ExpressionAttributeValues: { ":pid": paymentId },
+          },
+        });
+      }
+      if (cur.deliverable && cur.deliverable.slug !== u.deliverable?.slug) {
+        items.push({
+          Delete: {
+            TableName: this.table,
+            Key: keys.deliverable(cur.deliverable.slug),
+            ConditionExpression: "attribute_not_exists(PK) OR paymentId = :pid",
+            ExpressionAttributeValues: { ":pid": paymentId },
+          },
+        });
+      }
+    }
+    try {
+      await this.db.send(new TransactWriteCommand({ TransactItems: items }));
+    } catch (e) {
+      const codes = cancellationCodes(e);
+      if (codes && indexAt >= 0 && codes[indexAt] === "ConditionalCheckFailed") throw new DeliverableSlugTaken(u.deliverable!.slug);
+      throw e;
+    }
+    return {
+      ...cur,
+      status: u.status,
+      updatedAt: u.nowSec,
+      ...(u.deliveryUrl !== undefined ? { deliveryUrl: u.deliveryUrl } : {}),
+      ...(u.deliverable !== undefined ? { deliverable: u.deliverable } : {}),
+      ...(u.shared !== undefined ? { shared: u.shared } : {}),
+    };
+  }
+
+  async getOrderByDeliverable(slug: string): Promise<OrderRecord | null> {
+    const ix = await this.db.send(new GetCommand({ TableName: this.table, Key: keys.deliverable(slug), ConsistentRead: true }));
+    if (!ix.Item?.paymentId || !ix.Item.accountId) return null;
+    const r = await this.db.send(new GetCommand({ TableName: this.table, Key: keys.order(ix.Item.accountId, ix.Item.paymentId), ConsistentRead: true }));
+    return r.Item ? orderFromItem(r.Item) : null;
   }
 
   async applyPayment(i: ApplyPaymentInput): Promise<ApplyPaymentResult> {
@@ -552,16 +618,23 @@ export class DynamoRepository implements Repository {
           ExclusiveStartKey: start,
         }),
       );
-      for (const i of r.Items ?? []) {
-        out.push({ slug: i.slug, title: i.title, summary: i.summary ?? "", publishedAt: i.publishedAt, isFree: !!i.isFree, pdfFile: i.pdfFile ?? null });
-      }
+      for (const i of r.Items ?? []) out.push(reportFromItem(i));
       start = r.LastEvaluatedKey;
     } while (start);
     return out.sort((a, b) => (a.publishedAt === b.publishedAt ? a.slug.localeCompare(b.slug) : b.publishedAt.localeCompare(a.publishedAt)));
   }
 
+  async getReport(slug: string): Promise<ReportRecord | null> {
+    const r = await this.db.send(new GetCommand({ TableName: this.table, Key: keys.report(slug) }));
+    return r.Item ? reportFromItem(r.Item) : null;
+  }
+
   async putReport(r: ReportRecord) {
     await this.db.send(new PutCommand({ TableName: this.table, Item: { ...keys.report(r.slug), type: "report", ...r } }));
+  }
+
+  async deleteReport(slug: string) {
+    await this.db.send(new DeleteCommand({ TableName: this.table, Key: keys.report(slug) }));
   }
 }
 

@@ -455,6 +455,8 @@ describe("one-off products (Quick Answer / Deep Dive)", () => {
       amountUsd: 29,
       status: "paid",
       deliveryUrl: null,
+      deliverable: null,
+      shared: false,
       createdAt: now + 60,
       updatedAt: now + 60,
     });

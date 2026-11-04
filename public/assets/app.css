@@ -26,3 +26,4 @@ fieldset.brief label { display:block; margin-top:8px }
 #brief-question, #brief-scope, #brief-contact { display:block; width:100%; box-sizing:border-box; font:inherit; padding:8px 10px; margin:6px 0; border:1px solid #cfcfc6; border-radius:8px }
 table.orders { width:100%; border-collapse:collapse } table.orders th { text-align:left; color:var(--muted); font-weight:600; font-size:13px }
 table.orders td, table.orders th { padding:6px 8px 2px 0; vertical-align:baseline } table.orders tr.brief td { padding-bottom:10px; border-bottom:1px solid #ecebe4; word-break:break-word }
+table.orders tr.deliverable td { padding-top:4px } table.orders tr.deliverable h3 { margin:4px 0; font-size:16px } table.orders tr.deliverable p { margin:4px 0 }

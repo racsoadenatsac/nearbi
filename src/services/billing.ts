@@ -444,6 +444,8 @@ export async function confirmPayment(repo: Repository, paymentId: string, txHash
           amountUsd: pay.amountUsd,
           status: "paid",
           deliveryUrl: null,
+          deliverable: null,
+          shared: false,
           createdAt: nowSec,
           updatedAt: nowSec,
         },
