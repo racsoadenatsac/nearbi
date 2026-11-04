@@ -412,6 +412,13 @@ deltas (1click −49, forwarder 0, splitter 0, contributors +4.9, treasury +44.1
 that a second `forward` of the same order fails in the contract, and that the key can't call
 `set_agent`.
 
+Knobs (defaults reproduce the runs below): `PRICE=<base units>`, `PAYER=<account>.testnet` (who sends the plain
+`ft_transfer`; e.g. a demo customer standing in for the 1Click withdrawal), `DRIP=always|auto` (auto: drip only if the
+payer holds < `PRICE`), `QUICK=1` (skip the negative checks and the config/key dumps), `RESULT_JSON=<file>` (order,
+txs, balances, deltas, split verdict), `DEMO_T0=<epoch s>` (step clock origin). rs-agent `make demo` runs it as
+`NEARBI_SPLITTER=splitter-v2… NEARBI_FORWARDER=forwarder-v2… PRICE=29000000 PAYER=demo-customer.nearbi-agent.testnet
+DRIP=auto QUICK=1` for a $29 Quick Answer (rs-agent README, "Order loop + testnet demo").
+
 ### Current testnet deployment (2026-11-03 UTC)
 
 | Role | Account / value |
