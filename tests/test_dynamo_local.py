@@ -46,6 +46,9 @@ class LocalTable(do.AwsTable):
     def put(self, item):
         self.aws("dynamodb", "put-item", "--item", json.dumps({k: M(v) for k, v in item.items()}))
 
+    def delete(self, pk, sk):
+        self.aws("dynamodb", "delete-item", "--key", json.dumps({"PK": {"S": pk}, "SK": {"S": sk}}))
+
     def update(self, *a, **k):
         ok = super().update(*a, **k)
         if ok:
@@ -119,6 +122,18 @@ class DynamoLocal(t.Base):
         self.assertNotIn("agentClaim", self.pay(t.PID))
         self.assertEqual(self.step(owner="B").run(), 0)  # idempotent
         self.assertEqual(len(self.calls["write_report"]), 1)
+
+    def test_onchain_failure_after_delivery_resumes_off_the_queue(self):
+        self.seed()
+        r = t.ResumeOffQueue.fail_record_cost_once
+        r(self)  # type: ignore[arg-type]
+        self.assertEqual(self.step().run(), 1, self.text())
+        self.assertIsNone(self.db.get("ORDERQ", f"ORDER#{t.PID}"))
+        self.assertEqual(self.pay()["agentStatus"], "delivered")
+        self.assertEqual(self.step(owner="B").run(), 0, self.text())
+        self.assertEqual(self.pay()["agentStatus"], "done")
+        self.assertNotIn("agentClaim", self.pay())
+        self.assertEqual((len(self.calls["write_report"]), len(self.calls["anchor"])), (1, 1))
 
     def test_dry_run_writes_nothing(self):
         self.seed()

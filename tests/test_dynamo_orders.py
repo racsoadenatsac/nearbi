@@ -68,6 +68,9 @@ class FakeDdb:
     def put(self, item):
         self.items[(item["PK"], item["SK"])] = copy.deepcopy(item)
 
+    def delete(self, pk, sk):
+        self.items.pop((pk, sk), None)
+
     def check_sso(self):
         if not self.sso_ok:
             raise fw.Stop(do.EXIT_SSO, "SSO expired")
@@ -120,6 +123,7 @@ class FakeApp(do.AppDelivery):
         self.posts: list = []
         self.token_reads = 0
         self.fail_post = None
+        self.db = None  # FakeDdb: then post_order applies the app's side effects like nearbi-app updateOrder
 
     def admin_token_present(self):
         return True
@@ -142,6 +146,15 @@ class FakeApp(do.AppDelivery):
         self._admin_token()
         self.posts.append((pid, body))
         url = f"/reports/{body['deliverable']['slug']}/" if body.get("deliverable") else None
+        ref = self.db.get("ORDERQ", f"ORDER#{pid}") if self.db is not None else None
+        if ref:  # nearbi-app updateOrder: ORDER status/deliverable; delivered -> off ORDERQ
+            o = self.db.get(f"ACCT#{ref['accountId']}", f"ORDER#{pid}")
+            o["status"] = body["status"]
+            if body.get("deliverable"):
+                o["deliverable"], o["deliveryUrl"] = dict(body["deliverable"]), url
+            self.db.put(o)
+            if body["status"] == "delivered":
+                self.db.delete("ORDERQ", f"ORDER#{pid}")
         return {"orderId": pid, "status": body["status"], "deliveryUrl": url}
 
 
@@ -230,6 +243,7 @@ class Base(unittest.TestCase):
         return "ANCHORTX"
 
     def step(self, owner="owner-A", dry_run=False, max_orders=3, now=1_800_000_000, **kw):
+        self.app.db = self.db  # FakeDdb, or DynamoDB Local in test_dynamo_local
         loop = do.DynamoLoop(cfg_path=str(self.cfg_path), packs_root=self.packs, emit=self.log.append, app=self.app,
                              get_order=self.fake_get_order, write_report=self.fake_write_report, record_cost=self.fake_record_cost,
                              anchor=self.fake_anchor)
@@ -322,7 +336,9 @@ class HappyPath(Base):
         n_posts, n_wr = len(self.app.posts), len(self.calls["write_report"])
         self.assertEqual(self.step(owner="owner-B").run(), 0)
         self.assertEqual((len(self.app.posts), len(self.calls["write_report"])), (n_posts, n_wr))
-        self.assertIn("agent status done", self.text())
+        self.assertIn("order source: 0 open order(s)", self.text())  # the app took it off ORDERQ
+        self.assertNotIn("resuming", self.text())  # done locally: nothing to resume
+        self.assertEqual(len(self.calls["anchor"]), 1)
 
     def test_cohort_question_uses_the_cohort_pack(self):
         self.seed(question=COHORT_Q)
@@ -348,6 +364,131 @@ class HappyPath(Base):
         self.assertEqual(self.pay()["agentStatus"], "done")
         self.assertEqual(len(self.calls["write_report"]), 1)  # never paid twice
         self.assertEqual(len(self.calls["anchor"]), 1)
+
+
+class ResumeOffQueue(Base):
+    """The app drops a delivered order from ORDERQ before record_cost/anchor_report run: an interrupted onchain step
+    must resume from the local order store, never re-running write-report or re-delivering."""
+
+    def fail_record_cost_once(self):
+        orig, state = self.fake_record_cost, {"n": 0}
+
+        def flaky(seq, cfg_path, emit):
+            if state["n"] == 0:
+                state["n"] += 1
+                return 1
+            return orig(seq, cfg_path, emit)
+        self.fake_record_cost = flaky  # type: ignore[assignment]
+
+    def test_onchain_failure_after_delivery_resumes_next_pass(self):
+        self.seed()
+        self.fail_record_cost_once()
+        self.assertEqual(self.step().run(), 1, self.text())
+        self.assertNotIn(("ORDERQ", f"ORDER#{PID}"), self.db.items)  # delivered: the app took it off the queue
+        self.assertEqual(self.pay()["agentStatus"], "delivered")
+        self.assertNotIn("agentClaim", self.pay())
+        self.assertEqual(self.calls["anchor"], [])
+        n_posts = len(self.app.posts)
+        self.log.clear()
+        self.assertEqual(self.step(owner="owner-B").run(), 0, self.text())
+        self.assertIn("1 delivered order(s) off ORDERQ", self.text())
+        self.assertEqual(self.pay()["agentStatus"], "done")
+        self.assertEqual(self.pay()["agentAnchorTx"], "ANCHORTX")
+        self.assertEqual(len(self.calls["write_report"]), 1)  # never paid twice
+        self.assertEqual(len(self.app.posts), n_posts)  # never re-delivered
+        self.assertEqual((len(self.calls["record_cost"]), len(self.calls["anchor"])), (1, 1))
+        self.log.clear()
+        self.assertEqual(self.step(owner="owner-C").run(), 0)  # done: nothing left to resume
+        self.assertNotIn("resuming", self.text())
+        self.assertEqual(len(self.calls["anchor"]), 1)
+
+    def test_kill_switch_after_delivery_resumes_when_lifted(self):
+        self.seed()
+        orig = self.app.post_order
+
+        def post_then_kill(pid, body):
+            out = orig(pid, body)
+            if body["status"] == "delivered":
+                self.set_kill(True)
+            return out
+        self.app.post_order = post_then_kill  # type: ignore[assignment]
+        self.assertEqual(self.step().run(), 5)
+        self.assertEqual((self.calls["record_cost"], self.calls["anchor"]), ([], []))
+        self.assertEqual(self.step().run(), 5)  # still on: nothing sent
+        self.assertEqual(self.calls["anchor"], [])
+        self.set_kill(False)
+        self.assertEqual(self.step().run(), 0, self.text())
+        self.assertEqual(self.pay()["agentStatus"], "done")
+        self.assertEqual(len(self.calls["anchor"]), 1)
+
+    def test_resume_dry_run_writes_nothing(self):
+        self.seed()
+        self.fail_record_cost_once()
+        self.step().run()
+        before = copy.deepcopy(self.db.items)
+        self.log.clear()
+        self.assertEqual(self.step(dry_run=True).run(), 0)
+        self.assertIn("WOULD claim and resume", self.text())
+        self.assertEqual(self.db.items, before)
+        self.assertEqual(self.calls["anchor"], [])
+
+    def test_post_landed_but_not_saved_is_recovered_without_reposting(self):
+        self.seed()
+        orig = self.app.post_order
+
+        def post_then_crash(pid, body):
+            out = orig(pid, body)
+            if body["status"] == "delivered":
+                raise do.ol.OrderError("connection reset after the app answered")
+            return out
+        self.app.post_order = post_then_crash  # type: ignore[assignment]
+        self.assertEqual(self.step().run(), 1)
+        self.app.post_order = orig  # type: ignore[assignment]
+        n_posts = len(self.app.posts)
+        self.assertEqual(self.step().run(), 0, self.text())
+        self.assertEqual(len(self.app.posts), n_posts)  # the app already had it: no second POST
+        self.assertEqual(self.pay()["agentStatus"], "done")
+
+    def test_app_order_not_delivered_needs_a_human_without_a_claim(self):
+        self.seed()
+        orig = self.app.post_order
+
+        def refuse_delivered(pid, body):
+            if body["status"] == "delivered":
+                raise do.ol.OrderError("HTTP 502")
+            return orig(pid, body)
+        self.app.post_order = refuse_delivered  # type: ignore[assignment]
+        self.assertEqual(self.step().run(), 1)  # delivered locally, the app never got it
+        self.db.delete("ORDERQ", f"ORDER#{PID}")  # someone took it off the queue by hand
+        writes = len(self.db.writes)
+        self.log.clear()
+        self.assertEqual(self.step().run(), 2)
+        self.assertIn("ATTENTION", self.text())
+        self.assertEqual(len(self.db.writes), writes)
+        self.assertEqual(self.calls["anchor"], [])
+
+    def test_terminal_or_claimed_elsewhere_is_not_resumed(self):
+        self.seed()
+        self.fail_record_cost_once()
+        self.step().run()
+        self.pay().update(agentClaim="other", agentClaimUntil=1_900_000_000)
+        self.assertEqual(self.step().run(), 0)
+        self.assertIn("claimed by another runner", self.text())
+        self.pay().pop("agentClaim")
+        self.pay()["agentStatus"] = "needs_human"
+        self.log.clear()
+        self.assertEqual(self.step().run(), 0)
+        self.assertIn("not resumed", self.text())
+        self.assertEqual(self.calls["anchor"], [])
+
+    def test_resume_still_runs_when_new_orders_hit_max_orders(self):
+        self.seed(PID, created=1)
+        self.fail_record_cost_once()
+        self.step().run()
+        self.seed(PID2, created=2, acct="b2.near")
+        self.assertEqual(self.step(max_orders=0).run(), 0, self.text())
+        self.assertEqual(self.pay(PID)["agentStatus"], "done")
+        self.assertNotIn("agentStatus", self.pay(PID2))
 
 
 class Claims(Base):

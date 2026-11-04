@@ -499,15 +499,22 @@ class OrderStep:
                 self.emit(f"  WARNING delivery path check: {e}")
         human = error = False
         started = 0
-        for ref, order, pay in rows:
-            pid = ref.get("paymentId") or "?"
+        queued = {ref.get("paymentId") for ref, _, _ in rows}
+        resume = self.resumable(cfg, queued)
+        if resume:
+            self.emit(f"order source: {len(resume)} delivered order(s) off ORDERQ with the onchain step unfinished (local order store)")
+        work = [("queue", ref.get("paymentId") or "?", (order, pay)) for ref, order, pay in rows] + [("resume", pid, None) for pid in resume]
+        capped = False
+        for kind, pid, row in work:
+            if capped and kind == "queue":
+                continue
             try:
                 cfg = self.gate(f"processing order {pid}")
             except rules.Refused as r:
                 self.emit(str(r))
                 return EXIT_REFUSED
             try:
-                r = self.one(cfg, pid, order, pay, started)
+                r = self.one(cfg, pid, row[0], row[1], started) if kind == "queue" else self.resume(cfg, pid)
             except fw.Stop as s:
                 self.emit(f"STOP: {s}")
                 return s.code
@@ -520,13 +527,64 @@ class OrderStep:
                 continue
             if r == "cap":
                 self.emit(f"  max {self.max_orders} order(s) per pass reached; the rest wait for the next tick")
-                break
-            started += r in ("started", "would-start")
+                capped = True  # new orders wait; resumes (onchain only, no inference) still run
+                continue
+            started += r in ("started", "would-start") and kind == "queue"
             human = human or r == "needs_human"
             error = error or r == "error"
             if r == "refused":
                 return EXIT_REFUSED
         return EXIT_ERROR if error else EXIT_NEEDS_HUMAN if human else EXIT_OK
+
+    # -- delivered orders whose onchain step didn't finish
+    def resumable(self, cfg: rules.Config, queued: set) -> list[str]:
+        """Order ids this host delivered (local order store: status `delivered`) that are no longer on ORDERQ.
+
+        The app removes an order from ORDERQ when it is marked delivered, which happens before record_cost and
+        anchor_report. If those sends fail or the tick dies in between, ORDERQ never shows the order again, so the
+        local store (written by this agent, one host) is the resume list. Orders still on ORDERQ resume there."""
+        out = []
+        for o in self.loop._store(cfg).all():
+            pid = o.get("order_id") or ""
+            if (o.get("status") == "delivered" and o.get("network") == cfg.network and fw.ORDER_ID_RE.match(pid)
+                    and pid not in queued):
+                out.append(pid)
+        return out
+
+    def resume(self, cfg: rules.Config, pid: str) -> str:
+        """Finish a delivered order's onchain step (record_cost per inference line, anchor_report) under a claim.
+        Never re-runs write-report or re-delivers: the local order is past both."""
+        store = self.loop._store(cfg)
+        local = store.load(pid)
+        pay = self.table.t.get(f"PAY#{pid}", "PAYMENT")
+        if pay is None:
+            self.emit(f"  ATTENTION {pid}: delivered locally but PAY#{pid} is missing; onchain step not resumed")
+            return "needs_human"
+        if pay.get("agentStatus") in TERMINAL:
+            self.emit(f"  {pid}: delivered locally, agent status {pay['agentStatus']} in DynamoDB; not resumed")
+            return "skip"
+        if not (local.get("app_delivery") or {}).get("done"):
+            order = self.table.t.get(f"ACCT#{local.get('customer')}", f"ORDER#{pid}") or {}
+            if order.get("status") != "delivered" or (order.get("deliverable") or {}).get("slug") != slug_for(pid):
+                self.emit(f"  ATTENTION {pid}: delivered locally, off ORDERQ, but the app order is not delivered as "
+                          f"{slug_for(pid)} (status {order.get('status')!r}); a human checks it")
+                return "needs_human"
+            if not self.dry_run:  # the POST landed but the tick died before saving it
+                local["app_delivery"] = {"done": True, "slug": slug_for(pid), "url": order.get("deliveryUrl"), "at": ol.now_iso(),
+                                         "recovered": True}
+                store.save(local)
+        if self.dry_run:
+            self.emit(f"  {pid}: delivered, onchain step unfinished -> WOULD claim and resume record_cost + anchor_report")
+            return "would-start"
+        if not self.table.claim(pid):
+            self.emit(f"  {pid}: claimed by another runner (or finished meanwhile); skipped")
+            return "skip"
+        try:
+            self.emit(f"  {pid}: delivered, onchain step unfinished; resuming")
+            self.table.set_status(pid, "running", "order loop: resuming the onchain step")
+            return self._finish(pid, store, self.loop.run_once(pid))
+        finally:
+            self.table.release(pid)
 
     def one(self, cfg: rules.Config, pid: str, order: Optional[dict], pay: Optional[dict], started: int) -> str:
         if order is None:
@@ -601,7 +659,10 @@ class OrderStep:
             local["app_in_progress"] = ol.now_iso()
             store.save(local)
         self.table.set_status(pid, "running", f"order loop: {local['status']}")
-        rc = self.loop.run_once(pid)
+        return self._finish(pid, store, self.loop.run_once(pid))
+
+    def _finish(self, pid: str, store: ol.OrderStore, rc: int) -> str:
+        """Mirror the local order's state onto PAY#<id> (claim held) and map the loop's exit code."""
         local = store.load(pid)
         st = local["status"]
         note = local["history"][-1]["note"]
