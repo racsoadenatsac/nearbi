@@ -1,0 +1,119 @@
+{
+  "order_id": "demo-report-1",
+  "generated_at": "2026-11-04T11:35:56Z",
+  "question": "NEAR activity: real users or bots?",
+  "claim": "Activity is concentrated in a small set of very high-volume signers that look automated, while most signers are light users; the data does not show that any specific account is a bot.",
+  "sections": [
+    "Claim",
+    "Evidence for",
+    "Evidence against",
+    "What would change the conclusion",
+    "Queries"
+  ],
+  "model": "anthropic/claude-haiku-5-5",
+  "max_tokens": 8000,
+  "temperature": 0.3,
+  "provider": "https://cloud-api.near.ai/v1",
+  "network": "mainnet",
+  "pack": {
+    "name": "near-users-vs-bots",
+    "dir": "~/projects/research-shop/rs-reports/reports/near-users-vs-bots",
+    "manifest_sha256": "54b9eab20fe70b71ff1fd6e9c064e5a525a579af456d891693a1072ce4d8e3c1",
+    "dataset": "bigquery-public-data.crypto_near_mainnet_us",
+    "params": [
+      "10",
+      "100",
+      "15",
+      "30",
+      "2",
+      "1000"
+    ],
+    "results": {
+      "q1_daily_activity": {
+        "result_sha256": "0c049f8f929b60160c457391317c81d574d82305f170932338c050853254fe57",
+        "sql_sha256": "3fd5b7e6a1385b7a330d6298960c208285a761b304680deb46493362ca630144",
+        "rows": 30
+      },
+      "q2_concentration": {
+        "result_sha256": "e7efbd908266179b0a7608bfc60e147882a853330cc05c5090d4eeebac0397a6",
+        "sql_sha256": "f019269660edf296c923a7b6c613cdbab87240f4ec24ef2eb07c082b4689e148",
+        "rows": 30
+      },
+      "q3_signer_buckets": {
+        "result_sha256": "2133327d741d455519e1058ba68b194f64a83446232e2e6ec9ca1cb2ab541e53",
+        "sql_sha256": "303bb08dec6053dcc2e9599d8c7297bddb325282d6c7a80beb9cb57c27c982fa",
+        "rows": 5
+      },
+      "q4_top_signers": {
+        "result_sha256": "2233ef9483e1f6670ea41c2afd4c598a2fb1e02a3021951122f19849d889cd06",
+        "sql_sha256": "d2521a4cc15e86f34c521a52199a8db9c6fe4d4096e6db028c6c65e26d23c868",
+        "rows": 15
+      }
+    }
+  },
+  "number_check": {
+    "tool": "rs-reports tools/check_numbers.py",
+    "rounding": true,
+    "numbers_checked": 25,
+    "untraced": 0,
+    "attempts_needed": 2
+  },
+  "attempts": [
+    {
+      "attempt": 1,
+      "model": "anthropic/claude-haiku-5-5",
+      "inference_id": "78980ef3-e461-5010-8599-01fddbe69039",
+      "usage": {
+        "prompt_tokens": 2790,
+        "completion_tokens": 3095,
+        "total_tokens": 5885
+      },
+      "cost_usd": "0.001827",
+      "cost_source": "billing",
+      "spend_seq": 6,
+      "spend_line_hash": "3bc82be259951545bf65b1d7d1d87a5855a5938ba050d604a97c5d4758c40697",
+      "finish_reason": "stop",
+      "seconds": 18.5,
+      "prompt_sha256": "a445242f5d6e14183e056873842f84d26ac3c9cc9881bfbe4655ebe4b8721b0d",
+      "outcome": "bad_structure",
+      "problem": "text before the first heading"
+    },
+    {
+      "attempt": 2,
+      "model": "anthropic/claude-haiku-5-5",
+      "inference_id": "d96efb15-5993-5db5-83bc-4e86f9695c3a",
+      "usage": {
+        "prompt_tokens": 4078,
+        "completion_tokens": 2073,
+        "total_tokens": 6151
+      },
+      "cost_usd": "0.001445",
+      "cost_source": "billing",
+      "spend_seq": 7,
+      "spend_line_hash": "5a33c2bff712a86e38aee118f54979e357fd75689506c6051cd839a9d153fb0c",
+      "finish_reason": "stop",
+      "seconds": 10.4,
+      "prompt_sha256": "4d1f93529ada79393b29dae0ec105f77e35b47539611a73ecfa8dc0b61406035",
+      "numbers_checked": 25,
+      "untraced": [],
+      "outcome": "ok"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 6868,
+    "completion_tokens": 5168,
+    "total_tokens": 12036
+  },
+  "cost_usd": "0.003272",
+  "cost_sources": [
+    "billing"
+  ],
+  "spend_ledger": {
+    "path": "~/.local/state/rs-agent/spend-ledger.mainnet.jsonl",
+    "lines": [
+      "3bc82be259951545bf65b1d7d1d87a5855a5938ba050d604a97c5d4758c40697",
+      "5a33c2bff712a86e38aee118f54979e357fd75689506c6051cd839a9d153fb0c"
+    ]
+  },
+  "report_sha256": "ccb120d15c814d809ce197e26351b4a2daffa3277ff1326e9ae57e49d119e37e"
+}
