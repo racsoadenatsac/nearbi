@@ -163,7 +163,7 @@ with `AuthType NONE` plus `ORIGIN_VERIFY_SECRET` also works; the handler support
 Bucket layout: `s3://$CONTENT_BUCKET/$CONTENT_PREFIX` + `reports/<slug>/index.html`,
 `reports/<slug>/charts/*.png`, `reports/<slug>/<file>.pdf`. Block Public Access on, SSE-S3, no bucket policy for readers.
 
-For an active subscriber:
+For a visitor the gate lets in (active subscriber on a catalog report, or the buyer of an order deliverable; see [Order deliverables](#order-deliverables-buyer-only-reports)):
 
 - `GET /reports/<slug>/` (any `.html`): the Lambda reads the object and returns it with
   `cache-control: private, no-store`. HTML is proxied so its relative chart/PDF links resolve back to
@@ -194,11 +194,12 @@ One table, on-demand billing. Key schema: `PK` (S, partition) + `SK` (S, sort). 
 | Payment | `PAY#<paymentId>` | `PAYMENT` | `accountId`, `amountUsd`, `product` (`subscription` / `quick_answer` / `deep_dive`; absent on pre-v0.5 items = subscription), `brief` (map, one-off only), `token`, `depositAddress`, `status`, `txHash`, `createdAt`, `paidAt`, `quoteJson`, `mode`, `quoteId`, `depositMemo`, `destinationAsset`, `recipient`, `amountIn`, `amountInFormatted`, `minAmountIn`, `amountOut`, `deadline`, `intentsStatus`, `checkedAt`, `settlementTx`, `settledAmountOut`, `forwardedTx` (+ `forwardedAt`, `forwardedAmount`, written by the forwarding agent) | Put on checkout, Get + conditional Update on status poll, Get on confirm. Stub-era items read back with the 1Click fields null |
 | Open live payment | `OPENPAY` | `PAY#<paymentId>` | `paymentId`, `createdAt`, `deadline` | Put with the live payment (same `TransactWriteItems`); Query `PK = OPENPAY` by the scheduled sweep; Delete when paid/refunded/failed, or 24 h past the deadline when expired |
 | Forward queue | `FWDQ` | `PAY#<paymentId>` | `paymentId`, `amount` (settled `amountOut`, base units, or null), `recipient`, `destinationAsset`, `depositAddress`, `settlementTx`, `enqueuedAt` | Put (`attribute_not_exists`) on 1Click `SUCCESS`, **before** the subscription is extended; read and deleted by the forwarding agent (`rs-agent`) after `forward` is final onchain |
-| Order | `ACCT#<accountId>` | `ORDER#<paymentId>` | `paymentId`, `accountId`, `product`, `brief` {`question`, `contact`, `scope`}, `amountUsd`, `status` (`paid` / `in_progress` / `delivered`), `deliveryUrl`, `createdAt`, `updatedAt` | Put with the payment's `paid` transition (one-off products only); Query `begins_with(SK, ORDER#)` for the members page; Update by the admin endpoint |
+| Order | `ACCT#<accountId>` | `ORDER#<paymentId>` | `paymentId`, `accountId`, `product`, `brief` {`question`, `contact`, `scope`}, `amountUsd`, `status` (`paid` / `in_progress` / `delivered`), `deliveryUrl`, `deliverable` {`slug`, `title`, `summary`, `contentPrefix`, `pdfFile`} (or null), `shared` (bool, default false), `createdAt`, `updatedAt` | Put with the payment's `paid` transition (one-off products only); Query `begins_with(SK, ORDER#)` for the members page; Update by the admin endpoint |
 | Open order | `ORDERQ` | `ORDER#<paymentId>` | `paymentId`, `accountId`, `createdAt` | Put with the order; Query `PK = ORDERQ` by `bin/list-orders` / `GET /billing/admin/orders`; Delete when the order is `delivered` (re-put if it is re-opened) |
 | Tx-hash claim | `TX#<txHash>` | `TX` | `paymentId`, `accountId` | makes a tx hash usable once |
 | Registry token | `RTOK#<sha256(token)>` | `RTOKEN` | `accountId`, `expiresAt`, `revoked`, `createdAt`, `ttl` (= expiry + 90 days) | Get by hash on validation |
-| Catalog entry | `CATALOG` | `REPORT#<slug>` | `slug`, `title`, `summary`, `publishedAt`, `isFree`, `pdfFile` | Query `PK = CATALOG` for the members page |
+| Order deliverable index | `DELIV#<slug>` | `ORDER` | `slug`, `paymentId`, `accountId` | Put/Delete with the order update (conditional on `paymentId`); Get on every `/reports/<slug>/` request by a signed-in visitor |
+| Catalog entry | `CATALOG` | `REPORT#<slug>` | `slug`, `title`, `summary`, `publishedAt`, `isFree`, `pdfFile` | Query `PK = CATALOG` for the members page; Get by slug in the report gate. Public and subscriber reports only |
 
 Atomic operations:
 
@@ -215,7 +216,8 @@ Atomic operations:
 - **Issue registry token** is one `TransactWriteItems`: put the new token, swap the account pointer
   (conditional on the old hash), mark the old token `revoked`.
 
-Seed the catalog after creating the table: `TABLE_NAME=nearbi npm run seed` (with operator credentials).
+Seed the catalog after creating the table: `TABLE_NAME=nearbi npm run seed` (with operator credentials);
+`PRUNE=1` also deletes `CATALOG` entries no longer in `src/catalog.ts`.
 `src/adapters/dynamo-repository.ts` exports `tableDefinition()` as the reference CreateTable input.
 
 ## Container registry plan (registry.nearbi.ai)
@@ -435,19 +437,44 @@ AWS_PROFILE=nearbi bin/list-orders            # open orders (paid / in_progress)
 AWS_PROFILE=nearbi bin/list-orders --json     # same, machine-readable (orderId, accountId, product, brief, ...)
 AWS_PROFILE=nearbi bin/update-order <orderId> in_progress
 AWS_PROFILE=nearbi bin/update-order <orderId> delivered https://nearbi.ai/reports/<slug>/   # or a /path
+# deliver the report made for this order (buyer-only, stored on the order):
+AWS_PROFILE=nearbi bin/update-order <orderId> delivered --slug <slug> --title "…" --summary "…" --pdf REPORT.pdf
 ```
 
 - `bin/list-orders` reads DynamoDB directly (read-only: `ORDERQ` query + `GetItem`), needs `aws` + `jq`.
 - `bin/update-order` calls the admin endpoint with the `ADMIN_TOKEN` from SSM `/nearbi/app/ADMIN_TOKEN` (or
-  `$NEARBI_ADMIN_TOKEN`). "delivered" needs a link (https URL or a nearbi.ai path) and removes the order from the
-  open list.
+  `$NEARBI_ADMIN_TOKEN`). "delivered" needs a link (https URL or a nearbi.ai path, implied by `--slug`) and
+  removes the order from the open list. Run it without arguments for every option (`--prefix`, `--shared`,
+  `--private`, `--detach`).
 - HTTP equivalents (bearer `ADMIN_TOKEN`, no session): `GET /billing/admin/orders` (open orders) and
-  `POST /billing/admin/orders/<orderId> {status?, deliveryUrl?}`. The signed-in customer sees their own orders at
-  `GET /billing/orders` and on `/members`.
-- Delivering a private report: upload it to the content bucket under `reports/<slug>/` (as for any gated
-  report) and set the delivery link to `/reports/<slug>/` (or `https://nearbi.ai/reports/<slug>/`). Once the order
-  is `delivered`, its buyer can open that one report (and its files) without a subscription; everyone else still
-  needs a subscription. Use a fresh slug per order if the report is private to that customer.
+  `POST /billing/admin/orders/<orderId> {status?, deliveryUrl?, deliverable?, shared?}`. The signed-in customer
+  sees their own orders at `GET /billing/orders` and on `/members`.
+
+### Order deliverables (buyer-only reports)
+
+A report made for one order is **never** added to `src/catalog.ts` or the `CATALOG` items: its title paraphrases
+the customer's question and its summary is the answer. It is stored on the order itself in DynamoDB:
+
+- `ORDER` item attribute `deliverable` = `{slug, title, summary, contentPrefix, pdfFile}` and `shared` (default
+  `false`), plus an index item `DELIV#<slug>` / `ORDER` → `{paymentId, accountId}`, written in the same
+  `TransactWriteItems` (conditional: one order per slug; renaming or detaching removes the old index).
+- Files go to the content bucket under `contentPrefix` (default `reports/<slug>/`, must stay under `reports/`):
+  `index.html`, `charts/*`, the PDF. Upload them before delivering.
+- The slug may not be a free report, a catalog report or another order's deliverable (409).
+
+Access to `/reports/<slug>/*` (every file, not just the HTML):
+
+| Report kind | Signed out | Buyer (order delivered) | Other signed-in account | Active subscriber |
+|---|---|---|---|---|
+| free (`FREE_REPORT_SLUGS`) | 200 (static site) | 200 | 200 | 200 |
+| subscriber catalog (`CATALOG`) | 302 `/login` | 200 if its delivery link points there | 302 `/members?subscribe=1` | 200 |
+| order deliverable | 302 `/login` | 200 | **404** | **404** (200 only with `shared: true`) |
+| anything else | 302 `/login` | 200 if its delivery link points there | 404 | 404 |
+
+The 404 (instead of a subscribe page) keeps a deliverable's existence private; an undelivered deliverable is 404
+for the buyer too. The buyer's members page lists it under **Your orders** with its title, summary, an
+**Open report** button and the PDF link; it never appears in the Reports list, and no other account sees it.
+
 - Nothing notifies the customer automatically: if they left a contact, message them with the link.
 - The admin override `POST /billing/confirm` also works for a one-off payment (it creates the order), but as for
   subscriptions it does not queue a forward.

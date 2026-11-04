@@ -29,6 +29,7 @@ describe("DynamoRepository key design", () => {
     expect(keys.tx("t")).toEqual({ PK: "TX#t", SK: "TX" });
     expect(keys.token("h")).toEqual({ PK: "RTOK#h", SK: "RTOKEN" });
     expect(keys.report("s")).toEqual({ PK: "CATALOG", SK: "REPORT#s" });
+    expect(keys.deliverable("s")).toEqual({ PK: "DELIV#s", SK: "ORDER" });
   });
 
   it("challenges carry a TTL and are consumed with a conditional DeleteItem ALL_OLD", async () => {

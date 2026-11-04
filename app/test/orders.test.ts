@@ -152,7 +152,7 @@ describe("members orders list", () => {
     await t.json(`/billing/admin/orders/${first.paymentId}`, { status: "delivered", deliveryUrl: "/reports/qa-alice-1/" }, { headers: ADMIN });
     await t.json(`/billing/admin/orders/${second.paymentId}`, { status: "in_progress" }, { headers: ADMIN });
     html = await (await t.req("/members", { cookie: alice.cookie })).text();
-    expect(html).toContain('<a href="/reports/qa-alice-1/" rel="noopener">Open delivery</a>');
+    expect(html).toContain('<a class="btn pri" href="/reports/qa-alice-1/" rel="noopener">Open delivery</a>');
     expect(html).toContain(">Delivered<");
     expect(html).toContain(">In progress<");
   });
@@ -260,37 +260,121 @@ describe("delivered order opens its report", () => {
     const alice = await t.signIn();
     const { co } = await paidOrder(t, alice.cookie);
     const bob = await t.signIn("bob.near");
-    expect((await t.req("/reports/qa-alice-1/", { cookie: alice.cookie })).status).toBe(302); // paid, not delivered
+    expect((await t.req("/reports/qa-alice-1/", { cookie: alice.cookie })).status).toBe(404); // paid, not delivered
     await t.json(`/billing/admin/orders/${co.paymentId}`, { status: "in_progress", deliveryUrl: "https://nearbi.ai/reports/qa-alice-1/" }, { headers: ADMIN });
-    expect((await t.req("/reports/qa-alice-1/", { cookie: alice.cookie })).status).toBe(302); // link set but not delivered
+    expect((await t.req("/reports/qa-alice-1/", { cookie: alice.cookie })).status).toBe(404); // link set but not delivered
     await t.json(`/billing/admin/orders/${co.paymentId}`, { status: "delivered" }, { headers: ADMIN });
     const ok = await t.req("/reports/qa-alice-1/", { cookie: alice.cookie });
     expect(ok.status).toBe(200);
     expect(await ok.text()).toContain("Your answer");
-    expect((await t.req("/reports/qa-alice-1/", { cookie: bob.cookie })).status).toBe(302);
-    expect((await t.req("/reports/qa-alice-1/")).status).toBe(302);
-    expect((await t.req("/reports/near-defi-flows/", { cookie: alice.cookie })).status).toBe(302); // only that report
+    expect((await t.req("/reports/qa-alice-1/", { cookie: bob.cookie })).status).toBe(404);
+    expect((await t.req("/reports/qa-alice-1/")).headers.get("location")).toMatch(/^\/login\?next=/);
+    expect((await t.req("/reports/near-defi-flows/", { cookie: alice.cookie })).headers.get("location")).toBe("/members?subscribe=1"); // only that report
     expect((await t.req("/registry/token", { method: "POST", cookie: alice.cookie })).status).toBe(402); // still no subscription
   });
 
-  it("a non-subscriber buyer of a catalogued gated report opens its HTML, PDF and charts via the delivery path", async () => {
+  it("an order deliverable is buyer-only: buyer 200 on html/pdf/chart; subscribers and others 404; signed out to login", async () => {
     const t = setup(LIVE);
-    const slug = "near-oct-cohort-retention";
-    t.content.put(`reports/${slug}/index.html`, "<h1>Cohort</h1>", "text/html; charset=utf-8");
+    const slug = "qa-buyer-only";
+    t.content.put(`reports/${slug}/index.html`, "<h1>Answer</h1>", "text/html; charset=utf-8");
     t.content.put(`reports/${slug}/REPORT.pdf`, "%PDF", "application/pdf");
-    t.content.put(`reports/${slug}/charts/c2_retention_by_day.png`, "png", "image/png");
+    t.content.put(`reports/${slug}/charts/c2.png`, "png", "image/png");
     const buyer = await t.signIn();
-    const other = await t.signIn("bob.near");
+    const subscriber = await t.signIn("bob.near");
+    await t.subscribe(subscriber.cookie);
+    const stranger = await t.signIn("carol.near");
     const { co } = await paidOrder(t, buyer.cookie);
-    await t.json(`/billing/admin/orders/${co.paymentId}`, { status: "delivered", deliveryUrl: `/reports/${slug}/` }, { headers: ADMIN });
-    expect((await t.req(`/reports/${slug}/`, { cookie: buyer.cookie })).status).toBe(200);
-    for (const f of ["REPORT.pdf", "charts/c2_retention_by_day.png"]) {
+    const deliverable = { slug, title: "Buyer's own title", summary: "Buyer's own answer", pdfFile: "REPORT.pdf" };
+    const up = await t.json(`/billing/admin/orders/${co.paymentId}`, { status: "delivered", deliverable }, { headers: ADMIN });
+    expect(up.status).toBe(200);
+    expect((await up.json()).order).toMatchObject({ deliveryUrl: `/reports/${slug}/`, shared: false, deliverable: { ...deliverable, contentPrefix: `reports/${slug}/` } });
+
+    const html = await t.req(`/reports/${slug}/`, { cookie: buyer.cookie });
+    expect(html.status).toBe(200);
+    expect(await html.text()).toContain("Answer");
+    for (const f of ["REPORT.pdf", "charts/c2.png"]) {
       const r = await t.req(`/reports/${slug}/${f}`, { cookie: buyer.cookie });
       expect(r.status).toBe(302);
-      expect(r.headers.get("location")).not.toMatch(/^\/(login|members)/); // presigned content, not the gate
-      expect((await t.req(`/reports/${slug}/${f}`, { cookie: other.cookie })).headers.get("location")).toBe("/members?subscribe=1");
+      expect(new URL(r.headers.get("location")!).pathname).toBe(`/reports/${slug}/${f}`); // presigned content, not the gate
     }
-    expect((await t.req(`/reports/${slug}/`)).headers.get("location")).toBe(`/login?next=${encodeURIComponent(`/reports/${slug}/`)}`);
+    for (const p of [`/reports/${slug}/`, `/reports/${slug}/REPORT.pdf`, `/reports/${slug}/charts/c2.png`, `/reports/${slug}`]) {
+      for (const who of [subscriber, stranger]) expect((await t.req(p, { cookie: who.cookie })).status).toBe(404);
+      const anon = await t.req(p);
+      expect(anon.status).toBe(302);
+      expect(anon.headers.get("location")).toBe(`/login?next=${encodeURIComponent(p)}`);
+    }
+    // Free reports stay public for everyone.
+    for (const p of ["/reports/near-users-vs-bots/", "/reports/near-thesis/"]) {
+      expect((await setup({ STATIC_ORIGIN: "https://static.nearbi.ai" }).req(p)).status).toBe(302); // to the static site (200 there)
+    }
+
+    // Members page: the buyer sees it under "Your orders" with an Open report button and no lock; nobody else sees it.
+    const mine = await (await t.req("/members", { cookie: buyer.cookie })).text();
+    const orders = mine.slice(mine.indexOf('id="orders"'), mine.indexOf('<h2 class="sec">Reports'));
+    expect(orders).toContain(`<a class="btn pri" href="/reports/${slug}/">Open report</a>`);
+    expect(orders).toContain("Buyer&#39;s own title");
+    expect(orders).toContain(`/reports/${slug}/REPORT.pdf`);
+    expect(orders).not.toContain("🔒");
+    for (const who of [subscriber, stranger]) {
+      const theirs = await (await t.req("/members", { cookie: who.cookie })).text();
+      expect(theirs).not.toContain(slug);
+      expect(theirs).not.toContain("Buyer&#39;s own");
+    }
+  });
+
+  it("an undelivered deliverable is 404 even for the buyer; shared:true opens it to active subscribers only", async () => {
+    const t = setup(LIVE);
+    const slug = "qa-shared";
+    t.content.put(`reports/${slug}/index.html`, "<h1>S</h1>", "text/html; charset=utf-8");
+    const buyer = await t.signIn();
+    const subscriber = await t.signIn("bob.near");
+    await t.subscribe(subscriber.cookie);
+    const stranger = await t.signIn("carol.near");
+    const { co } = await paidOrder(t, buyer.cookie);
+    const post = (b: unknown) => t.json(`/billing/admin/orders/${co.paymentId}`, b, { headers: ADMIN });
+    expect((await post({ status: "in_progress", deliverable: { slug, title: "T" } })).status).toBe(200);
+    expect((await t.req(`/reports/${slug}/`, { cookie: buyer.cookie })).status).toBe(404);
+    expect((await post({ status: "delivered" })).status).toBe(200);
+    expect((await t.req(`/reports/${slug}/`, { cookie: buyer.cookie })).status).toBe(200);
+    expect((await t.req(`/reports/${slug}/`, { cookie: subscriber.cookie })).status).toBe(404);
+    expect((await post({ shared: "yes" })).status).toBe(400);
+    expect((await post({ shared: true })).status).toBe(200);
+    expect((await t.req(`/reports/${slug}/`, { cookie: subscriber.cookie })).status).toBe(200);
+    expect((await t.req(`/reports/${slug}/`, { cookie: stranger.cookie })).status).toBe(404);
+    expect((await post({ shared: false })).status).toBe(200);
+    expect((await t.req(`/reports/${slug}/`, { cookie: subscriber.cookie })).status).toBe(404);
+  });
+
+  it("deliverable validation: no catalog/free slugs, no slug shared by two orders, safe prefix and pdf names", async () => {
+    const t = setup(LIVE);
+    const alice = await t.signIn();
+    const a = (await paidOrder(t, alice.cookie)).co;
+    const b = (await paidOrder(t, alice.cookie)).co;
+    const post = (id: string, d: unknown) => t.json(`/billing/admin/orders/${id}`, { deliverable: d }, { headers: ADMIN });
+    expect((await post(a.paymentId, { slug: "near-thesis", title: "x" })).status).toBe(409); // free
+    expect((await post(a.paymentId, { slug: "near-defi-flows", title: "x" })).status).toBe(409); // catalog
+    expect((await post(a.paymentId, { slug: "Bad Slug", title: "x" })).status).toBe(400);
+    expect((await post(a.paymentId, { slug: "qa-a" })).status).toBe(400); // title required
+    expect((await post(a.paymentId, { slug: "qa-a", title: "x", contentPrefix: "secrets/x/" })).status).toBe(400);
+    expect((await post(a.paymentId, { slug: "qa-a", title: "x", contentPrefix: "reports/../x/" })).status).toBe(400);
+    expect((await post(a.paymentId, { slug: "qa-a", title: "x", pdfFile: "../x.pdf" })).status).toBe(400);
+    expect((await post(a.paymentId, { slug: "qa-a", title: "x", contentPrefix: "reports/orders/qa-a/" })).status).toBe(200);
+    expect((await post(b.paymentId, { slug: "qa-a", title: "y" })).status).toBe(409);
+    expect((await post(a.paymentId, { slug: "qa-a", title: "x2" })).status).toBe(200); // same order may update it
+    expect((await t.repo.getOrderByDeliverable("qa-a"))?.paymentId).toBe(a.paymentId);
+    // renaming frees the old slug
+    expect((await post(a.paymentId, { slug: "qa-a2", title: "x" })).status).toBe(200);
+    expect(await t.repo.getOrderByDeliverable("qa-a")).toBeNull();
+    expect((await post(b.paymentId, { slug: "qa-a", title: "y" })).status).toBe(200);
+  });
+
+  it("a deliverable with its own content prefix is served from there", async () => {
+    const t = setup(LIVE);
+    t.content.put("reports/orders/o1/index.html", "<h1>Prefixed</h1>", "text/html; charset=utf-8");
+    const alice = await t.signIn();
+    const { co } = await paidOrder(t, alice.cookie);
+    await t.json(`/billing/admin/orders/${co.paymentId}`, { status: "delivered", deliverable: { slug: "qa-pre", title: "P", contentPrefix: "reports/orders/o1/" } }, { headers: ADMIN });
+    expect(await (await t.req("/reports/qa-pre/", { cookie: alice.cookie })).text()).toBe("<h1>Prefixed</h1>");
   });
 
   it("deliveredReportSlug only trusts our own origins and report paths", async () => {

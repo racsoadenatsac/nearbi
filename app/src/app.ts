@@ -9,7 +9,7 @@ import { getCookie } from "hono/cookie";
 import { rpcKeyCheck } from "./adapters/near-rpc";
 import type { Config } from "./config";
 import { sha256, timingSafeEqual, utf8 } from "./core/encoding";
-import { decide, parseReportPath, reportObjectKey, requiredAccess } from "./core/gating";
+import { decide, parseReportPath, requiredAccess } from "./core/gating";
 import { clearSessionCookie, SESSION_COOKIE, SESSION_TTL_SECONDS, sessionCookie, signSession, verifySession } from "./core/session";
 import { newChallenge, verifySignIn, type KeyCheckFn } from "./core/signin";
 import { deliveredReportSlug, isOneOff, isProductId, validateBrief, type Product } from "./core/products";
@@ -32,7 +32,7 @@ export interface AppDeps {
   keyCheck?: KeyCheckFn;
 }
 
-type Vars = { accountId: string | null; sub: SubscriptionState | null };
+type Vars = { accountId: string | null; sub: SubscriptionState | null; contentPrefix?: string };
 type C = Context<{ Variables: Vars }>;
 
 const API_PREFIXES = ["/api/", "/auth/", "/billing/", "/registry/"];
@@ -88,10 +88,21 @@ export function createApp(deps: AppDeps) {
     c.set("sub", s ? subscriptionState(await repo.getSubscription(s.sub), t) : null);
 
     const path = new URL(c.req.url).pathname;
-    const d = decide(requiredAccess(path, config.freeReportSlugs), c.get("accountId"), c.get("sub"));
+    const access = requiredAccess(path, config.freeReportSlugs);
+    const d = decide(access, c.get("accountId"), c.get("sub"));
+    const report = access !== "public" ? parseReportPath(path) : null;
+    if (report && c.get("accountId")) {
+      // Signed in, gated report path: resolve what the slug is before deciding (signed-out visitors fall
+      // through to the login redirect below for every gated path, so nothing about the slug leaks).
+      const a = await reportAccess(c.get("accountId")!, c.get("sub"), report.slug);
+      if (a.allow) {
+        c.set("contentPrefix", a.contentPrefix);
+        return next();
+      }
+      if (a.reason === "not_found") return notFound(c);
+      return c.redirect(`/members?subscribe=1`, 302);
+    }
     if (d.allow) return next();
-    // A delivered one-off order opens the report its delivery link points at, without a subscription.
-    if (d.reason === "subscribe" && (await hasDeliveredReport(c.get("accountId")!, path))) return next();
     if (isApi(path)) {
       return d.reason === "login" ? c.json({ error: "sign in required" }, 401) : c.json({ error: "active subscription required" }, 402);
     }
@@ -100,11 +111,35 @@ export function createApp(deps: AppDeps) {
     return c.redirect(`/members?subscribe=1`, 302);
   });
 
-  async function hasDeliveredReport(accountId: string, path: string): Promise<boolean> {
-    const r = parseReportPath(path);
-    if (!r) return false;
+  /**
+   * Who may open /reports/<slug>/ (signed in, non-free slug):
+   * - an order deliverable: only the account behind the delivered order (or, with shared:true on the order,
+   *   active subscribers too); everyone else gets 404 so its existence doesn't leak;
+   * - a subscriber catalog report: active subscribers, or the buyer of a delivered order linking to it;
+   *   other signed-in visitors are sent to subscribe;
+   * - anything else: 404, except for the buyer of a delivered order whose delivery link points at it.
+   */
+  async function reportAccess(
+    accountId: string,
+    sub: SubscriptionState | null,
+    slug: string,
+  ): Promise<{ allow: true; contentPrefix: string } | { allow: false; reason: "not_found" | "subscribe" }> {
+    const own = await repo.getOrderByDeliverable(slug);
+    if (own?.deliverable) {
+      const delivered = own.status === "delivered";
+      const ok = delivered && (own.accountId === accountId || (own.shared && !!sub?.active));
+      return ok ? { allow: true, contentPrefix: own.deliverable.contentPrefix } : { allow: false, reason: "not_found" };
+    }
+    const contentPrefix = `reports/${slug}/`;
+    const catalogued = await repo.getReport(slug);
+    if (catalogued && sub?.active) return { allow: true, contentPrefix };
+    if (await hasDeliveredReport(accountId, slug)) return { allow: true, contentPrefix };
+    return catalogued ? { allow: false, reason: "subscribe" } : { allow: false, reason: "not_found" };
+  }
+
+  async function hasDeliveredReport(accountId: string, slug: string): Promise<boolean> {
     const orders = await repo.listOrders(accountId);
-    return orders.some((o) => o.status === "delivered" && deliveredReportSlug(o.deliveryUrl, config.appOrigins) === r.slug);
+    return orders.some((o) => o.status === "delivered" && deliveredReportSlug(o.deliveryUrl, config.appOrigins) === slug);
   }
 
   // ---------------------------------------------------------------- auth
@@ -247,7 +282,7 @@ export function createApp(deps: AppDeps) {
   app.post("/billing/admin/orders/:id", async (c) => {
     if (!(await constantTimeBearer(c.req.header("authorization"), config.adminToken))) return c.json({ error: "forbidden" }, 403);
     const body = await c.req.json().catch(() => ({}));
-    const r = await updateOrderAdmin(repo, c.req.param("id"), body, now());
+    const r = await updateOrderAdmin(repo, c.req.param("id"), body, now(), { freeSlugs: config.freeReportSlugs });
     if (!r.ok) return c.json({ error: r.error }, r.status);
     return c.json({ ok: true, order: orderJson(r.order) }, 200, { "cache-control": "no-store" });
   });
@@ -270,21 +305,29 @@ export function createApp(deps: AppDeps) {
     return c.html(loginPage(next.startsWith("/") && !next.startsWith("//") ? next : "/members"), 200, { "cache-control": "no-store" });
   });
 
-  app.get("/members", async (c) =>
-    c.html(
+  app.get("/members", async (c) => {
+    const orders = await repo.listOrders(c.get("accountId")!);
+    // The catalog never lists order deliverables (they live on the order); this filter is only belt and braces.
+    const reports = (await repo.listReports()).filter((r) => !orders.some((o) => o.deliverable?.slug === r.slug));
+    const ownedSlugs = orders
+      .filter((o) => o.status === "delivered")
+      .map((o) => deliveredReportSlug(o.deliveryUrl, config.appOrigins))
+      .filter((s): s is string => !!s);
+    return c.html(
       membersPage({
         accountId: c.get("accountId")!,
         sub: c.get("sub")!,
         priceUsd: config.monthlyPriceUsd,
-        reports: await repo.listReports(),
-        orders: await repo.listOrders(c.get("accountId")!),
+        reports,
+        ownedSlugs,
+        orders,
         products: config.products,
         paymentsLive: config.intents.mode === "live",
       }),
       200,
       { "cache-control": "no-store" },
-    ),
-  );
+    );
+  });
 
   app.get("/members/checkout", (c) => {
     const product = resolveProduct(c.req.query("product"));
@@ -322,7 +365,10 @@ export function createApp(deps: AppDeps) {
       // Normally served by CloudFront from the static bucket and never routed here.
       return config.staticOrigin ? c.redirect(config.staticOrigin + url.pathname, 302) : notFound(c);
     }
-    const key = reportObjectKey(r.slug, r.file);
+    // The gate resolved where this report's files live (order deliverables may use their own prefix).
+    const prefix = c.get("contentPrefix");
+    if (!prefix) return notFound(c);
+    const key = prefix + r.file;
     const ext = r.file.split(".").pop()!.toLowerCase();
     const contentType = CONTENT_TYPES[ext] ?? "application/octet-stream";
     const privateHeaders = { "cache-control": "private, no-store", "x-robots-tag": "noindex" };

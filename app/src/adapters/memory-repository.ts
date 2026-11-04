@@ -14,6 +14,7 @@ import {
   type ForwardQueueEntry,
   type OpenPaymentRef,
   type RegistryTokenRecord,
+  DeliverableSlugTaken,
   type ReportRecord,
   type Repository,
   type StoredChallenge,
@@ -34,6 +35,7 @@ export class MemoryRepository implements Repository {
   readonly openPayments = new Map<string, OpenPaymentRef>();
   readonly forwardQueue = new Map<string, ForwardQueueEntry>();
   readonly orders = new Map<string, OrderRecord>(); // paymentId -> order
+  readonly deliverables = new Map<string, string>(); // deliverable slug -> paymentId
 
   constructor(seed: { reports?: ReportRecord[] } = {}) {
     for (const r of seed.reports ?? []) this.reports.set(r.slug, clone(r));
@@ -117,9 +119,28 @@ export class MemoryRepository implements Repository {
   async updateOrder(paymentId: string, u: OrderUpdate) {
     const o = this.orders.get(paymentId);
     if (!o) return null;
-    const next: OrderRecord = { ...o, status: u.status, updatedAt: u.nowSec, ...(u.deliveryUrl !== undefined ? { deliveryUrl: u.deliveryUrl } : {}) };
+    if (u.deliverable) {
+      const owner = this.deliverables.get(u.deliverable.slug);
+      if (owner !== undefined && owner !== paymentId) throw new DeliverableSlugTaken(u.deliverable.slug);
+    }
+    const next: OrderRecord = {
+      ...o,
+      status: u.status,
+      updatedAt: u.nowSec,
+      ...(u.deliveryUrl !== undefined ? { deliveryUrl: u.deliveryUrl } : {}),
+      ...(u.deliverable !== undefined ? { deliverable: u.deliverable ? clone(u.deliverable) : null } : {}),
+      ...(u.shared !== undefined ? { shared: u.shared } : {}),
+    };
+    if (u.deliverable !== undefined) {
+      if (o.deliverable && o.deliverable.slug !== u.deliverable?.slug) this.deliverables.delete(o.deliverable.slug);
+      if (u.deliverable) this.deliverables.set(u.deliverable.slug, paymentId);
+    }
     this.orders.set(paymentId, next);
     return clone(next);
+  }
+  async getOrderByDeliverable(slug: string) {
+    const id = this.deliverables.get(slug);
+    return id === undefined ? null : this.getOrder(id);
   }
 
   async updatePaymentStatus(id: string, from: readonly PaymentStatus[], patch: PaymentStatusPatch) {
@@ -169,7 +190,14 @@ export class MemoryRepository implements Repository {
       .map(clone)
       .sort((a, b) => (a.publishedAt === b.publishedAt ? a.slug.localeCompare(b.slug) : b.publishedAt.localeCompare(a.publishedAt)));
   }
+  async getReport(slug: string) {
+    const r = this.reports.get(slug);
+    return r ? clone(r) : null;
+  }
   async putReport(r: ReportRecord) {
     this.reports.set(r.slug, clone(r));
+  }
+  async deleteReport(slug: string) {
+    this.reports.delete(slug);
   }
 }

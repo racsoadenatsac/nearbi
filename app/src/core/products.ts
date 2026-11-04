@@ -93,8 +93,53 @@ export interface OrderRecord {
   amountUsd: number;
   status: OrderStatus;
   deliveryUrl: string | null;
+  /**
+   * The report made for this order, if any. Stored in DynamoDB on the order (never in source code) and readable
+   * only by the order's account at /reports/<slug>/ once delivered; everyone else gets 404.
+   */
+  deliverable: Deliverable | null;
+  /** Explicit opt-in: also open the deliverable to active subscribers. Default false (buyer only). */
+  shared: boolean;
   createdAt: number;
   updatedAt: number;
+}
+
+/** An order-specific report: what /reports/<slug>/ serves and how the buyer's members page lists it. */
+export interface Deliverable {
+  slug: string;
+  title: string;
+  summary: string;
+  /** Object key prefix in the content bucket, under reports/ and ending in "/". Default reports/<slug>/. */
+  contentPrefix: string;
+  /** PDF file name inside contentPrefix, or null. */
+  pdfFile: string | null;
+}
+
+export const DELIVERABLE_LIMITS = { title: 200, summary: 1000 } as const;
+const DELIV_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,80}$/;
+const PREFIX_RE = /^reports\/[a-z0-9][a-z0-9_-]{0,80}(?:\/[a-z0-9][a-z0-9_.-]{0,80})*\/$/;
+const PDF_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,120}\.pdf$/;
+
+export type DeliverableResult = { ok: true; deliverable: Deliverable } | { ok: false; error: string };
+
+/** Validate an admin-supplied deliverable ({slug, title, summary?, contentPrefix?, pdfFile?}). */
+export function validateDeliverable(input: unknown): DeliverableResult {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, error: "deliverable must be an object" };
+  const d = input as Record<string, unknown>;
+  for (const k of ["slug", "title", "summary", "contentPrefix", "pdfFile"]) {
+    if (d[k] !== undefined && d[k] !== null && typeof d[k] !== "string") return { ok: false, error: `deliverable.${k} must be text` };
+  }
+  const slug = ((d.slug as string | undefined) ?? "").trim();
+  if (!DELIV_SLUG_RE.test(slug)) return { ok: false, error: "deliverable.slug must be lowercase letters, digits and dashes" };
+  const title = clean((d.title as string | undefined) ?? "");
+  if (!title || title.length > DELIVERABLE_LIMITS.title) return { ok: false, error: `deliverable.title required (max ${DELIVERABLE_LIMITS.title} characters)` };
+  const summary = clean((d.summary as string | undefined) ?? "");
+  if (summary.length > DELIVERABLE_LIMITS.summary) return { ok: false, error: `deliverable.summary is too long (max ${DELIVERABLE_LIMITS.summary} characters)` };
+  const contentPrefix = ((d.contentPrefix as string | undefined) ?? "").trim() || `reports/${slug}/`;
+  if (!PREFIX_RE.test(contentPrefix)) return { ok: false, error: "deliverable.contentPrefix must look like reports/<name>/" };
+  const pdfFile = ((d.pdfFile as string | undefined) ?? "").trim() || null;
+  if (pdfFile !== null && !PDF_RE.test(pdfFile)) return { ok: false, error: "deliverable.pdfFile must be a plain .pdf file name" };
+  return { ok: true, deliverable: { slug, title, summary, contentPrefix, pdfFile } };
 }
 
 /** Delivery links: https URLs, or a path on nearbi.ai (e.g. /reports/<slug>/). */

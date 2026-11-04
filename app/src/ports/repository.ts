@@ -4,9 +4,9 @@
 import type { StoredChallenge } from "../core/signin";
 import type { RegistryTokenRecord } from "../core/registry-token";
 import type { SubscriptionRecord } from "../core/subscription";
-import type { OrderBrief, OrderRecord, OrderStatus, ProductId } from "../core/products";
+import type { Deliverable, OrderBrief, OrderRecord, OrderStatus, ProductId } from "../core/products";
 
-export type { OrderBrief, OrderRecord, OrderStatus, ProductId, RegistryTokenRecord, StoredChallenge, SubscriptionRecord };
+export type { Deliverable, OrderBrief, OrderRecord, OrderStatus, ProductId, RegistryTokenRecord, StoredChallenge, SubscriptionRecord };
 
 export interface AccountRecord {
   accountId: string;
@@ -129,7 +129,19 @@ export interface OrderUpdate {
   status: OrderStatus;
   /** undefined: leave as is. null: clear. */
   deliveryUrl?: string | null;
+  /** undefined: leave as is. null: detach. A slug can belong to one order only (else DeliverableSlugTaken). */
+  deliverable?: Deliverable | null;
+  /** undefined: leave as is. */
+  shared?: boolean;
   nowSec: number;
+}
+
+/** updateOrder: the deliverable slug is already attached to another order. */
+export class DeliverableSlugTaken extends Error {
+  constructor(readonly slug: string) {
+    super(`report slug ${slug} already belongs to another order`);
+    this.name = "DeliverableSlugTaken";
+  }
 }
 
 export interface Repository {
@@ -170,8 +182,14 @@ export interface Repository {
   listOrders(accountId: string): Promise<OrderRecord[]>;
   /** Orders not yet delivered (status paid or in_progress), oldest first. */
   listOpenOrders(limit: number): Promise<OrderRecord[]>;
-  /** Set status (and optionally the delivery URL). delivered removes it from the open list. null if no such order. */
+  /**
+   * Set status (and optionally the delivery URL, deliverable, shared flag). delivered removes it from the open
+   * list. Attaching a deliverable also indexes its slug (DELIV#<slug>) atomically; detaching/renaming removes the
+   * old index. null if no such order; throws DeliverableSlugTaken if another order owns the slug.
+   */
   updateOrder(paymentId: string, u: OrderUpdate): Promise<OrderRecord | null>;
+  /** The order whose deliverable has this slug (any status), or null. */
+  getOrderByDeliverable(slug: string): Promise<OrderRecord | null>;
   /** Idempotent: the same payment enqueued twice is one entry (the first write wins). */
   enqueueForward(e: ForwardQueueEntry): Promise<void>;
   listForwardQueue(limit: number): Promise<ForwardQueueEntry[]>;
@@ -183,5 +201,7 @@ export interface Repository {
 
   // catalog
   listReports(): Promise<ReportRecord[]>;
+  getReport(slug: string): Promise<ReportRecord | null>;
   putReport(r: ReportRecord): Promise<void>;
+  deleteReport(slug: string): Promise<void>;
 }
