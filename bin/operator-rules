@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""operator-rules: check config.yaml and ask the agent's rules a question. Never signs anything.
+
+  bin/operator-rules validate                     parse + validate config.yaml, print the summary (exit 5 if invalid)
+  bin/operator-rules status                       summary + today's spend vs cap + live split check vs the splitter
+  bin/operator-rules check-split                  only the onchain split check (exit 5 + ALERT on mismatch)
+  bin/operator-rules check-job --order <id> --kind bigquery|inference --estimate-usd <x>
+                                                  would this job be allowed now? (exit 0 yes, 5 refused) — for rs-repro
+  bin/operator-rules check-price --product quick_answer --price-usd 29 [--settled-usdc 28.95]
+  bin/operator-rules verify-spend                 verify the spend ledger hash chain
+  bin/operator-rules schema                       print the JSON Schema (config.schema.json is generated from it)
+
+All commands take --config PATH (default: $RS_AGENT_CONFIG or <repo>/config.yaml).
+"""
+import argparse
+import json
+import sys
+from decimal import Decimal
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from rs_agent import forwarder as fw  # noqa: E402
+from rs_agent import nearai, rules, spend  # noqa: E402
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("command", choices=["validate", "status", "check-split", "check-job", "check-price", "verify-spend", "schema"])
+    ap.add_argument("--config")
+    ap.add_argument("--order")
+    ap.add_argument("--kind", choices=spend.KINDS)
+    ap.add_argument("--estimate-usd")
+    ap.add_argument("--product")
+    ap.add_argument("--price-usd")
+    ap.add_argument("--settled-usdc", help="settled USDC as a decimal, e.g. 28.95")
+    a = ap.parse_args()
+
+    if a.command == "schema":
+        sys.stdout.write(rules.schema_json())
+        return 0
+    try:
+        cfg = rules.load(a.config)
+    except rules.ConfigError as e:
+        print(f"REFUSED (config): {e}\n  -> the agent treats this as kill_switch: true", file=sys.stderr)
+        return fw.EXIT_REFUSED
+    try:
+        if a.command == "validate":
+            print("\n".join(rules.summary(cfg)))
+            print("config.yaml is valid")
+            return 0
+        if a.command == "verify-spend":
+            lines = rules.ledger(cfg).load()
+            print(f"{rules.ledger(cfg).path}: {len(lines)} lines, chain ok, head {lines[-1]['line_hash'] if lines else spend.GENESIS}")
+            return 0
+        if a.command == "check-job":
+            if not (a.order and a.kind and a.estimate_usd):
+                ap.error("check-job needs --order, --kind, --estimate-usd")
+            b = rules.check_job(cfg, a.order, a.kind, a.estimate_usd)
+            print(f"ALLOWED: {a.kind} ${spend.fmt_usd(b['estimate_micros'])} for {a.order}; today ${spend.fmt_usd(b['today_micros'])} "
+                  f"of ${spend.fmt_usd(b['daily_cap_micros'])}, order ${spend.fmt_usd(b['order_micros'])} of ${spend.fmt_usd(b['report_cap_micros'])}")
+            return 0
+        if a.command == "check-price":
+            if not (a.product and a.price_usd):
+                ap.error("check-price needs --product and --price-usd")
+            settled = str(int(Decimal(a.settled_usdc) * 10**6)) if a.settled_usdc else None
+            rules.require_active(cfg, "fulfilling orders")
+            rules.check_min_price(cfg, a.product, a.price_usd, settled)
+            print(f"ALLOWED: {a.product} at ${a.price_usd}")
+            return 0
+        # status / check-split
+        if a.command == "status":
+            print("\n".join(rules.summary(cfg)))
+            print(f"  NEAR AI Cloud: {'configured (' + nearai.KEY_ENV + ' present)' if nearai.configured() else 'UNCONFIGURED (' + nearai.KEY_ENV + ' not set; inference calls are refused)'}")
+        onchain_cfg = rules.fetch_split(cfg, fw.Rpc(cfg.net["rpc"]))
+        rules.check_split(cfg, onchain_cfg)
+        print(f"split check ok: {cfg.net['splitter']} pays {onchain_cfg['split_bps_contributors'] / 100:g}% to {onchain_cfg['contributors']}, "
+              f"{onchain_cfg['split_bps_treasury'] / 100:g}% to {onchain_cfg['treasury']} (matches config.yaml)")
+        if cfg.kill_switch:
+            print("kill_switch is ON: the agent refuses to act")
+        return 0
+    except rules.Refused as r:
+        print(str(r), file=sys.stderr)
+        return fw.EXIT_REFUSED
+    except spend.LedgerCorrupt as e:
+        print(f"REFUSED (spend_ledger): {e}", file=sys.stderr)
+        return fw.EXIT_REFUSED
+
+
+if __name__ == "__main__":
+    sys.exit(main())
