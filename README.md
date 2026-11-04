@@ -397,8 +397,9 @@ paid ──write-report exit 6 │ below the floor │ deep_dive (no cached pack
 
 - **Payment comes from the chain**, not from the order file: the forwarder of the rules file's `network`. On mainnet
   that is `forwarder.nearbi.near`, where forwarder-runner forwards each 1Click payment under its payment id, so the loop
-  runs unchanged there once the app writes orders into the store (or a DynamoDB adapter replaces `OrderStore`).
-- **Product map** (`PRODUCTS`): `quick_answer` → cached pack `near-users-vs-bots` (question = the pack's title);
+  runs unchanged there; v0.5.0 feeds it from the app's DynamoDB table (see "Live orders" below).
+- **Product map** (`PRODUCTS`): `quick_answer` → cached pack `near-users-vs-bots` by default, or `near-oct-cohort-retention`
+  (topic picked by the DynamoDB source's matcher; question = the pack's title);
   `deep_dive` → needs a human (new queries); `subscription` → no report (nearbi-app grants access).
 - **Rules at every decision point**: the loop's rules file and every `--kill-switch-config` are re-read before the
   payment check, before write-report, and before each onchain send. write-report exit 5 (cap/kill switch) stops the pass
@@ -418,3 +419,105 @@ payment, deep_dive / unknown topic, two errors, a tampered report; **kill switch
 operator's config, flipped after the payment check and before the onchain sends; `bin/demo` refuses with the
 operator's kill switch on, an invalid operator config or a mainnet demo config; the CLI; the proxy-free near-cli env;
 anchor args + event verification.
+
+## Live orders: DynamoDB order source + agent-tick (v0.5.0)
+
+The order loop above, fed by the live nearbi-app table instead of local files. A paid one-off order is written,
+delivered on nearbi.ai, cost-recorded and anchored with no human in the loop. Deep dives and anything the agent
+can't match go to a human.
+
+```bash
+bin/agent-tick                 # one pass: forwarder-runner --once, then agent-orders; exit (scheduler-friendly)
+bin/agent-tick --dry-run       # the same, every read and check, nothing written, signed, paid or sent
+bin/agent-orders --status      # open orders + the agent's status (customer text is never printed)
+bin/forwarder-runner --mark-forwarded <paymentId> [--tx <hash>] [--dry-run]   # backfill forwardedTx (see below)
+bin/test-dynamo-local.sh       # the conditions against DynamoDB Local (Docker), no AWS
+```
+
+### What the app stores and what the customer sees
+
+| Product | Customer supplies | App on 1Click SUCCESS | Promise | Agent |
+|---|---|---|---|---|
+| `subscription` $49 | nothing (signed-in NEAR account) | `FWDQ` + extends the subscription | gated reports + registry for a month | nothing to fulfil: the app grants access; no ORDER exists |
+| `quick_answer` $29 | `brief.question` (≤ 2,000), optional `contact` (email/Telegram) | `FWDQ` + `ACCT#<acct>/ORDER#<id>` (`paid`) + `ORDERQ` | answer within 24 h | best-matching cached pack → automatic |
+| `deep_dive` $499 | `question`, optional `contact`, optional `scope` | same as Quick Answer | report within 48 h | always **needs_human** |
+
+The buyer sees "Your orders" on `/members` (status paid → in progress → delivered, the delivery link, and for an order
+deliverable its title, summary and **Open report**). A deliverable lives in the private content bucket under
+`reports/<slug>/` and only its buyer can open `/reports/<slug>/` (everyone else gets 404). Nothing emails or messages
+the customer, and this repo doesn't either.
+
+### One pass of `bin/agent-orders` (`src/rs_agent/dynamo_orders.py`)
+
+1. `config.yaml` re-read (kill switch, `network: mainnet`), SSO check, then `Query ORDERQ` + consistent `GetItem` of
+   each `ORDER` and `PAY#` item, oldest first. The rules are re-read again before every order.
+2. **Eligible** = ORDER `paid`/`in_progress`; PAY# `live`, `paid`, `intentsStatus SUCCESS`, recipient
+   `forwarder.nearbi.near`, USDC, and the same product, account and price as the ORDER; **`forwardedTx` set** (the
+   revenue split happened onchain first). Not forwarded yet → wait for forwarder-runner. A mismatch → needs_human.
+3. **Plan**: `quick_answer` → `match_pack(question)`: keyword phrases per cached pack (`PACK_KEYWORDS`), ≥ 2 hits and
+   a clear lead, else needs_human. Enabled packs: `near-users-vs-bots`, `near-oct-cohort-retention`. `deep_dive` and
+   anything else → needs_human. The customer's text is matched locally and is **never sent to the model**:
+   write-report answers the pack's own question, and the delivery page shows the buyer's question above it
+   (escaped) with a note that it was answered from the closest cached study.
+4. **Caps** before claiming: `rules.check_job` for the write-report worst case (`--max-usd`, default $0.25): daily cap
+   → the pass stops (exit 5, nothing claimed); per-report cap → needs_human. At most `--max-orders` (default 3)
+   automatic orders per pass.
+5. **Claim**: conditional `UpdateItem PAY#<id> SET agentClaim, agentClaimUntil` (condition: paid, `forwardedTx` set
+   and not NULL, `agentStatus` not `done`/`needs_human`, no live claim by someone else). A claim lasts 30 min; a
+   crashed tick's claim is then taken over. Released at the end of the order.
+6. **Run** (`order_loop.Loop` for this one order, `DynamoLoop`): `POST /billing/admin/orders/<id> {status: in_progress}`
+   → forwarder `get_order == forwarded` and ≥ min price → `bin/write-report` (paid NEAR AI) → local inbox copy with
+   checksums → **publish**: `report.md`, `pack/…`, `delivery.json`, `checksums.sha256` and `index.html` to
+   `s3://nearbi-content/reports/qa-<id>/` (never overwriting different content, each upload re-checked) →
+   `POST … {status: delivered, deliverable: {slug: qa-<id>, title: "Quick Answer: <pack title>", summary: <claim>}}`
+   → `record_cost` per inference line → `anchor_report(<id>, sha256(report.md))`.
+7. **Status back** on `PAY#<id>`: `agentStatus` (`running`, `waiting`, `paid`, `delivered`, `done`, `needs_human`),
+   `agentNote`, `agentUpdatedAt`, and on done `agentReportSha256`, `agentAnchorTx`, `agentSlug`. Only the claim
+   holder can write them. `done`/`needs_human` are never picked up again; anything else resumes next tick from the
+   local order file (a publish that failed is retried before the onchain step; write-report is never paid twice).
+
+The admin token is read from SSM `/nearbi/app/ADMIN_TOKEN` into memory for the API call (header only; never printed,
+logged or written). S3, DynamoDB, SSM, Lambda (only `CONTENT_BUCKET`/`CONTENT_PREFIX` are read) and the admin API go
+direct (`egress.direct_env`, no proxy); NEAR AI Cloud keeps the proxy.
+
+**needs_human**: the order stays `paid` on the customer's page and on `bin/list-orders` (nearbi-app). Fulfil it by
+hand (`bin/update-order`), as before. `agentNote` says why. Exit 2 is raised only when an order is newly marked.
+
+### forwardedTx was never written (fixed in v0.5.0)
+
+nearbi-app stores `forwardedTx: null` on every payment (a DynamoDB NULL attribute). forwarder-runner ≤ v0.4.1 marked
+with `attribute_not_exists(forwardedTx)`, which is false for a NULL attribute, so the mark always failed ("already
+set (concurrent runner?)") and the queue entry was deleted anyway: every forwarded payment kept `forwardedTx: null`.
+The condition is now `attribute_not_exists(forwardedTx) OR attribute_type(forwardedTx, NULL)` (proven on DynamoDB
+Local). Payments forwarded before the fix: `agent-orders` backfills an open order automatically when the forwarder
+journal holds a tx that verifies onchain (forwarded + sale events, onchain amount); otherwise
+`bin/forwarder-runner --mark-forwarded <id> [--tx <hash>]`. The one live case is `b2d28dc7…` (forwarded by
+`DZVmjroxaRey1i26btYBHzbxwbo4PMgivtVMkNHwBCKU`, delivered by hand; `--dry-run` verifies it).
+
+### bin/agent-tick
+
+| Exit | Meaning |
+|---:|---|
+| 0 | done / nothing to do |
+| 1 | an error (either step); read the log |
+| 2 | a payment or order needs a human (`ATTENTION` lines) |
+| 3 | SSO expired: the operator runs `aws sso login --profile nearbi`; the tick stops before the order step |
+| 4 | top up `forwarder.nearbi.near` (forwarder-runner); the order step still ran |
+| 5 | refused by config.yaml (kill switch, split mismatch, daily cap, network); the tick stops there |
+
+Most urgent wins: 3 > 5 > 1 > 4 > 2 > 0. A lock file makes an overlapping tick exit 0. Nothing is scheduled by this
+repo (no launchd/cron); run `bin/agent-tick` every 2–5 minutes from the scheduler.
+
+### Tests
+
+`tests/test_dynamo_orders.py` (offline, 47: `FakeDdb` evaluates exactly the module's condition expressions; S3/API
+fakes; rules, store, ledger, delivery, HTML real): pack matching and plans; payment checks; happy path (in_progress →
+write-report → S3 files + checksums → delivered with a buyer-only deliverable → record_cost → anchor → `done`, claim
+released, customer text not in the prompt or the log, token not logged); idempotent rerun; resume after a failed
+publish; **claim race**, held claim, expired claim, claim refused for unforwarded/unpaid/terminal; **already
+processed**; **needs_human** (deep_dive, unmatched, payment mismatch, **write-report exit 6** with nothing delivered,
+below-floor amount); **kill switch** (before the pass, mid-pass, before write-report); **daily cap** refusal (nothing
+claimed), per-report cap, `--max-orders`, mainnet only, SSO exit 3; forwardedTx backfill (verified / no journal / bad
+tx); **dry-run writes nothing**; aws CLI argv + direct egress; admin API token handling; S3 never overwrites; HTML
+escaping; agent-tick exit priority; `forwarder-runner --mark-forwarded` (dry-run, verify, kill switch). `tests/test_dynamo_local.py` (6, `bin/test-dynamo-local.sh`): the same
+conditions on DynamoDB Local, including the old forwarder condition failing on the app's NULL.

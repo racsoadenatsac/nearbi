@@ -7,6 +7,10 @@
   bin/forwarder-runner --once --dry-run       every check, no transaction
   bin/forwarder-runner --sign-check           preflight, then near-cli signs forward(<random id>, 1) and only
                                               displays it (never sent, signed tx discarded): proves key + near-cli + RPC
+  bin/forwarder-runner --mark-forwarded <paymentId> [--tx <hash>] [--dry-run]
+                                              set forwardedTx on a payment forwarded onchain but never marked
+                                              (<= v0.4.1 bug: the app's forwardedTx NULL failed the condition);
+                                              the tx must verify (forwarded + sale events, onchain amount)
   bin/forwarder-runner --order <paymentId> --amount <base units>   one payment not on the queue
                                               (e.g. confirmed by the admin override); same checks
 
@@ -46,6 +50,8 @@ def main() -> int:
     mode.add_argument("--status", action="store_true")
     mode.add_argument("--order", metavar="PAYMENT_ID")
     mode.add_argument("--sign-check", action="store_true", help="sign a forward() for a random order id without broadcasting it")
+    mode.add_argument("--mark-forwarded", metavar="PAYMENT_ID", help="set forwardedTx on a payment forwarded onchain but never marked")
+    ap.add_argument("--tx", help="with --mark-forwarded: the forward tx hash (default: the journal's)")
     ap.add_argument("--amount", help="with --order: settled amount in USDC base units (6 decimals)")
     ap.add_argument("--interval", type=int, default=60, help="--loop: seconds between passes (min 15)")
     ap.add_argument("--dry-run", action="store_true", help="run every check but send nothing")
@@ -87,6 +93,9 @@ def main() -> int:
             oid = runner.sign_check()
             fw.log(f"sign check ok: near-cli-rs (direct NEAR RPC) signed forward(order_id={oid}, amount=1) as {fw.FORWARDER} "
                    f"with {fw.FC_PUBLIC_KEY} from the Keychain; display only, NOT broadcast, signed tx discarded")
+            return fw.EXIT_OK
+        if a.mark_forwarded:
+            runner.mark_forwarded(a.mark_forwarded, a.tx)
             return fw.EXIT_OK
         if a.order:
             return runner.run_once(manual=fw.manual_entry(db, a.order, a.amount))

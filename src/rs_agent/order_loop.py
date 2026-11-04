@@ -46,7 +46,8 @@ MAX_ERRORS = 2  # write-report errors (network, NEAR AI) before an order goes to
 # Only cached packs are automatic; anything that needs new queries goes to a human.
 PRODUCTS: dict[str, dict[str, Any]] = {
     "quick_answer": {"kind": "report", "default_topic": "near-users-vs-bots",
-                     "topics": {"near-users-vs-bots": {"pack": "near-users-vs-bots", "question": None}}},
+                     "topics": {"near-users-vs-bots": {"pack": "near-users-vs-bots", "question": None},
+                                "near-oct-cohort-retention": {"pack": "near-oct-cohort-retention", "question": None}}},
     "deep_dive": {"kind": "human", "why": "a deep dive needs new queries (no cached pack); a human scopes it"},
     "subscription": {"kind": "app", "why": "subscription access is granted by nearbi-app, not by a report"},
 }
