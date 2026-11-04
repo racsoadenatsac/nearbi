@@ -59,6 +59,17 @@ def main() -> int:
                   f"plan={pl['kind']}{(' ' + pl['topic']) if pl.get('topic') else ''}  question={len(q)} chars"
                   + (f"\n      note: {p.get('agentNote')}" if p.get("agentNote") else "")
                   + (f"\n      why: {pl['why']}" if pl["kind"] == "human" else ""))
+        queued = {ref.get("paymentId") for ref, _, _ in rows}
+        try:
+            cfg = rules.current(a.config)
+            pend = [o["order_id"] for o in ol.OrderStore.default(cfg.network).all()
+                    if o.get("status") == "delivered" and o.get("order_id") not in queued]
+        except (rules.Refused, ol.OrderError, OSError, ValueError) as e:
+            pend = []
+            fw.log(f"WARNING local order store unreadable: {e}")
+        if pend:
+            fw.log(f"{len(pend)} delivered order(s) off ORDERQ with the onchain step unfinished (resumed by the next pass): "
+                   + ", ".join(pend))
         return 0
 
     app = do.AppDelivery(t, base_url=a.app_url)
