@@ -108,7 +108,7 @@ are deployed. On an Apple-silicon host the amd64 image runs under QEMU and takes
 for both contracts. One attempt hung (cargo idle at 0 % CPU) and had to be killed and re-run.
 
 Test counts (2026-11-03, against the release WASM in `res/`): unit 21 (splitter) + 36 (forwarder),
-sandbox 6 (splitter) + 8 (forwarder), all passing. The v0.2.0 rebuild (commit `47ee7e4`, which adds the
+sandbox 6 (splitter) + 8 (forwarder), all passing. The v0.2.0 rebuild (commit `28a65eb`, which adds the
 forwarder) reproduced `nearbi_splitter.wasm` and `usdc_mock.wasm` byte for byte (same sha256 as above);
 the first attempt hung under QEMU again and was killed and re-run.
 
@@ -136,7 +136,7 @@ rolled back. That happened with the v0.2.0 WASMs:
   with 100 Tgas on `init` therefore failed with `LackBalanceForState` (short 0.02594 NEAR). `init` burns
   ~1.9 Tgas; `bin/deploy-mainnet.sh` attaches 10 Tgas and checks the balance before broadcasting.
 
-Release artifacts (built from `7f26be3`, rebuilt from a clean worktree byte for byte):
+Release artifacts (built from `0b921bb`, rebuilt from a clean worktree byte for byte):
 
 | WASM | bytes | sha256 | code_hash |
 |---|---:|---|---|
@@ -423,7 +423,7 @@ DRIP=auto QUICK=1` for a $29 Quick Answer (rs-agent README, "Order loop + testne
 
 | Role | Account / value |
 |---|---|
-| forwarder contract | [`forwarder.nearbi-agent.testnet`](https://testnet.nearblocks.io/address/forwarder.nearbi-agent.testnet) — code_hash `Ht4N9MPmr7KRpgQDTYLkv4piR4TQ4R7LSZGnMwxo38Go` = sha256 `facf6a98…a0a0` of `res/nearbi_forwarder.wasm` (built from `47ee7e4`) |
+| forwarder contract | [`forwarder.nearbi-agent.testnet`](https://testnet.nearblocks.io/address/forwarder.nearbi-agent.testnet) — code_hash `Ht4N9MPmr7KRpgQDTYLkv4piR4TQ4R7LSZGnMwxo38Go` = sha256 `facf6a98…a0a0` of `res/nearbi_forwarder.wasm` (built from `28a65eb`) |
 | owner | `nearbi-agent.testnet` |
 | splitter / token | `splitter.nearbi-agent.testnet` / `usdc-mock.nearbi-agent.testnet` |
 | change delay | 0 s (testnet demo setting; mainnet: 86 400 s) |
