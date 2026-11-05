@@ -7,7 +7,7 @@
   "contributors": "contributors.nearbi.near",
   "token": "17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
   "token_name": "USDC (Circle, native NEAR, 6 decimals)",
-  "build_commit": "c56bb7202e35fe79e9236a2a2a21a3fa6ad993a6",
+  "build_commit": "b6b6e399b442345ff96cab3f991b320e85bd2c16",
   "toolchain": {
     "near-sdk": "5.29.1",
     "near-sys": "0.2.14",

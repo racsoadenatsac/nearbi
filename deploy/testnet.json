@@ -11,7 +11,7 @@
   "token_code_hash": "2mMB4BWM1M2bfRyPgWuwovdHDhAx7JBzt4wLUkNASfHr",
   "splitter_wasm_sha256": "193b1516326f09dafd3d6d1364cf085891ea4a021335184e3a83bad4f2b1fc13",
   "token_wasm_sha256": "1a380d783c16f3f3c9460707254b0cd0e6d366a079584c99cfc663391548ec01",
-  "build_commit": "5ce01bb4ecb191c5ec2406e7a66f49e78821b242",
+  "build_commit": "26e2879182812653c23facb80dc1dbfc9280aaa6",
   "agent_function_call_key": {
     "public_key": "ed25519:8s7VkyEA9AQyEAS8Ct1WjHRD6ShMf5Cku3zdktcz5HPJ",
     "receiver_id": "splitter.nearbi-agent.testnet",
@@ -93,7 +93,7 @@
     "oneclick_simulator": "oneclick-sim.nearbi-agent.testnet",
     "code_hash": "Ht4N9MPmr7KRpgQDTYLkv4piR4TQ4R7LSZGnMwxo38Go",
     "wasm_sha256": "facf6a98de68c631616c83018eb4fc3d4be54cae002345f63ac367c002bca0a0",
-    "build_commit": "47ee7e47f498cf09d71f485a29b3207c675d8e70",
+    "build_commit": "28a65eb40cbe2c2f48b2059a2b5b7cbcd9101606",
     "agent_function_call_key": {
       "public_key": "ed25519:4e7uzpp3u8U3aFwEb5HtRWfCLhQU8QWeSQyNradfASQp",
       "receiver_id": "forwarder.nearbi-agent.testnet",
