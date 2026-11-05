@@ -27,9 +27,10 @@ h2.sec { font-size:30px; margin:0 0 8px; letter-spacing:-.01em } .sub { color:va
 .feature img { width:100%; border-radius:10px; border:1px solid #e3e2da; background:#fff }
 .stat b { display:block; font-size:34px; color:var(--acc); line-height:1.1 }
 pre { background:#111; color:#e8e8e8; padding:16px; border-radius:8px; overflow:auto; font-size:13px }
+.hero .hero-logo { display:block; height:72px; width:auto; margin:0 0 26px }
 .hero .eyebrow { display:inline-block; background:var(--acc); color:#04140d; font-weight:800; font-size:13px; letter-spacing:.06em; text-transform:uppercase; padding:4px 12px; border-radius:99px; margin-bottom:18px }
 .card.feature { padding:28px }
-@media (max-width:760px){ .hero h1{font-size:36px} .feature{grid-template-columns:1fr} }
+@media (max-width:760px){ .hero h1{font-size:36px} .hero .hero-logo{height:56px;margin-bottom:20px} .feature{grid-template-columns:1fr} }
 img { max-width:100% } code { overflow-wrap:anywhere }
 
 /* Subscription band: dark, accent-framed, visually distinct from the white "Why" and light "Order" sections */
