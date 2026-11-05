@@ -4,8 +4,10 @@ body { margin:0; background:var(--bg); color:var(--ink); font:17px/1.6 Inter, -a
 a { color:var(--ink) }
 .nav { display:flex; flex-wrap:wrap; gap:14px 22px; align-items:center; max-width:1040px; margin:0 auto; padding:22px 20px; font-size:15px; }
 .nav a { text-decoration:none; color:var(--muted) } .nav a:hover { color:var(--ink) }
-.nav .brand { font-weight:800; font-size:20px; color:var(--ink); margin-right:auto; letter-spacing:-.01em }
-.nav .brand::after { content:"."; color:var(--acc) }
+/* brand = logo image (n mark + "nearbi" wordmark); the link text stays in the DOM for screen readers */
+.nav .brand { display:block; width:95px; height:36px; margin-right:auto; font-size:0; color:transparent;
+  background:url(/assets/nearbi-logo-nav-light.png) left center / contain no-repeat }
+.nav .brand[style*="eef3ec"] { background-image:url(/assets/nearbi-logo-nav-dark.png) } /* dark headers */
 .page { padding:20px 20px 80px }
 .foot { text-align:center; color:var(--muted); font-size:13px; padding:36px 20px; border-top:1px solid #e3e2da }
 .hero { background:var(--dark); color:#eef3ec; }
